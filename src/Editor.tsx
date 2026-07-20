@@ -5,13 +5,15 @@ import { defaultKeymap, historyKeymap } from "@codemirror/commands";
 import { useEffect, useRef } from "react";
 
 type EditorProps = {
-  initialContent: string;
+  content: string;
   onChange: (content: string) => void;
 };
 
-export function Editor({ initialContent, onChange }: EditorProps) {
+export function Editor({ content, onChange }: EditorProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const onChangeRef = useRef(onChange);
+  const viewRef = useRef<EditorView | null>(null);
+  const isSyncingContentRef = useRef(false);
 
   onChangeRef.current = onChange;
 
@@ -21,7 +23,7 @@ export function Editor({ initialContent, onChange }: EditorProps) {
     }
 
     const state = EditorState.create({
-      doc: initialContent,
+      doc: content,
       extensions: [
         basicSetup,
         keymap.of([...defaultKeymap, ...historyKeymap]),
@@ -31,7 +33,7 @@ export function Editor({ initialContent, onChange }: EditorProps) {
           spellcheck: "false",
         }),
         EditorView.updateListener.of((update) => {
-          if (update.docChanged) {
+          if (update.docChanged && !isSyncingContentRef.current) {
             onChangeRef.current(update.state.doc.toString());
           }
         }),
@@ -53,9 +55,33 @@ export function Editor({ initialContent, onChange }: EditorProps) {
       ],
     });
     const view = new EditorView({ state, parent: hostRef.current });
+    viewRef.current = view;
 
-    return () => view.destroy();
-  }, [initialContent]);
+    return () => {
+      viewRef.current = null;
+      view.destroy();
+    };
+  }, []);
+
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view || view.state.doc.toString() === content) {
+      return;
+    }
+
+    isSyncingContentRef.current = true;
+    try {
+      view.dispatch({
+        changes: {
+          from: 0,
+          to: view.state.doc.length,
+          insert: content,
+        },
+      });
+    } finally {
+      isSyncingContentRef.current = false;
+    }
+  }, [content]);
 
   return <div className="editor-host" ref={hostRef} />;
 }

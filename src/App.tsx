@@ -56,7 +56,7 @@ function App() {
 
         <div className="editor-panel">
           <Editor
-            initialContent={document.content}
+            content={document.content}
             onChange={(content) => {
               setDocument((current) => updateDocumentContent(current, content));
             }}
