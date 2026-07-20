@@ -19,6 +19,8 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+# 系统文件对话框，仅暴露单文件选择；前端不获得文件系统、shell 或网络能力。
+tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 # encoding_rs 提供字符映射；前置成员校验确保其 GBK 超集行为不会放宽 CP936。
 # GB18030 四字节序列由本工程的帧结构校验层显式拒绝；解码 had_errors 为真则整体拒绝，不外泄替换字符。

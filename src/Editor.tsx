@@ -1,19 +1,21 @@
 import { basicSetup } from "codemirror";
-import { EditorState } from "@codemirror/state";
+import { Compartment, EditorState } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { defaultKeymap, historyKeymap } from "@codemirror/commands";
 import { useEffect, useRef } from "react";
 
 type EditorProps = {
   content: string;
+  disabled?: boolean;
   onChange: (content: string) => void;
 };
 
-export function Editor({ content, onChange }: EditorProps) {
+export function Editor({ content, disabled = false, onChange }: EditorProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const onChangeRef = useRef(onChange);
   const viewRef = useRef<EditorView | null>(null);
   const isSyncingContentRef = useRef(false);
+  const availabilityRef = useRef(new Compartment());
 
   onChangeRef.current = onChange;
 
@@ -26,6 +28,10 @@ export function Editor({ content, onChange }: EditorProps) {
       doc: content,
       extensions: [
         basicSetup,
+        availabilityRef.current.of([
+          EditorState.readOnly.of(disabled),
+          EditorView.editable.of(!disabled),
+        ]),
         keymap.of([...defaultKeymap, ...historyKeymap]),
         EditorView.lineWrapping,
         EditorView.contentAttributes.of({
@@ -65,6 +71,19 @@ export function Editor({ content, onChange }: EditorProps) {
 
   useEffect(() => {
     const view = viewRef.current;
+    if (!view) {
+      return;
+    }
+    view.dispatch({
+      effects: availabilityRef.current.reconfigure([
+        EditorState.readOnly.of(disabled),
+        EditorView.editable.of(!disabled),
+      ]),
+    });
+  }, [disabled]);
+
+  useEffect(() => {
+    const view = viewRef.current;
     if (!view || view.state.doc.toString() === content) {
       return;
     }
@@ -78,6 +97,7 @@ export function Editor({ content, onChange }: EditorProps) {
           insert: content,
         },
       });
+      view.focus();
     } finally {
       isSyncingContentRef.current = false;
     }

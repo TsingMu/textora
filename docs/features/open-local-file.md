@@ -1,10 +1,10 @@
 # 打开本地文本文件
 
-> 状态：已确认
+> 状态：实现中
 
 ## 背景与目标
 
-Textora 当前只能新建并编辑内存文档，已经完成的 Rust 文档核心尚未接入桌面文件选择和前端会话。本功能交付基础文本编辑规格中的下一个最小垂直切片：用户可通过系统文件对话框选择一个受支持的本地文本文件，并在不破坏当前编辑内容的前提下查看和继续编辑。
+本功能开始前，Textora 只能新建并编辑内存文档，已经完成的 Rust 文档核心尚未接入桌面文件选择和前端会话。本功能交付基础文本编辑规格中的下一个最小垂直切片：用户可通过系统文件对话框选择一个受支持的本地文本文件，并在不破坏当前编辑内容的前提下查看和继续编辑。
 
 ## 范围
 
@@ -73,4 +73,22 @@ Textora 当前只能新建并编辑内存文档，已经完成的 Rust 文档核
 
 ## 验证记录
 
-待实现完成后记录实际执行的测试、构建和人工验证；Windows 验证需在对应环境执行。
+实现与自动化验证已完成（2026-07-20），交互式 macOS 界面验证已部分完成，剩余编码/错误样本与 Windows 验证待执行。
+
+已执行：
+
+- `cargo fmt --manifest-path src-tauri/Cargo.toml --check` 通过。
+- `cargo check --manifest-path src-tauri/Cargo.toml --all-targets` 通过。
+- `cargo test --manifest-path src-tauri/Cargo.toml` 通过（35 passed / 0 failed，含 IPC 错误代码映射、错误消息不泄露内部路径、错误文档 ID 不消耗有效 `OpenBuffer`）。
+- `npm run check` 通过（typecheck + vitest 22 passed / 0 failed，覆盖会话状态机、取消对话框保持原文档、对话框异常与 `file-too-large` 错误通知、加载期间编辑器只读、编码/换行显示与错误守卫、CodeMirror 内容同步后焦点保持）。
+- `npm run build` 通过。
+- `npm run tauri -- build` 通过并生成 `Textora.app`；系统对话框由 Rust 命令调用，capability 未新增 dialog、文件系统、shell 或网络权限。
+- `./script/build_and_run.sh --verify` 成功启动 macOS 应用；界面验证未保存确认取消保留原内容、确认放弃后弹出系统 Open 面板、取消系统面板仍保留原内容，以及成功打开 UTF-8/LF 的 `README.md` 后文件名、编码、换行、未修改状态和编辑器焦点正确。
+
+内容传输路径：前端调用无路径参数的 `select_and_open_document`，Rust 显示系统对话框并只读取用户实际选择的文件，返回 JSON 元数据并在后端 `OpenBuffer` 暂存解码后的 UTF-8 字节；`read_document_content` 校验文档 ID 后以 `tauri::ipc::Response` 返回原始字节，前端经 `ArrayBuffer` + `TextDecoder` 还原，未编码为 JSON 数字数组或大字符串。
+
+待执行（需人工或对应平台）：
+
+- 在 macOS 通过系统对话框继续验证 ASCII、UTF-8 BOM、合法 CP936 样本，以及打开后继续输入的脏状态。
+- 在 macOS 验证加载期间不可重复触发，以及非法编码/GB18030 四字节/超 50 MiB/读取期间变化被明确拒绝且原文档不变。
+- Windows 10 22H2+ / Windows 11 构建与启动验证。

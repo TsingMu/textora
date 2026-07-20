@@ -29,7 +29,7 @@ describe("Editor", () => {
     const onChange = vi.fn();
 
     await act(async () => {
-      root.render(<Editor content="" onChange={onChange} />);
+      root.render(<Editor content="" disabled={false} onChange={onChange} />);
     });
 
     const editable = container.querySelector<HTMLElement>(".cm-content");
@@ -38,12 +38,33 @@ describe("Editor", () => {
     expect(document.activeElement).toBe(editable);
 
     await act(async () => {
-      root.render(<Editor content="a" onChange={onChange} />);
+      root.render(<Editor content="a" disabled={false} onChange={onChange} />);
     });
 
     expect(container.querySelector(".cm-content")).toBe(editable);
     expect(document.activeElement).toBe(editable);
     expect(container.querySelector(".cm-line")?.textContent).toBe("a");
     expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("toggles editability without replacing the editor instance", async () => {
+    const onChange = vi.fn();
+    await act(async () => {
+      root.render(<Editor content="keep" disabled={false} onChange={onChange} />);
+    });
+    const editable = container.querySelector<HTMLElement>(".cm-content");
+    expect(editable?.getAttribute("contenteditable")).toBe("true");
+
+    await act(async () => {
+      root.render(<Editor content="keep" disabled onChange={onChange} />);
+    });
+    expect(container.querySelector(".cm-content")).toBe(editable);
+    expect(editable?.getAttribute("contenteditable")).toBe("false");
+
+    await act(async () => {
+      root.render(<Editor content="keep" disabled={false} onChange={onChange} />);
+    });
+    expect(container.querySelector(".cm-content")).toBe(editable);
+    expect(editable?.getAttribute("contenteditable")).toBe("true");
   });
 });
