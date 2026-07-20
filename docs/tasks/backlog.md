@@ -11,7 +11,6 @@
 
 ## 候选垂直切片
 
-- 创建 Tauri 2 + React + TypeScript + Rust 应用工程，并建立可重复的构建与测试命令。
 - 按 `docs/features/basic-text-editing.md` 实现基础文本编辑切片。
 - 增加代码文本识别与最小语法高亮。
 - 增加 Markdown 编辑与预览。
