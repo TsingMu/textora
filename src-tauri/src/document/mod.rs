@@ -118,6 +118,16 @@ fn metadata_changed(before: &Metadata, after: &Metadata) -> Result<bool, Documen
 ///
 /// 任何变化都明确失败，由上层决定是否重试。本函数不是 Tauri 命令。
 pub fn open_document(path: &Path) -> Result<OpenedDocument, DocumentError> {
+    open_document_with_after_read(path, || {})
+}
+
+fn open_document_with_after_read<F>(
+    path: &Path,
+    after_read: F,
+) -> Result<OpenedDocument, DocumentError>
+where
+    F: FnOnce(),
+{
     let file = File::open(path)?;
     let mut opened_handle = Handle::from_file(file)?;
     let before = opened_handle.as_file().metadata()?;
@@ -128,6 +138,7 @@ pub fn open_document(path: &Path) -> Result<OpenedDocument, DocumentError> {
         before.len(),
         MAX_FILE_SIZE_BYTES,
     )?;
+    after_read();
     let after = opened_handle.as_file().metadata()?;
     let current_path_handle = Handle::from_path(path)?;
     if metadata_changed(&before, &after)? || opened_handle != current_path_handle {
@@ -220,13 +231,13 @@ mod tests {
     #[test]
     fn open_document_reads_and_describes_file() {
         let dir = tempfile_dir();
-        let path = dir.join("sample.txt");
+        let path = dir.join("cp936-crlf.txt");
         // GBK “中文”，CRLF。
         std::fs::write(&path, [0xD6, 0xD0, 0xCE, 0xC4, 0x0D, 0x0A]).unwrap();
 
         let opened = open_document(&path).unwrap();
         let descriptor = &opened.descriptor;
-        assert_eq!(descriptor.display_name, "sample.txt");
+        assert_eq!(descriptor.display_name, "cp936-crlf.txt");
         assert_eq!(descriptor.path, path);
         assert_eq!(descriptor.byte_count, 6);
         assert_eq!(descriptor.encoding, TextEncoding::Gbk);
@@ -237,6 +248,74 @@ mod tests {
             descriptor.fingerprint,
             FileFingerprint::of(&[0xD6, 0xD0, 0xCE, 0xC4, 0x0D, 0x0A])
         );
+    }
+
+    #[test]
+    fn open_document_reads_ascii_fixture_as_utf8() {
+        let path = tempfile_dir().join("ascii-lf.txt");
+        std::fs::write(&path, b"plain ASCII\n").unwrap();
+
+        let opened = open_document(&path).unwrap();
+        assert_eq!(opened.content, "plain ASCII\n");
+        assert_eq!(
+            opened.descriptor.encoding,
+            TextEncoding::Utf8 { bom: false }
+        );
+        assert_eq!(opened.descriptor.line_ending, LineEnding::Lf);
+    }
+
+    #[test]
+    fn open_document_reads_utf8_bom_fixture() {
+        let path = tempfile_dir().join("utf8-bom-crlf.txt");
+        std::fs::write(&path, [0xEF, 0xBB, 0xBF, b'h', b'i', 0x0D, 0x0A]).unwrap();
+
+        let opened = open_document(&path).unwrap();
+        assert_eq!(opened.content, "hi\r\n");
+        assert_eq!(opened.descriptor.encoding, TextEncoding::Utf8 { bom: true });
+        assert_eq!(opened.descriptor.line_ending, LineEnding::Crlf);
+    }
+
+    #[test]
+    fn open_document_rejects_invalid_and_gb18030_fixtures() {
+        let dir = tempfile_dir();
+        let invalid = dir.join("invalid-encoding.bin");
+        let gb18030 = dir.join("gb18030-four-byte.bin");
+        std::fs::write(&invalid, [0xFF]).unwrap();
+        std::fs::write(&gb18030, [0x81, 0x30, 0x81, 0x30]).unwrap();
+
+        assert!(matches!(
+            open_document(&invalid),
+            Err(DocumentError::InvalidEncoding)
+        ));
+        assert!(matches!(
+            open_document(&gb18030),
+            Err(DocumentError::InvalidEncoding)
+        ));
+    }
+
+    #[test]
+    fn open_document_rejects_sparse_fixture_over_limit() {
+        let path = tempfile_dir().join("over-50-mib.txt");
+        let file = File::create(&path).unwrap();
+        file.set_len(MAX_FILE_SIZE_BYTES + 1).unwrap();
+
+        assert!(matches!(
+            open_document(&path),
+            Err(DocumentError::SizeLimitExceeded { .. })
+        ));
+    }
+
+    #[test]
+    fn open_document_rejects_file_changed_after_read() {
+        let path = tempfile_dir().join("changed-during-read.txt");
+        std::fs::write(&path, b"before").unwrap();
+        let path_to_change = path.clone();
+
+        let result = open_document_with_after_read(&path, || {
+            std::fs::write(path_to_change, b"changed after read").unwrap();
+        });
+
+        assert!(matches!(result, Err(DocumentError::ChangedDuringRead)));
     }
 
     #[test]

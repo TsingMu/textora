@@ -139,6 +139,33 @@ describe("App open flow", () => {
     expect(container.querySelector(".document-tab")?.textContent).toContain("Untitled");
   });
 
+  it.each([
+    ["unsupported-encoding", "not valid UTF-8"],
+    ["changed-during-read", "changed while being read"],
+    ["read-failed", "could not be read"],
+  ] as const)("shows the %s error without replacing the document", async (code, message) => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        throw { code, message: "safe backend message" };
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await act(async () => {
+      root.render(<App />);
+    });
+    const openButton = container.querySelector<HTMLButtonElement>(".open-button");
+    await act(async () => {
+      openButton?.click();
+    });
+
+    expect(container.querySelector(".notice-error")?.textContent).toContain(message);
+    expect(container.querySelector(".document-tab")?.textContent).toContain("Untitled");
+  });
+
   it("reports a dialog failure instead of treating it as cancellation", async () => {
     invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "health_check") {
@@ -189,6 +216,11 @@ describe("App open flow", () => {
     expect(
       container.querySelector<HTMLElement>(".cm-content")?.getAttribute("contenteditable"),
     ).toBe("false");
+    expect(openButton?.disabled).toBe(true);
+    openButton?.click();
+    expect(
+      invokeMock.mock.calls.filter((call) => call[0] === "select_and_open_document"),
+    ).toHaveLength(1);
 
     await act(async () => {
       resolveSelection?.(null);

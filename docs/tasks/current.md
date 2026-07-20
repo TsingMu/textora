@@ -4,16 +4,17 @@
 
 ## 进行中
 
-### 接入本地文件打开流程
-
-- **状态**：实现与自动化验证完成；交互式 macOS 界面验证部分完成
-- **Feature Spec**：`docs/features/open-local-file.md`
-- **目标**：打通系统文件选择 → Rust 一致快照与严格解码 → 二进制 IPC → React 文档会话 → CodeMirror 编辑器的最小端到端流程。
-- **范围**：单文件打开、加载与错误状态、未保存内容保护、文档描述信息同步；不包含保存、多标签、拖放、快捷键或外部修改持续监听。
-- **结果**：Rust 侧新增 `src-tauri/src/ipc.rs`，定义稳定错误代码 `DocumentErrorCode`（kebab-case 序列化）与 `DocumentOpenError`，映射核心 `DocumentError` 且不泄露内部路径；无路径参数的 `select_and_open_document` 在 Rust 侧显示系统对话框，只读取用户实际选择的文件，并在 `OpenBuffer` 暂存解码后字节；`read_document_content` 仅在文档 ID 匹配时取出内容并以 `tauri::ipc::Response` 返回原始二进制。新增 Rust `tauri-plugin-dialog`，前端 capability 未新增 dialog、文件系统、shell 或网络权限。前端 `platform.ts` 增加描述符/编码/换行类型、二进制取回 API 与错误守卫；`documentSession.ts` 扩展为含 `path`/真实编码与换行/`openStatus`/`openErrorCode` 的状态机；`App.tsx` 接入“打开”入口、加载与错误通知、未保存放弃确认覆盖层，加载期间将 CodeMirror 动态设为只读，成功后经既有事务路径原子替换内容并恢复焦点。
-- **验证**：`cargo fmt --check`、`cargo check --all-targets`、`cargo test`（35 passed）、`npm run check`（typecheck + vitest 22 passed）、`npm run build` 与 `npm run tauri -- build` 均通过；`./script/build_and_run.sh --verify` 成功启动应用，macOS 界面已验证未保存确认的取消/确认分支、系统对话框取消保护，以及打开 UTF-8/LF 的 `README.md` 后描述信息、未修改状态和焦点正确。其余编码/错误样本与 Windows 验证尚未执行，详见 Feature Spec 验证记录。
+暂无已承诺且进行中的任务。下一候选为 Rust 文档编码与安全保存核心，尚未进入 Current Tasks。
 
 ## 最近完成
+
+### 接入本地文件打开流程
+
+- **状态**：已完成
+- **完成日期**：2026-07-20
+- **Feature Spec**：`docs/features/open-local-file.md`
+- **结果**：打通系统文件选择、Rust 一致快照与严格解码、二进制 IPC、React 文档会话和 CodeMirror 编辑器。错误使用稳定代码映射且不泄露内部路径；读取失败前不替换原文档；加载期间编辑器只读且不可重复触发；前端未获得宽泛文件系统、shell 或网络权限。
+- **验证**：`cargo fmt --check`、`cargo check --all-targets`、`cargo test`（40 passed）、`npm run check`（typecheck + vitest 25 passed）、`npm run build` 与 `npm run tauri -- build` 均通过；macOS 原生界面已验证确认与取消保护、UTF-8/ASCII/UTF-8 BOM/CP936 成功路径、继续输入与焦点，以及非法编码、GB18030 四字节和超过 50 MiB 的错误保护。读取失败、读取期间变化、加载只读与禁止重复触发由确定性自动化测试覆盖。Windows 尚未验证。
 
 ### 修复编辑器输入后失焦
 
@@ -55,5 +56,5 @@
 - 已确认 macOS 13+ 与 Windows 10 22H2+ 双平台范围、Tauri 技术栈、50 MiB 上限和 UTF-8/GBK 编码边界。
 - 可运行工程基线已完成并通过 macOS 验证；Windows 构建与启动仍需在对应环境执行。
 - 基础文本编辑 Feature Spec 已确认。Rust 文档读取与识别核心已完成并通过 macOS 的 fmt/test/check/tauri build 验证：`analyze(&[u8])` 为纯字节分析，内部 `open_document(&Path)` 继续负责一致快照与严格解码。
-- 当前本地文件打开切片已完成实现与自动化验证：无路径参数的 Tauri `select_and_open_document` 在 Rust 侧选择并打开文件，`read_document_content` 通过原始二进制响应传输内容；前端 capability 未获得 dialog、文件系统、shell 或网络权限。
-- 交互式 macOS 已验证未保存确认、系统对话框取消和 UTF-8/LF 文件成功打开；ASCII、UTF-8 BOM、CP936、各类错误拒绝及 Windows 验证待执行。保存、原子替换、多标签和外部修改持续监听不在本次范围。
+- 本地文件打开切片已完成实现、自动化验证与 macOS 原生界面验收：无路径参数的 Tauri `select_and_open_document` 在 Rust 侧选择并打开文件，`read_document_content` 通过原始二进制响应传输内容；前端 capability 未获得 dialog、文件系统、shell 或网络权限。
+- Windows 文件打开验证仍需在对应环境执行。保存、原子替换、多标签和外部修改持续监听不在本次范围；下一候选为 Rust 文档编码与安全保存核心，尚未承诺实施。

@@ -1,6 +1,6 @@
 # 打开本地文本文件
 
-> 状态：实现中
+> 状态：已完成
 
 ## 背景与目标
 
@@ -50,15 +50,15 @@
 
 ## 验收条件
 
-- [ ] 用户可以通过系统文件对话框选择并打开一个本地文件。
-- [ ] ASCII、UTF-8、UTF-8 BOM 和合法 CP936 文件内容正确显示，文件名、编码和换行信息正确。
-- [ ] 打开成功后文档为未修改状态，继续输入后内容和未保存状态正常更新，编辑器焦点不会因会话同步丢失。
-- [ ] 用户取消文件对话框时，当前文档内容和状态不变。
-- [ ] 当前文档已修改时，取消放弃确认会保留内容；确认后才允许后续文件选择和替换。
-- [ ] 非法编码、GB18030 四字节、超过 50 MiB、读取失败或读取期间变化均被明确拒绝，当前文档不变。
-- [ ] 加载期间不能重复启动打开流程，完成或失败后入口恢复可用。
-- [ ] 大文本内容经二进制 IPC 传输，前端未获得宽泛文件系统权限。
-- [ ] macOS 13+ 与 Windows 10 22H2+ / Windows 11 的行为设计一致；无法在当前环境验证的平台必须明确记录。
+- [x] 用户可以通过系统文件对话框选择并打开一个本地文件。
+- [x] ASCII、UTF-8、UTF-8 BOM 和合法 CP936 文件内容正确显示，文件名、编码和换行信息正确。
+- [x] 打开成功后文档为未修改状态，继续输入后内容和未保存状态正常更新，编辑器焦点不会因会话同步丢失。
+- [x] 用户取消文件对话框时，当前文档内容和状态不变。
+- [x] 当前文档已修改时，取消放弃确认会保留内容；确认后才允许后续文件选择和替换。
+- [x] 非法编码、GB18030 四字节、超过 50 MiB、读取失败或读取期间变化均被明确拒绝，当前文档不变。
+- [x] 加载期间不能重复启动打开流程，完成或失败后入口恢复可用。
+- [x] 大文本内容经二进制 IPC 传输，前端未获得宽泛文件系统权限。
+- [x] macOS 13+ 与 Windows 10 22H2+ / Windows 11 的行为设计一致；无法在当前环境验证的平台必须明确记录。
 
 ## 依赖与约束
 
@@ -73,22 +73,21 @@
 
 ## 验证记录
 
-实现与自动化验证已完成（2026-07-20），交互式 macOS 界面验证已部分完成，剩余编码/错误样本与 Windows 验证待执行。
+实现、自动化验证与 macOS 交互验收已完成（2026-07-20）。Windows 验证因当前环境不可用而保留为平台待验证项。
 
 已执行：
 
 - `cargo fmt --manifest-path src-tauri/Cargo.toml --check` 通过。
 - `cargo check --manifest-path src-tauri/Cargo.toml --all-targets` 通过。
-- `cargo test --manifest-path src-tauri/Cargo.toml` 通过（35 passed / 0 failed，含 IPC 错误代码映射、错误消息不泄露内部路径、错误文档 ID 不消耗有效 `OpenBuffer`）。
-- `npm run check` 通过（typecheck + vitest 22 passed / 0 failed，覆盖会话状态机、取消对话框保持原文档、对话框异常与 `file-too-large` 错误通知、加载期间编辑器只读、编码/换行显示与错误守卫、CodeMirror 内容同步后焦点保持）。
+- `cargo test --manifest-path src-tauri/Cargo.toml` 通过（40 passed / 0 failed，新增真实文件级 ASCII、UTF-8 BOM、CP936、非法编码、GB18030 四字节、超过 50 MiB 与读取期间变化夹具；同时覆盖 IPC 错误代码映射、错误消息不泄露内部路径、错误文档 ID 不消耗有效 `OpenBuffer`）。
+- `npm run check` 通过（typecheck + vitest 25 passed / 0 failed，覆盖会话状态机、取消对话框保持原文档、所有稳定错误代码的通知、失败后原文档保护、加载期间编辑器只读且不能重复打开、编码/换行显示与错误守卫、CodeMirror 内容同步后焦点保持）。
 - `npm run build` 通过。
 - `npm run tauri -- build` 通过并生成 `Textora.app`；系统对话框由 Rust 命令调用，capability 未新增 dialog、文件系统、shell 或网络权限。
-- `./script/build_and_run.sh --verify` 成功启动 macOS 应用；界面验证未保存确认取消保留原内容、确认放弃后弹出系统 Open 面板、取消系统面板仍保留原内容，以及成功打开 UTF-8/LF 的 `README.md` 后文件名、编码、换行、未修改状态和编辑器焦点正确。
+- `./script/build_and_run.sh --verify` 成功启动 macOS 应用；通过原生 Open 面板验证未保存确认取消/确认、系统面板取消，以及 UTF-8/LF、ASCII/LF、UTF-8 BOM/CRLF、CP936/CRLF 文件的内容、文件名、编码、换行、未修改状态和编辑器焦点正确；继续输入后修改状态正确且焦点未丢失。
+- macOS 原生界面验证非法编码、GB18030 四字节和超过 50 MiB 文件分别显示明确错误，既有 CP936 文档内容、文件名和未修改状态均保持不变。读取失败、读取期间变化、加载只读和禁止重复触发由确定性的 Rust/前端自动化用例覆盖，避免依赖不可稳定复现的文件系统竞态和短暂加载窗口。
 
 内容传输路径：前端调用无路径参数的 `select_and_open_document`，Rust 显示系统对话框并只读取用户实际选择的文件，返回 JSON 元数据并在后端 `OpenBuffer` 暂存解码后的 UTF-8 字节；`read_document_content` 校验文档 ID 后以 `tauri::ipc::Response` 返回原始字节，前端经 `ArrayBuffer` + `TextDecoder` 还原，未编码为 JSON 数字数组或大字符串。
 
-待执行（需人工或对应平台）：
+平台待验证：
 
-- 在 macOS 通过系统对话框继续验证 ASCII、UTF-8 BOM、合法 CP936 样本，以及打开后继续输入的脏状态。
-- 在 macOS 验证加载期间不可重复触发，以及非法编码/GB18030 四字节/超 50 MiB/读取期间变化被明确拒绝且原文档不变。
-- Windows 10 22H2+ / Windows 11 构建与启动验证。
+- Windows 10 22H2+ / Windows 11 构建、启动与原生文件对话框验证；当前 macOS 环境无法执行，不作为本切片完成阻塞项。
