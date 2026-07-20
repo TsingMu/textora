@@ -1,5 +1,7 @@
 use serde::Serialize;
 
+pub mod document;
+
 #[derive(Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct HealthStatus {

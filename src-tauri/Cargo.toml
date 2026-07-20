@@ -20,3 +20,10 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
+# encoding_rs 提供字符映射；前置成员校验确保其 GBK 超集行为不会放宽 CP936。
+# GB18030 四字节序列由本工程的帧结构校验层显式拒绝；解码 had_errors 为真则整体拒绝，不外泄替换字符。
+encoding_rs = "0.8"
+# 用于文件指纹的稳定内容哈希；std 的 DefaultHasher 不保证跨版本稳定，故使用 SHA-256。
+sha2 = "0.10"
+# 跨平台比较已打开句柄与路径当前指向的文件，检测读取期间原子替换。
+same-file = "1"
