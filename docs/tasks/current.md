@@ -4,7 +4,19 @@
 
 ## 进行中
 
-暂无已承诺且进行中的任务。下一个候选切片（将文档核心接入二进制 IPC 与前端会话、或实现保存与原子替换）尚未承诺，相关想法见 `backlog.md`。
+### 接入本地文件打开流程
+
+- **状态**：待实现
+- **Feature Spec**：`docs/features/open-local-file.md`
+- **目标**：打通系统文件选择 → Rust 一致快照与严格解码 → 二进制 IPC → React 文档会话 → CodeMirror 编辑器的最小端到端流程。
+- **范围**：单文件打开、加载与错误状态、未保存内容保护、文档描述信息同步；不包含保存、多标签、拖放、快捷键或外部修改持续监听。
+- **实施步骤**：
+  1. 接入系统文件对话框，并只开放完成单文件选择所需的最小权限。
+  2. 为 Rust 文档核心增加受限 Tauri 命令和稳定错误代码；元数据保持小型结构化响应，Unicode 内容通过原始二进制响应传输。
+  3. 扩展前端文档会话类型，接入打开、加载、取消、错误和未保存确认状态。
+  4. 将成功快照原子替换到编辑器，更新文件名、编码、换行与修改状态，并保持 CodeMirror 实例和焦点行为稳定。
+  5. 补充 Rust IPC、TypeScript 会话和 DOM 回归测试，并用 ASCII、UTF-8 BOM、CP936、非法编码及超限文件做 macOS 界面验证。
+- **完成条件**：满足 Feature Spec 验收条件；运行 `npm run check`、`npm run build`、`cargo fmt --manifest-path src-tauri/Cargo.toml --check`、`cargo test --manifest-path src-tauri/Cargo.toml` 和 `npm run tauri -- build`；只记录实际通过的结果，Windows 未验证时明确保留。
 
 ## 最近完成
 
@@ -48,4 +60,4 @@
 - 已确认 macOS 13+ 与 Windows 10 22H2+ 双平台范围、Tauri 技术栈、50 MiB 上限和 UTF-8/GBK 编码边界。
 - 可运行工程基线已完成并通过 macOS 验证；Windows 构建与启动仍需在对应环境执行。
 - 基础文本编辑 Feature Spec 已确认。Rust 文档读取与识别核心已完成并通过 macOS 的 fmt/test/check/tauri build 验证：`analyze(&[u8])` 为纯字节分析，`open_document(&Path)` 为内部读取接口，二者均未暴露为 Tauri 命令，前端暂无文件系统能力。
-- 下一候选切片尚未承诺：把文档核心接入二进制 IPC 与 React/CodeMirror 会话，或实现保存与原子替换、外部修改检测交互。
+- 当前已承诺下一切片：按 `docs/features/open-local-file.md` 接入单文件打开、二进制 IPC 与 React/CodeMirror 会话；保存、原子替换、多标签和外部修改持续监听不在本次范围。
