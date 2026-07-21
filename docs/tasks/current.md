@@ -4,9 +4,24 @@
 
 ## 进行中
 
-暂无已承诺且进行中的任务。下一候选为 Rust 文档编码与安全保存核心，尚未进入 Current Tasks。
+### 接入已打开文件的普通保存流程
+
+- **状态**：待实现
+- **Feature Spec**：`docs/features/save-opened-file.md`
+- **目标**：把已完成的 Rust 安全保存核心接入受限二进制 IPC、后端文档状态和当前单文档前端会话，使用户能把已打开文件安全保存回原路径；失败时保留内容与未保存状态。
+- **范围边界**：本任务只交付已打开文件的普通保存。新建文档首次保存、另存为、编码转换、Mixed 换行选择、冲突解决、关闭保护和多标签均不在本任务范围。
+- **执行顺序**：先建立后端文档 ID 到可信路径/指纹/编码/换行/只读信息的绑定及保存错误契约，再接入二进制内容请求与保存命令；随后扩展前端会话保存状态、可发现入口和成功/失败提示；最后完成 Rust/前端自动化验证、构建及 macOS 真实文件验收。
+- **完成标准**：满足 Feature Spec 全部验收条件；至少执行 Rust 格式化、静态检查和测试，前端类型检查与测试、生产构建、Tauri 构建及 macOS 交互验收；Windows 未能执行的验证必须如实保留。
 
 ## 最近完成
+
+### 实现 Rust 文档编码与安全保存核心
+
+- **状态**：已完成
+- **完成日期**：2026-07-21
+- **Feature Spec**：`docs/features/safe-save-core.md`
+- **结果**：在 `src-tauri/src/document/` 增加可独立验证的保存核心，未接入 IPC 与界面。`encoding.rs` 的 `encode`：UTF-8（可选加一个 BOM，文本内 U+FEFF 原样保留）、严格 CP936；可表示性用「`encoding_rs::GBK` 无替换编码 + `validate_cp936_structure` 严格帧校验」判定；GBK 普通保存还要求经现有打开流程重开后仍识别为 GBK 且内容一致，否则返回 `EncodingAmbiguous`（纯 ASCII/空也因编码身份无法保持而拒绝，见 D-006）。`line_ending.rs` 的 `normalize` 统一到 LF/CRLF，`Mixed` 返回错误。`save.rs` 的 `save_document`：先 `canonicalize` 解析符号链接到真实目标，再对真实目标做「描述符只读前置 → 规范化与编码 → 50 MiB 限制 → 初次冲突检测 → 初次只读快检 → 同目录原子替换」（`rename` 前再次校验冲突与只读/权限）；原子替换用标准库 `OpenOptions::create_new` + `fs::rename`（无新依赖），任一步失败清理临时文件、原文件不变。**冲突检测与只读/权限保护均为 best-effort**：再次校验/权限设置与 `rename` 之间残留狭窄 TOCTOU 窗口（跨平台无严格 CAS/权限原子替换），规格与代码注释据此降级。`test_support.rs` 的 `TestDir`（PID+纳秒+RAII）消除跨进程撞名。`error.rs` 含 `ReadOnly`、`MixedLineEndingNotChosen`、`UnencodableContent { character, byte_offset }`、`SaveConflict`、`EncodingAmbiguous`，`Io` 仅 OS 文本不泄露临时路径。长期规格已同步：`DECISIONS.md` D-006、`basic-text-editing.md` 行为规则；`README.md` 改为「已完成」。
+- **验证**：`cargo fmt --check`、`cargo check --all-targets`、`git diff --check` 通过；`cargo test` 默认并发 **68 passed**、`--test-threads=1` 串行 68 passed、两测试二进制进程并发各 68 passed（PID 临时目录隔离）；`npm run check` 通过（25 passed，未改前端）；`npm run tauri -- build` 通过并生成 `Textora.app`。覆盖三编码往返、纯 ASCII/空以 GBK 保存时因无法保持编码身份而拒绝、「一」`EncodingAmbiguous` 拒绝且证明误读、「一 中」混排可编码重开、BOM 恰好一个、LF/CRLF/Mixed、CP936 不可表示字符位置、50 MiB 超限、缺失/外部修改冲突、best-effort 再次校验保留外部内容并清临时文件、只读前置拒绝、打开后变只读重检、`before_replace` 阶段 `chmod 0444` 最终重检拒绝、`0600` 保留、只读目录模拟创建失败、**符号链接保存链接保留且目标更新**、成功无临时残留且指纹与磁盘一致。Clippy 未运行（stable 工具链缺组件）。Windows 的 rename/符号链接/NTFS 权限行为待对应环境确认。
 
 ### 接入本地文件打开流程
 
@@ -57,4 +72,5 @@
 - 可运行工程基线已完成并通过 macOS 验证；Windows 构建与启动仍需在对应环境执行。
 - 基础文本编辑 Feature Spec 已确认。Rust 文档读取与识别核心已完成并通过 macOS 的 fmt/test/check/tauri build 验证：`analyze(&[u8])` 为纯字节分析，内部 `open_document(&Path)` 继续负责一致快照与严格解码。
 - 本地文件打开切片已完成实现、自动化验证与 macOS 原生界面验收：无路径参数的 Tauri `select_and_open_document` 在 Rust 侧选择并打开文件，`read_document_content` 通过原始二进制响应传输内容；前端 capability 未获得 dialog、文件系统、shell 或网络权限。
-- Windows 文件打开验证仍需在对应环境执行。保存、原子替换、多标签和外部修改持续监听不在本次范围；下一候选为 Rust 文档编码与安全保存核心，尚未承诺实施。
+- Windows 文件打开验证仍需在对应环境执行。Rust 文档编码与安全保存核心已完成审查修复并通过 macOS 验证（fmt/check/test 68 并发+串行+跨进程/tauri build/git diff --check；Clippy 因组件缺失未运行）：`save_document` 为内部接口（未暴露为 Tauri 命令）；CP936 可表示性用「无替换编码 + 严格帧校验」判定，普通保存还要求重开后仍识别为 GBK 且内容一致，否则返回 `EncodingAmbiguous`（纯 ASCII/空因编码身份无法保持也拒绝，见 D-006）；保存先 `canonicalize` 解析符号链接到真实目标再原子替换（链接保留、目标更新）；冲突检测与只读/权限保护均为 best-effort（再次校验/权限设置与 rename 之间残留 TOCTOU，规格已如实降级）；测试临时目录 PID+纳秒+RAII。
+- 下一项已承诺任务为 `save-opened-file.md`：只接入已打开文件的普通保存，后端以文档 ID 绑定可信路径与保存元数据，正文使用二进制 IPC；另存为、编码转换、Mixed 换行选择、冲突解决、关闭保护与多标签留待后续切片。

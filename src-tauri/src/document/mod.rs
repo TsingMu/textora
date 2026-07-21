@@ -7,6 +7,10 @@ pub mod encoding;
 pub mod error;
 pub mod fingerprint;
 pub mod line_ending;
+pub mod save;
+
+#[cfg(test)]
+pub(crate) mod test_support;
 
 use std::fs::{File, Metadata};
 use std::io::Read;
@@ -20,6 +24,7 @@ pub use encoding::TextEncoding;
 pub use error::DocumentError;
 pub use fingerprint::FileFingerprint;
 pub use line_ending::LineEnding;
+pub use save::{SaveOutcome, SaveRequest};
 
 /// 首版单文件最大字节数：50 MiB。`size <= MAX` 可接受，`size > MAX` 明确失败。
 pub const MAX_FILE_SIZE_BYTES: u64 = 50 * 1024 * 1024;
@@ -90,7 +95,7 @@ pub fn analyze(bytes: &[u8]) -> Result<DocumentSnapshot, DocumentError> {
     })
 }
 
-fn read_bounded<R: Read>(
+pub(crate) fn read_bounded<R: Read>(
     reader: &mut R,
     expected_size: u64,
     limit: u64,
@@ -171,6 +176,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::document::test_support::TestDir;
 
     #[test]
     fn check_size_accepts_boundary_and_rejects_over() {
@@ -230,7 +236,7 @@ mod tests {
 
     #[test]
     fn open_document_reads_and_describes_file() {
-        let dir = tempfile_dir();
+        let dir = TestDir::new();
         let path = dir.join("cp936-crlf.txt");
         // GBK “中文”，CRLF。
         std::fs::write(&path, [0xD6, 0xD0, 0xCE, 0xC4, 0x0D, 0x0A]).unwrap();
@@ -252,7 +258,8 @@ mod tests {
 
     #[test]
     fn open_document_reads_ascii_fixture_as_utf8() {
-        let path = tempfile_dir().join("ascii-lf.txt");
+        let dir = TestDir::new();
+        let path = dir.join("ascii-lf.txt");
         std::fs::write(&path, b"plain ASCII\n").unwrap();
 
         let opened = open_document(&path).unwrap();
@@ -266,7 +273,8 @@ mod tests {
 
     #[test]
     fn open_document_reads_utf8_bom_fixture() {
-        let path = tempfile_dir().join("utf8-bom-crlf.txt");
+        let dir = TestDir::new();
+        let path = dir.join("utf8-bom-crlf.txt");
         std::fs::write(&path, [0xEF, 0xBB, 0xBF, b'h', b'i', 0x0D, 0x0A]).unwrap();
 
         let opened = open_document(&path).unwrap();
@@ -277,7 +285,7 @@ mod tests {
 
     #[test]
     fn open_document_rejects_invalid_and_gb18030_fixtures() {
-        let dir = tempfile_dir();
+        let dir = TestDir::new();
         let invalid = dir.join("invalid-encoding.bin");
         let gb18030 = dir.join("gb18030-four-byte.bin");
         std::fs::write(&invalid, [0xFF]).unwrap();
@@ -295,7 +303,8 @@ mod tests {
 
     #[test]
     fn open_document_rejects_sparse_fixture_over_limit() {
-        let path = tempfile_dir().join("over-50-mib.txt");
+        let dir = TestDir::new();
+        let path = dir.join("over-50-mib.txt");
         let file = File::create(&path).unwrap();
         file.set_len(MAX_FILE_SIZE_BYTES + 1).unwrap();
 
@@ -307,7 +316,8 @@ mod tests {
 
     #[test]
     fn open_document_rejects_file_changed_after_read() {
-        let path = tempfile_dir().join("changed-during-read.txt");
+        let dir = TestDir::new();
+        let path = dir.join("changed-during-read.txt");
         std::fs::write(&path, b"before").unwrap();
         let path_to_change = path.clone();
 
@@ -320,15 +330,8 @@ mod tests {
 
     #[test]
     fn open_document_rejects_missing_file_without_writing() {
-        let path = std::env::temp_dir().join("textora_definitely_missing_95c7.txt");
-        let _ = std::fs::remove_file(&path);
+        let dir = TestDir::new();
+        let path = dir.join("definitely-missing.txt");
         assert!(matches!(open_document(&path), Err(DocumentError::Io(_))));
-    }
-
-    /// 共享的测试输出目录，位于进程临时目录下。
-    fn tempfile_dir() -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join("textora_doc_core_tests");
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
     }
 }

@@ -40,6 +40,103 @@ pub fn detect_and_decode(bytes: &[u8]) -> Result<(TextEncoding, String), Documen
     Ok((TextEncoding::Gbk, cow.into_owned()))
 }
 
+/// 将 Unicode 文本严格编码为目标字节。
+///
+/// - `Utf8 { bom: true }`：由编码层添加且仅添加一个 UTF-8 BOM；文本内容中既有的
+///   U+FEFF 原样保留，不会被删改。
+/// - `Utf8 { bom: false }`：纯 UTF-8，不添加 BOM。
+/// - `Gbk`：严格 CP936。遇到无法表示的字符，或字符映射到 CP936 v2.01 未定义的位置
+///   时，返回 `UnencodableContent`，携带首个失败字符与其 UTF-8 字节偏移；编码结果若
+///   无法由本工程按 GBK 和原内容重开，则返回 `EncodingAmbiguous`。绝不插入替代字符。
+pub fn encode(content: &str, encoding: TextEncoding) -> Result<Vec<u8>, DocumentError> {
+    match encoding {
+        TextEncoding::Utf8 { bom } => {
+            let mut bytes = Vec::with_capacity(content.len() + 3);
+            if bom {
+                bytes.extend_from_slice(&[0xEF, 0xBB, 0xBF]);
+            }
+            bytes.extend_from_slice(content.as_bytes());
+            Ok(bytes)
+        }
+        TextEncoding::Gbk => encode_cp936(content),
+    }
+}
+
+fn encode_cp936(content: &str) -> Result<Vec<u8>, DocumentError> {
+    let (cow, _, had_errors) = encoding_rs::GBK.encode(content);
+    let bytes = cow.into_owned();
+
+    if had_errors || validate_cp936_structure(&bytes).is_err() {
+        let (byte_offset, character) = first_non_representable(content)
+            .expect("encoding failed, so at least one character is not strict-CP936-representable");
+        return Err(DocumentError::UnencodableContent {
+            character,
+            byte_offset,
+        });
+    }
+
+    // 可编码且为严格 CP936。只有这些字节经本工程打开流程后仍识别为 GBK 且内容一致，
+    // 才能满足普通保存保持编码与内容的约束。若字节也构成合法 UTF-8（包括纯 ASCII 与
+    // 空内容），重开会丢失 GBK 编码身份或得到不同内容，核心无法在带内可靠区分，故拒绝
+    // 并交由上层提示另存为 UTF-8（见 D-006）。
+    if !reopens_as_same_encoding_and_content(&bytes, content) {
+        return Err(DocumentError::EncodingAmbiguous);
+    }
+
+    Ok(bytes)
+}
+
+/// 编码后的字节经本工程打开流程能否仍识别为 GBK，并还原为同一内容。
+fn reopens_as_same_encoding_and_content(bytes: &[u8], expected: &str) -> bool {
+    matches!(
+        detect_and_decode(bytes),
+        Ok((TextEncoding::Gbk, ref decoded)) if decoded == expected
+    )
+}
+
+/// 判定文本能否被严格 CP936 完整编码：`encoding_rs::GBK` 能无替换编码（`had_errors`
+/// 为假），且编码后的字节全部落在 Microsoft CP936 v2.01 已定义的成员范围内（由
+/// `validate_cp936_structure` 校验）。
+///
+/// 不得改用 UTF-8 优先的 `detect_and_decode` 做可表示性判定：例如「一」（U+4E00）
+/// 的 GBK 字节 `D2 BB` 恰好也是合法的 UTF-8 双字节序列（解码为 U+04BB），会被
+/// 检测顺序误归为 UTF-8，从而把合法 CP936 字符误报为不可编码。
+fn cp936_encodable_strictly(content: &str) -> bool {
+    let (cow, _, had_errors) = encoding_rs::GBK.encode(content);
+    !had_errors && validate_cp936_structure(cow.as_ref()).is_ok()
+}
+
+/// 在已知无法严格编码的文本中，定位首个不可表示字符及其 UTF-8 字节偏移。
+///
+/// “前缀 [..p] 可严格编码” 单调（一旦为假保持为假），因此对字符边界做二分，找到
+/// 最小的不可编码前缀长度；其末尾字符即首个不可表示字符。
+fn first_non_representable(content: &str) -> Option<(usize, char)> {
+    let mut lo = 0usize;
+    let mut hi = content.len();
+    while hi - lo > 1 {
+        let mid = content.floor_char_boundary(lo + (hi - lo) / 2);
+        let probe = if mid <= lo {
+            // 中点退化为 lo，步进到下一个字符边界
+            let step = lo + content[lo..].chars().next()?.len_utf8();
+            if step >= hi {
+                break;
+            }
+            step
+        } else {
+            mid
+        };
+        if cp936_encodable_strictly(&content[..probe]) {
+            lo = probe;
+        } else {
+            hi = probe;
+        }
+    }
+    content[..hi]
+        .char_indices()
+        .next_back()
+        .map(|(offset, character)| (offset, character))
+}
+
 /// 按 Microsoft CP936 映射表校验字节：单字节 ASCII（含 0x80 → €）
 /// 与表中已定义的双字节序列。这不只检查引导/尾字节范围：
 /// `encoding_rs::GBK` 的解码端是 GB18030 超集，会接受 CP936 未定义的
@@ -233,5 +330,78 @@ mod tests {
             detect_and_decode(&bytes),
             Err(DocumentError::InvalidEncoding)
         ));
+    }
+
+    #[test]
+    fn encode_utf8_without_bom_preserves_content_and_adds_no_bom() {
+        let bytes = encode("café\n", TextEncoding::Utf8 { bom: false }).unwrap();
+        assert_eq!(bytes, "café\n".as_bytes());
+        assert!(!bytes.starts_with(&[0xEF, 0xBB, 0xBF]));
+    }
+
+    #[test]
+    fn encode_utf8_with_bom_adds_exactly_one_bom_and_keeps_inner_feff() {
+        // 文本自身包含一个 U+FEFF；编码层只能再添加一个 BOM，且不得删改既有 U+FEFF。
+        let content = "a\u{FEFF}b";
+        let bytes = encode(content, TextEncoding::Utf8 { bom: true }).unwrap();
+        assert_eq!(bytes, [0xEF, 0xBB, 0xBF, b'a', 0xEF, 0xBB, 0xBF, b'b']);
+    }
+
+    #[test]
+    fn encode_cp936_round_trips_with_strict_decode() {
+        let bytes = encode("中文 abc", TextEncoding::Gbk).unwrap();
+        let (encoding, decoded) = detect_and_decode(&bytes).unwrap();
+        assert_eq!(encoding, TextEncoding::Gbk);
+        assert_eq!(decoded, "中文 abc");
+    }
+
+    #[test]
+    fn encode_cp936_requires_reopen_as_gbk_with_same_content() {
+        // 「一」(U+4E00) 的 GBK 字节 D2 BB 恰为合法 UTF-8，按 UTF-8 优先重开会读成
+        // U+04BB——与原内容不同，故拒绝为 EncodingAmbiguous。
+        assert!(matches!(
+            encode("一", TextEncoding::Gbk),
+            Err(DocumentError::EncodingAmbiguous)
+        ));
+        let (encoding, decoded) = detect_and_decode(&[0xD2, 0xBB]).unwrap();
+        assert_eq!(encoding, TextEncoding::Utf8 { bom: false });
+        assert_eq!(decoded, "\u{4BB}");
+
+        // 纯 ASCII 与空内容虽能被 GBK 编码，但按 UTF-8 优先重开会丢失 GBK 编码身份，
+        // 因而不能满足普通保存保持编码的约束。
+        assert!(matches!(
+            encode("", TextEncoding::Gbk),
+            Err(DocumentError::EncodingAmbiguous)
+        ));
+        assert!(matches!(
+            encode("plain ascii", TextEncoding::Gbk),
+            Err(DocumentError::EncodingAmbiguous)
+        ));
+
+        // 「一」与字节并非合法 UTF-8 的字符（如「中」）混排时，整体按 GBK 重开，「一」
+        // 也能正确解码，故可正常保存。
+        let bytes = encode("一 中", TextEncoding::Gbk).unwrap();
+        let (encoding, decoded) = detect_and_decode(&bytes).unwrap();
+        assert_eq!(encoding, TextEncoding::Gbk);
+        assert_eq!(decoded, "一 中");
+    }
+
+    #[test]
+    fn encode_cp936_rejects_unrepresentable_character_with_position() {
+        // U+1F600（😀）在 CP936 中没有定义，必须在写入前失败。
+        let content = "前面 OK 然后不对：😀 结尾";
+        let err = encode(content, TextEncoding::Gbk).unwrap_err();
+        match err {
+            DocumentError::UnencodableContent {
+                character,
+                byte_offset,
+            } => {
+                assert_eq!(character, '😀');
+                // 偏移必须是字符边界，且精确指向首个不可表示字符。
+                assert!(content.is_char_boundary(byte_offset));
+                assert_eq!(&content[byte_offset..], "😀 结尾");
+            }
+            other => panic!("expected UnencodableContent, got {other:?}"),
+        }
     }
 }

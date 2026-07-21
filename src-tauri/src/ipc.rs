@@ -56,6 +56,27 @@ impl DocumentOpenError {
             DocumentError::Io(_) => {
                 Self::new(DocumentErrorCode::ReadFailed, "file could not be read")
             }
+            // 以下变体属于保存路径，打开流程不可达；保持穷尽匹配以防回归。
+            DocumentError::ReadOnly => Self::new(
+                DocumentErrorCode::ReadFailed,
+                "unexpected save-side error during open",
+            ),
+            DocumentError::MixedLineEndingNotChosen => Self::new(
+                DocumentErrorCode::ReadFailed,
+                "unexpected save-side error during open",
+            ),
+            DocumentError::UnencodableContent { .. } => Self::new(
+                DocumentErrorCode::ReadFailed,
+                "unexpected save-side error during open",
+            ),
+            DocumentError::SaveConflict => Self::new(
+                DocumentErrorCode::ReadFailed,
+                "unexpected save-side error during open",
+            ),
+            DocumentError::EncodingAmbiguous => Self::new(
+                DocumentErrorCode::ReadFailed,
+                "unexpected save-side error during open",
+            ),
         }
     }
 }
