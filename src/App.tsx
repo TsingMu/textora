@@ -2,10 +2,15 @@ import { useEffect, useState } from "react";
 import "./App.css";
 import {
   cancelOpen,
+  cancelSave,
   commitOpenedDocument,
+  commitSavedDocument,
   createNewDocument,
   failOpen,
+  failSave,
+  isBusy,
   requestOpen,
+  requestSave,
   startLoading,
   updateDocumentContent,
   type DocumentSession,
@@ -14,11 +19,14 @@ import { Editor } from "./Editor";
 import {
   checkBackendHealth,
   describeOpenError,
+  describeSaveError,
   encodingDisplayName,
-  isOpenError,
+  isDocumentCommandError,
   lineEndingDisplayName,
   readDocumentContent,
+  saveDocument,
   selectAndOpenDocument,
+  type DocumentCommandError,
   type HealthStatus,
 } from "./platform";
 
@@ -58,8 +66,20 @@ function App() {
       const content = new TextDecoder().decode(buffer);
       setSession((current) => commitOpenedDocument(current, descriptor, content));
     } catch (err) {
-      const code = isOpenError(err) ? err.code : "read-failed";
+      const code = isDocumentCommandError(err) ? err.code : "read-failed";
       setSession((current) => failOpen(current, code));
+    }
+  }
+
+  async function runSavePipeline(id: string, content: string) {
+    try {
+      const descriptor = await saveDocument(id, content);
+      setSession((current) => commitSavedDocument(current, descriptor));
+    } catch (err) {
+      const error: DocumentCommandError = isDocumentCommandError(err)
+        ? err
+        : { code: "save-failed", message: "save request failed" };
+      setSession((current) => failSave(current, error));
     }
   }
 
@@ -74,6 +94,17 @@ function App() {
     }
   }
 
+  function handleSaveClick() {
+    const next = requestSave(session);
+    if (next === session) {
+      return;
+    }
+    setSession(next);
+    if (next.saveStatus === "saving") {
+      void runSavePipeline(next.id, next.content);
+    }
+  }
+
   function handleConfirmDiscard() {
     setSession((current) => startLoading(current));
     void runOpenPipeline();
@@ -83,12 +114,22 @@ function App() {
     setSession((current) => cancelOpen(current));
   }
 
-  function handleDismissError() {
+  function handleDismissOpenError() {
     setSession((current) => cancelOpen(current));
   }
 
-  const openDisabled =
-    session.openStatus === "loading" || session.openStatus === "awaiting-discard-confirm";
+  function handleDismissSaveError() {
+    setSession((current) => cancelSave(current));
+  }
+
+  const busy = isBusy(session);
+  const editorLocked =
+    session.openStatus === "loading" || session.saveStatus === "saving";
+  const canSave =
+    session.path !== null &&
+    session.isDirty &&
+    !session.readOnly &&
+    !busy;
 
   return (
     <main className="app-shell">
@@ -102,10 +143,19 @@ function App() {
             type="button"
             className="open-button"
             onClick={handleOpenClick}
-            disabled={openDisabled}
+            disabled={busy}
             aria-label="Open a text file"
           >
             Open…
+          </button>
+          <button
+            type="button"
+            className="save-button"
+            onClick={handleSaveClick}
+            disabled={!canSave}
+            aria-label="Save the current file"
+          >
+            Save
           </button>
         </div>
         <div className="backend-state" aria-live="polite">
@@ -131,7 +181,7 @@ function App() {
         <div className="editor-panel">
           <Editor
             content={session.content}
-            disabled={session.openStatus === "loading"}
+            disabled={editorLocked}
             onChange={(content) => {
               setSession((current) => updateDocumentContent(current, content));
             }}
@@ -139,10 +189,21 @@ function App() {
           {session.openStatus === "loading" && (
             <div className="notice notice-loading" role="status">Opening…</div>
           )}
+          {session.saveStatus === "saving" && (
+            <div className="notice notice-loading" role="status">Saving…</div>
+          )}
           {session.openStatus === "error" && session.openErrorCode !== null && (
             <div className="notice notice-error" role="alert">
               <span>{describeOpenError(session.openErrorCode)}</span>
-              <button type="button" className="notice-dismiss" onClick={handleDismissError}>
+              <button type="button" className="notice-dismiss" onClick={handleDismissOpenError}>
+                Dismiss
+              </button>
+            </div>
+          )}
+          {session.saveStatus === "error" && session.saveError !== null && (
+            <div className="notice notice-error" role="alert">
+              <span>{describeSaveError(session.saveError)}</span>
+              <button type="button" className="notice-dismiss" onClick={handleDismissSaveError}>
                 Dismiss
               </button>
             </div>

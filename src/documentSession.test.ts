@@ -1,11 +1,16 @@
 import { describe, expect, it } from "vitest";
-import type { DocumentDescriptor } from "./platform";
+import type { DocumentCommandError, DocumentDescriptor } from "./platform";
 import {
   cancelOpen,
+  cancelSave,
   commitOpenedDocument,
+  commitSavedDocument,
   createNewDocument,
   failOpen,
+  failSave,
+  isBusy,
   requestOpen,
+  requestSave,
   startLoading,
   updateDocumentContent,
 } from "./documentSession";
@@ -21,6 +26,18 @@ const sampleDescriptor: DocumentDescriptor = {
   readOnly: true,
 };
 
+const readOnlyDescriptor: DocumentDescriptor = { ...sampleDescriptor, readOnly: true };
+const saveConflictError: DocumentCommandError = {
+  code: "save-conflict",
+  message: "file changed",
+};
+
+function openedDirty(): ReturnType<typeof createNewDocument> {
+  const writable: DocumentDescriptor = { ...sampleDescriptor, readOnly: false };
+  const opened = commitOpenedDocument(createNewDocument(), writable, "initial");
+  return updateDocumentContent(opened, "edited");
+}
+
 describe("document session", () => {
   it("creates a clean untitled UTF-8 LF document", () => {
     expect(createNewDocument("untitled-1")).toEqual({
@@ -34,6 +51,8 @@ describe("document session", () => {
       isDirty: false,
       openStatus: "idle",
       openErrorCode: null,
+      saveStatus: "idle",
+      saveError: null,
     });
   });
 
@@ -107,5 +126,74 @@ describe("open flow state machine", () => {
     const committed = commitOpenedDocument(errored, sampleDescriptor, "recovered");
     expect(committed.openStatus).toBe("idle");
     expect(committed.openErrorCode).toBeNull();
+  });
+});
+
+describe("save flow state machine", () => {
+  it("requests saving only for a dirty, opened, writable, idle document", () => {
+    const fresh = createNewDocument();
+    expect(requestSave(fresh)).toBe(fresh); // no path
+
+    const readOnlyOpened = updateDocumentContent(
+      commitOpenedDocument(createNewDocument(), readOnlyDescriptor, "x"),
+      "edited",
+    );
+    expect(requestSave(readOnlyOpened)).toBe(readOnlyOpened); // read-only
+
+    const opened = commitOpenedDocument(createNewDocument(), sampleDescriptor, "x");
+    const writableOpened = { ...opened, readOnly: false };
+    expect(requestSave(writableOpened)).toBe(writableOpened); // not dirty
+
+    const next = requestSave(openedDirty());
+    expect(next.saveStatus).toBe("saving");
+    expect(next.saveError).toBeNull();
+  });
+
+  it("does not start a save while open or another save is active", () => {
+    const saving = { ...openedDirty(), saveStatus: "saving" } as const;
+    expect(requestSave(saving)).toBe(saving);
+
+    const opening = { ...openedDirty(), openStatus: "loading" } as const;
+    expect(requestSave(opening)).toBe(opening);
+  });
+
+  it("commitSavedDocument clears dirty and save state without changing content", () => {
+    const dirty = openedDirty();
+    const committed = commitSavedDocument(dirty, { ...sampleDescriptor, readOnly: false });
+    expect(committed.isDirty).toBe(false);
+    expect(committed.saveStatus).toBe("idle");
+    expect(committed.saveError).toBeNull();
+    expect(committed.content).toBe("edited");
+  });
+
+  it("failSave records the error and keeps content and dirty state", () => {
+    const failed = failSave(openedDirty(), saveConflictError);
+    expect(failed.saveStatus).toBe("error");
+    expect(failed.saveError).toEqual(saveConflictError);
+    expect(failed.isDirty).toBe(true);
+    expect(failed.content).toBe("edited");
+  });
+
+  it("cancelSave returns to idle while preserving content", () => {
+    const failed = failSave(openedDirty(), saveConflictError);
+    const cancelled = cancelSave(failed);
+    expect(cancelled.saveStatus).toBe("idle");
+    expect(cancelled.saveError).toBeNull();
+    expect(cancelled.isDirty).toBe(true);
+  });
+
+  it("isBusy is true during open loading, awaiting confirm, and saving", () => {
+    expect(isBusy(createNewDocument())).toBe(false);
+    expect(isBusy(startLoading(createNewDocument()))).toBe(true);
+    expect(isBusy({ ...openedDirty(), saveStatus: "saving" })).toBe(true);
+    expect(isBusy({ ...openedDirty(), openStatus: "awaiting-discard-confirm" })).toBe(true);
+    expect(
+      isBusy(
+        failSave(openedDirty(), {
+          code: "read-only",
+          message: "read only",
+        }),
+      ),
+    ).toBe(false);
   });
 });

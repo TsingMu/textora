@@ -1,4 +1,5 @@
 import type {
+  DocumentCommandError,
   DocumentDescriptor,
   DocumentErrorCode,
   LineEnding,
@@ -11,6 +12,8 @@ export type OpenStatus =
   | "awaiting-discard-confirm"
   | "error";
 
+export type SaveStatus = "idle" | "saving" | "error";
+
 export type DocumentSession = {
   id: string;
   path: string | null;
@@ -22,6 +25,8 @@ export type DocumentSession = {
   isDirty: boolean;
   openStatus: OpenStatus;
   openErrorCode: DocumentErrorCode | null;
+  saveStatus: SaveStatus;
+  saveError: DocumentCommandError | null;
 };
 
 export function createNewDocument(id = "untitled-1"): DocumentSession {
@@ -36,6 +41,8 @@ export function createNewDocument(id = "untitled-1"): DocumentSession {
     isDirty: false,
     openStatus: "idle",
     openErrorCode: null,
+    saveStatus: "idle",
+    saveError: null,
   };
 }
 
@@ -94,5 +101,55 @@ export function commitOpenedDocument(
     isDirty: false,
     openStatus: "idle",
     openErrorCode: null,
+    saveStatus: "idle",
+    saveError: null,
+  };
+}
+
+/// 任意打开或保存流程进行中时视为忙碌，禁止并发文件操作。
+export function isBusy(document: DocumentSession): boolean {
+  return (
+    document.openStatus === "loading" ||
+    document.openStatus === "awaiting-discard-confirm" ||
+    document.saveStatus === "saving"
+  );
+}
+
+/// 请求普通保存。仅当已打开（有路径）、已修改、且当前不忙碌时进入保存态；
+/// 新建文档、未修改或忙碌时返回原会话（入口应由调用方禁用）。
+export function requestSave(document: DocumentSession): DocumentSession {
+  if (
+    document.path === null ||
+    !document.isDirty ||
+    isBusy(document) ||
+    document.readOnly
+  ) {
+    return document;
+  }
+  return { ...document, saveStatus: "saving", saveError: null };
+}
+
+export function failSave(
+  document: DocumentSession,
+  error: DocumentCommandError,
+): DocumentSession {
+  return { ...document, saveStatus: "error", saveError: error };
+}
+
+export function cancelSave(document: DocumentSession): DocumentSession {
+  return { ...document, saveStatus: "idle", saveError: null };
+}
+
+/// 保存成功：清除未保存标记与保存状态。内容保持为用户当前所见（与提交一致）。
+export function commitSavedDocument(
+  document: DocumentSession,
+  descriptor: DocumentDescriptor,
+): DocumentSession {
+  return {
+    ...document,
+    isDirty: false,
+    saveStatus: "idle",
+    saveError: null,
+    readOnly: descriptor.readOnly,
   };
 }

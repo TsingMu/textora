@@ -6,12 +6,10 @@
 
 ### 接入已打开文件的普通保存流程
 
-- **状态**：待实现
+- **状态**：实现与自动化验证完成，待交互式 macOS 真实保存验收；Windows 验证待对应环境执行
 - **Feature Spec**：`docs/features/save-opened-file.md`
-- **目标**：把已完成的 Rust 安全保存核心接入受限二进制 IPC、后端文档状态和当前单文档前端会话，使用户能把已打开文件安全保存回原路径；失败时保留内容与未保存状态。
-- **范围边界**：本任务只交付已打开文件的普通保存。新建文档首次保存、另存为、编码转换、Mixed 换行选择、冲突解决、关闭保护和多标签均不在本任务范围。
-- **执行顺序**：先建立后端文档 ID 到可信路径/指纹/编码/换行/只读信息的绑定及保存错误契约，再接入二进制内容请求与保存命令；随后扩展前端会话保存状态、可发现入口和成功/失败提示；最后完成 Rust/前端自动化验证、构建及 macOS 真实文件验收。
-- **完成标准**：满足 Feature Spec 全部验收条件；至少执行 Rust 格式化、静态检查和测试，前端类型检查与测试、生产构建、Tauri 构建及 macOS 交互验收；Windows 未能执行的验证必须如实保留。
+- **结果**：把 Rust 安全保存核心接入受限二进制 IPC、后端文档状态与单文档前端会话。`DocumentStore` 将新选择的文件保持为候选，只有内容按正确 id 成功取回时才替换当前可信文档，避免读取失败后旧文档无法保存；异步 `save_document` 经 Raw body + `textora-document-id` 接收请求，并用 `spawn_blocking` 执行编码、文件 I/O 与同步。打开/保存错误分别映射，保存新增 `save-failed`；前端会话保留完整 `saveError`，使用保存专用文案并展示不可编码字符的码点与偏移。`App.tsx` 提供 Save 入口、忙碌互斥、成功清脏与失败保留；`capability` 仍仅 `core:app:default`。
+- **验证**：`cargo fmt --check`、`cargo check --all-targets`、`git diff --check` 通过；`cargo test` **71 passed**（打开/保存错误分流、`save-failed`、不可编码字符定位、候选打开不提前替换当前文档、连续保存元数据更新）；`npm run check` **35 passed**（保存状态机、完整错误信封、保存专用文案与字符定位、App 保存入口禁用与忙碌互斥）；`npm run tauri -- build` 通过并生成 `Textora.app`；打开 `.app` 进程启动。Clippy 未运行（缺组件）。交互式 macOS 真实保存验收（各编码/冲突/只读/超限/不可编码/歧义）与 Windows 验证待执行，详见 Feature Spec。
 
 ## 最近完成
 
@@ -73,4 +71,4 @@
 - 基础文本编辑 Feature Spec 已确认。Rust 文档读取与识别核心已完成并通过 macOS 的 fmt/test/check/tauri build 验证：`analyze(&[u8])` 为纯字节分析，内部 `open_document(&Path)` 继续负责一致快照与严格解码。
 - 本地文件打开切片已完成实现、自动化验证与 macOS 原生界面验收：无路径参数的 Tauri `select_and_open_document` 在 Rust 侧选择并打开文件，`read_document_content` 通过原始二进制响应传输内容；前端 capability 未获得 dialog、文件系统、shell 或网络权限。
 - Windows 文件打开验证仍需在对应环境执行。Rust 文档编码与安全保存核心已完成审查修复并通过 macOS 验证（fmt/check/test 68 并发+串行+跨进程/tauri build/git diff --check；Clippy 因组件缺失未运行）：`save_document` 为内部接口（未暴露为 Tauri 命令）；CP936 可表示性用「无替换编码 + 严格帧校验」判定，普通保存还要求重开后仍识别为 GBK 且内容一致，否则返回 `EncodingAmbiguous`（纯 ASCII/空因编码身份无法保持也拒绝，见 D-006）；保存先 `canonicalize` 解析符号链接到真实目标再原子替换（链接保留、目标更新）；冲突检测与只读/权限保护均为 best-effort（再次校验/权限设置与 rename 之间残留 TOCTOU，规格已如实降级）；测试临时目录 PID+纳秒+RAII。
-- 下一项已承诺任务为 `save-opened-file.md`：只接入已打开文件的普通保存，后端以文档 ID 绑定可信路径与保存元数据，正文使用二进制 IPC；另存为、编码转换、Mixed 换行选择、冲突解决、关闭保护与多标签留待后续切片。
+- `save-opened-file.md` 已完成实现与自动化验证，但因交互式 macOS 真实保存验收尚未执行，任务继续保留在“进行中”：后端候选打开不会提前覆盖当前可信文档，异步 `save_document` 经 Raw body + header 接收内容并在阻塞线程复用安全保存核心，前端保留完整保存错误并使用保存专用提示；capability 未新增宽泛权限。Windows 验证待对应环境执行；另存为、编码转换、Mixed 换行选择、冲突解决、关闭保护与多标签尚未承诺。

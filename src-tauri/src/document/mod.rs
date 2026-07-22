@@ -24,7 +24,7 @@ pub use encoding::TextEncoding;
 pub use error::DocumentError;
 pub use fingerprint::FileFingerprint;
 pub use line_ending::LineEnding;
-pub use save::{SaveOutcome, SaveRequest};
+pub use save::{SaveOutcome, SaveRequest, save_document};
 
 /// 首版单文件最大字节数：50 MiB。`size <= MAX` 可接受，`size > MAX` 明确失败。
 pub const MAX_FILE_SIZE_BYTES: u64 = 50 * 1024 * 1024;

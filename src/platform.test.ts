@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   describeOpenError,
+  describeSaveError,
   encodingDisplayName,
-  isOpenError,
+  isDocumentCommandError,
   lineEndingDisplayName,
 } from "./platform";
 
@@ -25,28 +26,39 @@ describe("lineEndingDisplayName", () => {
   });
 });
 
-describe("describeOpenError", () => {
-  it("returns a user-facing message for every code", () => {
-    for (const code of [
-      "file-too-large",
-      "unsupported-encoding",
-      "changed-during-read",
-      "read-failed",
-    ] as const) {
-      expect(describeOpenError(code).length).toBeGreaterThan(0);
-    }
-  });
-
+describe("document error descriptions", () => {
   it("does not mention internal details", () => {
     expect(describeOpenError("read-failed")).not.toContain("Rust");
   });
+
+  it("uses save-specific wording for size and I/O failures", () => {
+    expect(
+      describeSaveError({ code: "file-too-large", message: "too large" }),
+    ).toContain("cannot be saved");
+    expect(
+      describeSaveError({ code: "save-failed", message: "internal detail" }),
+    ).toBe("The file could not be saved.");
+  });
+
+  it("shows the unencodable character and UTF-8 byte offset", () => {
+    const message = describeSaveError({
+      code: "unencodable-content",
+      message: "cannot encode",
+      character: "😀",
+      byteOffset: 12,
+    });
+    expect(message).toContain("U+1F600");
+    expect(message).toContain("byte offset 12");
+  });
 });
 
-describe("isOpenError", () => {
-  it("accepts a known code and rejects anything else", () => {
-    expect(isOpenError({ code: "file-too-large", message: "x" })).toBe(true);
-    expect(isOpenError({ code: "unknown", message: "x" })).toBe(false);
-    expect(isOpenError(null)).toBe(false);
-    expect(isOpenError("nope")).toBe(false);
+describe("isDocumentCommandError", () => {
+  it("accepts known open and save codes and rejects anything else", () => {
+    expect(isDocumentCommandError({ code: "file-too-large", message: "x" })).toBe(true);
+    expect(isDocumentCommandError({ code: "save-conflict", message: "x" })).toBe(true);
+    expect(isDocumentCommandError({ code: "unknown", message: "x" })).toBe(false);
+    expect(isDocumentCommandError({ code: "save-failed" })).toBe(false);
+    expect(isDocumentCommandError(null)).toBe(false);
+    expect(isDocumentCommandError("nope")).toBe(false);
   });
 });

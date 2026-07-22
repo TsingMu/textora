@@ -3,7 +3,7 @@ use serde::Serialize;
 pub mod document;
 pub mod ipc;
 
-use ipc::OpenBuffer;
+use ipc::DocumentStore;
 
 #[derive(Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -24,11 +24,12 @@ fn health_check() -> HealthStatus {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .manage(OpenBuffer::default())
+        .manage(DocumentStore::default())
         .invoke_handler(tauri::generate_handler![
             health_check,
             ipc::select_and_open_document,
-            ipc::read_document_content
+            ipc::read_document_content,
+            ipc::save_document
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -230,3 +230,71 @@ describe("App open flow", () => {
     ).toBe("true");
   });
 });
+
+describe("App save entry", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+
+  beforeEach(() => {
+    (
+      globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
+    ).IS_REACT_ACT_ENVIRONMENT = true;
+    invokeMock.mockReset();
+    setupInvoke();
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  it("disables save for a fresh untitled document", async () => {
+    await act(async () => {
+      root.render(<App />);
+    });
+    const saveButton = container.querySelector<HTMLButtonElement>(".save-button");
+    expect(saveButton).not.toBeNull();
+    expect(saveButton?.disabled).toBe(true);
+  });
+
+  it("keeps save disabled right after opening a clean file", async () => {
+    await act(async () => {
+      root.render(<App />);
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    const saveButton = container.querySelector<HTMLButtonElement>(".save-button");
+    expect(saveButton?.disabled).toBe(true);
+  });
+
+  it("disables open and save while an open is pending", async () => {
+    let resolveSelection: ((descriptor: null) => void) | undefined;
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "health_check") {
+        return Promise.resolve({ service: "document-core", version: "0.1.0" });
+      }
+      if (cmd === "select_and_open_document") {
+        return new Promise<null>((resolve) => {
+          resolveSelection = resolve;
+        });
+      }
+      return Promise.reject(new Error(`unexpected invoke ${cmd}`));
+    });
+
+    await act(async () => root.render(<App />));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+
+    expect(container.querySelector<HTMLButtonElement>(".open-button")?.disabled).toBe(true);
+    expect(container.querySelector<HTMLButtonElement>(".save-button")?.disabled).toBe(true);
+
+    await act(async () => {
+      resolveSelection?.(null);
+    });
+  });
+});
