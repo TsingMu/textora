@@ -3,8 +3,10 @@ import {
   describeOpenError,
   describeSaveError,
   encodingDisplayName,
+  encodingToChoice,
   isDocumentCommandError,
   lineEndingDisplayName,
+  lineEndingToChoice,
 } from "./platform";
 
 describe("encodingDisplayName", () => {
@@ -60,5 +62,19 @@ describe("isDocumentCommandError", () => {
     expect(isDocumentCommandError({ code: "save-failed" })).toBe(false);
     expect(isDocumentCommandError(null)).toBe(false);
     expect(isDocumentCommandError("nope")).toBe(false);
+  });
+});
+
+describe("save format choice defaults", () => {
+  it("maps current encoding to a chooser default", () => {
+    expect(encodingToChoice({ utf8: { bom: false } })).toBe("utf8");
+    expect(encodingToChoice({ utf8: { bom: true } })).toBe("utf8-bom");
+    expect(encodingToChoice("gbk")).toBe("gbk");
+  });
+
+  it("maps current line ending to a chooser default, collapsing mixed to lf", () => {
+    expect(lineEndingToChoice("lf")).toBe("lf");
+    expect(lineEndingToChoice("crlf")).toBe("crlf");
+    expect(lineEndingToChoice("mixed")).toBe("lf");
   });
 });

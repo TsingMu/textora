@@ -5,6 +5,7 @@
 //! Raw body 与自定义 header 接收，避免把大文本编码为 JSON 数字数组或大字符串。错误
 //! 以稳定代码返回，前端据此映射用户可理解的提示，不展示 Rust 内部调试文本。
 
+use std::fs::File;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -230,6 +231,25 @@ impl DocumentStore {
             }
         }
     }
+
+    /// 另存为成功：把当前可信文档关联到新目标（路径/显示名/编码/换行/指纹/字节数/只读），
+    /// 沿用同一文档 id。id 不匹配时无操作（调用方应在已知 id 上调用）。
+    fn reassociate_active(&self, id: &str, document: TrustedDocument) {
+        let mut guard = self.inner.lock().expect("document store lock poisoned");
+        if let Some((stored_id, existing)) = guard.active.as_mut() {
+            if stored_id == id {
+                *existing = document;
+            }
+        }
+    }
+
+    /// 首次保存成功：生成新文档 id 并建立可信关联，返回该 id。
+    fn create_active(&self, document: TrustedDocument) -> String {
+        let id = crate::document::next_document_id();
+        let mut guard = self.inner.lock().expect("document store lock poisoned");
+        guard.active = Some((id.clone(), document));
+        id
+    }
 }
 
 fn trusted_from_descriptor(descriptor: &DocumentDescriptor) -> TrustedDocument {
@@ -340,11 +360,13 @@ pub async fn save_document(
         document::save_document(
             &save_input.path,
             document::SaveRequest {
-                content: &content,
+                content,
                 encoding: save_input.encoding,
                 line_ending: save_input.line_ending,
-                original_fingerprint: &save_input.fingerprint,
-                read_only: save_input.read_only,
+                target: document::SaveTarget::InPlace {
+                    source_read_only: save_input.read_only,
+                    expected: save_input.fingerprint.clone(),
+                },
             },
         )
     })
@@ -360,6 +382,268 @@ pub async fn save_document(
     state.update_active(&id, outcome.fingerprint.clone(), outcome.byte_count);
 
     Ok(trusted.to_descriptor(&id, outcome.fingerprint, outcome.byte_count))
+}
+
+/// 保存格式 header 名。编码值：`utf8` / `utf8-bom` / `gbk`；换行值：`lf` / `crlf`。
+const ENCODING_HEADER: &str = "textora-encoding";
+const LINE_ENDING_HEADER: &str = "textora-line-ending";
+
+fn parse_encoding_header(
+    headers: &tauri::http::HeaderMap,
+) -> Result<TextEncoding, DocumentCommandError> {
+    let value = headers
+        .get(ENCODING_HEADER)
+        .and_then(|h| h.to_str().ok())
+        .ok_or_else(|| {
+            DocumentCommandError::new(
+                DocumentErrorCode::UnsupportedEncoding,
+                "save request is missing the encoding header",
+            )
+        })?;
+    match value {
+        "utf8" => Ok(TextEncoding::Utf8 { bom: false }),
+        "utf8-bom" => Ok(TextEncoding::Utf8 { bom: true }),
+        "gbk" => Ok(TextEncoding::Gbk),
+        _ => Err(DocumentCommandError::new(
+            DocumentErrorCode::UnsupportedEncoding,
+            "unsupported save encoding",
+        )),
+    }
+}
+
+fn parse_line_ending_header(
+    headers: &tauri::http::HeaderMap,
+) -> Result<LineEnding, DocumentCommandError> {
+    let value = headers
+        .get(LINE_ENDING_HEADER)
+        .and_then(|h| h.to_str().ok())
+        .ok_or_else(|| {
+            DocumentCommandError::new(
+                DocumentErrorCode::MixedLineEnding,
+                "save request is missing the line-ending header",
+            )
+        })?;
+    match value {
+        "lf" => Ok(LineEnding::Lf),
+        "crlf" => Ok(LineEnding::Crlf),
+        _ => Err(DocumentCommandError::new(
+            DocumentErrorCode::MixedLineEnding,
+            "unsupported save line ending",
+        )),
+    }
+}
+
+/// 对话框返回后**首次观测**目标并据此选择 `SaveTarget`。
+///
+/// - 选择当前原路径（与可信源规范化后相等）→ `InPlace`，沿用打开指纹与源只读校验，不绕过冲突保护。
+/// - 已存在的不同目标 → `ExistingTarget { observed }`，`observed` 为本次首次观测到的指纹。
+/// - 不存在的目标 → `NewTarget`。
+fn choose_save_target(
+    path: &std::path::Path,
+    trusted: Option<&TrustedDocument>,
+) -> Result<crate::document::SaveTarget, DocumentError> {
+    let chosen = match std::fs::canonicalize(path) {
+        Ok(resolved) => resolved,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(crate::document::SaveTarget::NewTarget);
+        }
+        Err(err) => return Err(DocumentError::Io(err)),
+    };
+
+    if let Some(trusted) = trusted {
+        if let Ok(trusted_resolved) = std::fs::canonicalize(&trusted.path) {
+            if chosen == trusted_resolved {
+                return Ok(crate::document::SaveTarget::InPlace {
+                    source_read_only: trusted.read_only,
+                    expected: trusted.fingerprint.clone(),
+                });
+            }
+        }
+    }
+
+    let observed = read_target_fingerprint(&chosen)?;
+    Ok(crate::document::SaveTarget::ExistingTarget { observed })
+}
+
+/// 读取并计算目标的当前指纹（对话框返回后的首次观测）。
+fn read_target_fingerprint(path: &std::path::Path) -> Result<FileFingerprint, DocumentError> {
+    let mut file = File::open(path)?;
+    let len = file.metadata()?.len();
+    let bytes =
+        crate::document::read_bounded(&mut file, len, crate::document::MAX_FILE_SIZE_BYTES)?;
+    Ok(FileFingerprint::of(&bytes))
+}
+
+fn display_name_of(path: &std::path::Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "Untitled".to_owned())
+}
+
+fn trusted_for_save_as(
+    store: &DocumentStore,
+    id: Option<&str>,
+) -> Result<Option<TrustedDocument>, DocumentCommandError> {
+    match id {
+        Some(id) => store.active_for(id).map(Some).ok_or_else(|| {
+            DocumentCommandError::new(
+                DocumentErrorCode::UnknownDocument,
+                "unknown or stale document id",
+            )
+        }),
+        None => Ok(None),
+    }
+}
+
+/// 另存为 / 首次保存。系统保存对话框由 Rust 发起；前端不提交任意路径，只提交格式选择
+/// （header）与二进制 UTF-8 内容（Raw body）。文档 id header 可选：已有文档另存时携带，
+/// Untitled 首次保存时缺省。成功返回新的描述符；用户取消对话框返回 `None`。
+#[tauri::command]
+pub async fn save_document_as(
+    app: tauri::AppHandle,
+    request: tauri::ipc::Request<'_>,
+    state: tauri::State<'_, DocumentStore>,
+) -> Result<Option<DocumentDescriptor>, DocumentCommandError> {
+    let headers = request.headers();
+    let id_opt = headers
+        .get(DOCUMENT_ID_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let encoding = parse_encoding_header(headers)?;
+    let line_ending = parse_line_ending_header(headers)?;
+    let bytes = match request.body() {
+        tauri::ipc::InvokeBody::Raw(bytes) => bytes.as_slice(),
+        _ => {
+            return Err(DocumentCommandError::new(
+                DocumentErrorCode::ReadFailed,
+                "save content must be sent as a raw byte body",
+            ));
+        }
+    };
+    let content = std::str::from_utf8(bytes).map(str::to_owned).map_err(|_| {
+        DocumentCommandError::new(
+            DocumentErrorCode::UnsupportedEncoding,
+            "save content is not valid UTF-8",
+        )
+    })?;
+
+    // 已有文档必须在打开对话框及任何写盘前通过可信 id 校验；只有明确省略 id 才是首次保存。
+    let trusted_opt = trusted_for_save_as(state.inner(), id_opt.as_deref())?;
+
+    // 系统保存对话框（Rust 发起，前端不接触路径）。默认文件名沿用当前显示名。
+    let mut builder = app.dialog().file();
+    if let Some(trusted) = &trusted_opt {
+        builder = builder.set_file_name(&trusted.display_name);
+    }
+    let picked = builder.blocking_save_file();
+    let Some(picked) = picked else {
+        return Ok(None);
+    };
+    let path = picked.into_path().map_err(|_| {
+        DocumentCommandError::new(
+            DocumentErrorCode::ReadFailed,
+            "selected save path is unavailable",
+        )
+    })?;
+    let path_for_assoc = path.clone();
+
+    // 观测目标 + 路由 + 保存（脱离命令线程）。
+    let encoding_for_assoc = encoding;
+    let line_ending_for_assoc = line_ending;
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        let target = choose_save_target(&path, trusted_opt.as_ref())
+            .map_err(DocumentCommandError::from_save_core)?;
+        document::save_document(
+            &path,
+            document::SaveRequest {
+                content,
+                encoding,
+                line_ending,
+                target,
+            },
+        )
+        .map_err(DocumentCommandError::from_save_core)
+    })
+    .await
+    .map_err(|_| {
+        DocumentCommandError::new(
+            DocumentErrorCode::SaveFailed,
+            "save worker could not complete",
+        )
+    })??;
+
+    // 写入完整成功后才更新/建立可信关联。
+    let descriptor = build_saved_descriptor(
+        &state,
+        id_opt.as_deref(),
+        &path_for_assoc,
+        encoding_for_assoc,
+        line_ending_for_assoc,
+        outcome,
+    )?;
+    Ok(Some(descriptor))
+}
+
+/// 成功保存后建立描述符并更新可信状态：首次保存生成新 id；另存到新目标沿用 id 关联；
+/// 选当前原路径按普通保存只更新指纹/字节数。
+fn build_saved_descriptor(
+    state: &DocumentStore,
+    id_opt: Option<&str>,
+    path: &std::path::Path,
+    encoding: TextEncoding,
+    line_ending: LineEnding,
+    outcome: crate::document::SaveOutcome,
+) -> Result<DocumentDescriptor, DocumentCommandError> {
+    let resolved = std::fs::canonicalize(path)
+        .map_err(|err| DocumentCommandError::from_save_core(DocumentError::Io(err)))?;
+    let display_name = display_name_of(path);
+    let read_only = std::fs::metadata(&resolved)
+        .map_err(|err| DocumentCommandError::from_save_core(DocumentError::Io(err)))?
+        .permissions()
+        .readonly();
+
+    if let Some(id) = id_opt {
+        // 已有文档：若仍是原路径则按普通保存更新指纹，否则关联到新目标。
+        let trusted = state.active_for(id).ok_or_else(|| {
+            DocumentCommandError::new(
+                DocumentErrorCode::UnknownDocument,
+                "unknown or stale document id",
+            )
+        })?;
+        let in_place = std::fs::canonicalize(&trusted.path)
+            .map(|tr| tr == resolved)
+            .unwrap_or(false);
+        if in_place {
+            state.update_active(id, outcome.fingerprint.clone(), outcome.byte_count);
+            return Ok(trusted.to_descriptor(id, outcome.fingerprint, outcome.byte_count));
+        }
+        let reassociated = TrustedDocument {
+            // 保留用户在系统对话框中选择的路径；冲突判断仍用上面的规范化路径。
+            // 这样通过符号链接另存后，后续普通保存继续保持链接语义。
+            path: path.to_path_buf(),
+            display_name,
+            encoding,
+            line_ending,
+            fingerprint: outcome.fingerprint.clone(),
+            byte_count: outcome.byte_count,
+            read_only,
+        };
+        state.reassociate_active(id, reassociated.clone());
+        Ok(reassociated.to_descriptor(id, outcome.fingerprint, outcome.byte_count))
+    } else {
+        // 首次保存：生成新 id 并建立关联。
+        let created = TrustedDocument {
+            path: path.to_path_buf(),
+            display_name,
+            encoding,
+            line_ending,
+            fingerprint: outcome.fingerprint.clone(),
+            byte_count: outcome.byte_count,
+            read_only,
+        };
+        let new_id = state.create_active(created.clone());
+        Ok(created.to_descriptor(&new_id, outcome.fingerprint, outcome.byte_count))
+    }
 }
 
 #[cfg(test)]
@@ -535,5 +819,54 @@ mod tests {
             9,
         );
         assert_eq!(store.active_for("doc-2").unwrap().byte_count, 5);
+    }
+
+    #[test]
+    fn save_as_rejects_stale_id_before_it_can_be_treated_as_first_save() {
+        let store = DocumentStore::default();
+        let result = trusted_for_save_as(&store, Some("stale-doc"));
+        let Err(err) = result else {
+            panic!("stale id must be rejected");
+        };
+        assert!(matches!(err.code, DocumentErrorCode::UnknownDocument));
+
+        assert!(trusted_for_save_as(&store, None).unwrap().is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saved_descriptor_preserves_the_user_selected_symlink_path() {
+        use crate::document::test_support::TestDir;
+        use std::os::unix::fs::symlink;
+
+        let dir = TestDir::new();
+        let target = dir.join("target.txt");
+        std::fs::write(&target, b"saved").unwrap();
+        let link = dir.join("selected-link.txt");
+        symlink(&target, &link).unwrap();
+        let fingerprint = FileFingerprint::of(b"saved");
+        let store = DocumentStore::default();
+
+        let descriptor = build_saved_descriptor(
+            &store,
+            None,
+            &link,
+            TextEncoding::Utf8 { bom: false },
+            LineEnding::Lf,
+            crate::document::SaveOutcome {
+                byte_count: 5,
+                fingerprint: fingerprint.clone(),
+                encoding: TextEncoding::Utf8 { bom: false },
+                line_ending: LineEnding::Lf,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(descriptor.path, link);
+        assert_eq!(
+            store.active_for(&descriptor.id).unwrap().path,
+            descriptor.path
+        );
+        assert_eq!(std::fs::read(&descriptor.path).unwrap(), b"saved");
     }
 }

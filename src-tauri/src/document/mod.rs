@@ -24,7 +24,7 @@ pub use encoding::TextEncoding;
 pub use error::DocumentError;
 pub use fingerprint::FileFingerprint;
 pub use line_ending::LineEnding;
-pub use save::{SaveOutcome, SaveRequest, save_document};
+pub use save::{SaveOutcome, SaveRequest, SaveTarget, save_document};
 
 /// 首版单文件最大字节数：50 MiB。`size <= MAX` 可接受，`size > MAX` 明确失败。
 pub const MAX_FILE_SIZE_BYTES: u64 = 50 * 1024 * 1024;
@@ -64,7 +64,7 @@ pub struct OpenedDocument {
 /// 后续会话层可接管 ID 语义。
 static NEXT_DOCUMENT_ID: AtomicU64 = AtomicU64::new(1);
 
-fn next_document_id() -> String {
+pub(crate) fn next_document_id() -> String {
     let n = NEXT_DOCUMENT_ID.fetch_add(1, Ordering::Relaxed);
     format!("doc-{n}")
 }

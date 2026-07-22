@@ -4,6 +4,7 @@ import {
   cancelOpen,
   cancelSave,
   commitOpenedDocument,
+  commitSavedAs,
   commitSavedDocument,
   createNewDocument,
   failOpen,
@@ -195,5 +196,48 @@ describe("save flow state machine", () => {
         }),
       ),
     ).toBe(false);
+  });
+
+  it("commitSavedAs associates the session with a new target and clears dirty state", () => {
+    const dirty = openedDirty();
+    const savedAsDescriptor: DocumentDescriptor = {
+      id: "doc-new",
+      path: "/tmp/saved-as.txt",
+      displayName: "saved-as.txt",
+      byteCount: 6,
+      encoding: { utf8: { bom: true } },
+      lineEnding: "crlf",
+      fingerprint: { sizeBytes: 6, sha256: "ff" },
+      readOnly: false,
+    };
+    const committed = commitSavedAs(dirty, savedAsDescriptor);
+
+    expect(committed).toMatchObject({
+      id: "doc-new",
+      path: "/tmp/saved-as.txt",
+      displayName: "saved-as.txt",
+      encoding: { utf8: { bom: true } },
+      lineEnding: "crlf",
+      readOnly: false,
+      isDirty: false,
+      saveStatus: "idle",
+      saveError: null,
+    });
+    // 内容保持为用户当前所见。
+    expect(committed.content).toBe("edited");
+  });
+
+  it("failSave preserves content and dirty marker with the full error envelope", () => {
+    const error: DocumentCommandError = {
+      code: "unencodable-content",
+      message: "cannot encode",
+      character: "😀",
+      byteOffset: 7,
+    };
+    const failed = failSave(openedDirty(), error);
+    expect(failed.saveStatus).toBe("error");
+    expect(failed.saveError).toEqual(error);
+    expect(failed.isDirty).toBe(true);
+    expect(failed.content).toBe("edited");
   });
 });

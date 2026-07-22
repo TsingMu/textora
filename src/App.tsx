@@ -4,6 +4,7 @@ import {
   cancelOpen,
   cancelSave,
   commitOpenedDocument,
+  commitSavedAs,
   commitSavedDocument,
   createNewDocument,
   failOpen,
@@ -21,13 +22,18 @@ import {
   describeOpenError,
   describeSaveError,
   encodingDisplayName,
+  encodingToChoice,
   isDocumentCommandError,
   lineEndingDisplayName,
+  lineEndingToChoice,
   readDocumentContent,
+  saveAs,
   saveDocument,
   selectAndOpenDocument,
   type DocumentCommandError,
+  type EncodingChoice,
   type HealthStatus,
+  type LineEndingChoice,
 } from "./platform";
 
 const initialDocument = createNewDocument();
@@ -36,6 +42,11 @@ function App() {
   const [session, setSession] = useState<DocumentSession>(initialDocument);
   const [health, setHealth] = useState<HealthStatus | null>(null);
   const [backendUnavailable, setBackendUnavailable] = useState(false);
+  const [saveAsDialog, setSaveAsDialog] = useState<{
+    open: boolean;
+    encoding: EncodingChoice;
+    lineEnding: LineEndingChoice;
+  }>({ open: false, encoding: "utf8", lineEnding: "lf" });
 
   useEffect(() => {
     let active = true;
@@ -83,6 +94,36 @@ function App() {
     }
   }
 
+  async function runSaveAsPipeline(
+    id: string | null,
+    encoding: EncodingChoice,
+    lineEnding: LineEndingChoice,
+    content: string,
+  ) {
+    try {
+      const descriptor = await saveAs({ id, encoding, lineEnding, content });
+      if (descriptor === null) {
+        // 用户在系统保存对话框取消；内容、关联与未保存状态保持不变。
+        setSession((current) => cancelSave(current));
+        return;
+      }
+      setSession((current) => commitSavedAs(current, descriptor));
+    } catch (err) {
+      const error: DocumentCommandError = isDocumentCommandError(err)
+        ? err
+        : { code: "save-failed", message: "save request failed" };
+      setSession((current) => failSave(current, error));
+    }
+  }
+
+  function openSaveAsDialog() {
+    setSaveAsDialog({
+      open: true,
+      encoding: encodingToChoice(session.encoding),
+      lineEnding: lineEndingToChoice(session.lineEnding),
+    });
+  }
+
   function handleOpenClick() {
     const next = requestOpen(session);
     if (next === session) {
@@ -95,6 +136,14 @@ function App() {
   }
 
   function handleSaveClick() {
+    // 新建文档（无路径）经格式选择进入首次保存流程；已打开文档走普通原路径保存。
+    if (session.path === null) {
+      if (isBusy(session)) {
+        return;
+      }
+      openSaveAsDialog();
+      return;
+    }
     const next = requestSave(session);
     if (next === session) {
       return;
@@ -103,6 +152,26 @@ function App() {
     if (next.saveStatus === "saving") {
       void runSavePipeline(next.id, next.content);
     }
+  }
+
+  function handleSaveAsClick() {
+    if (isBusy(session)) {
+      return;
+    }
+    openSaveAsDialog();
+  }
+
+  function handleSaveAsConfirm() {
+    const { encoding, lineEnding } = saveAsDialog;
+    const id = session.path !== null ? session.id : null;
+    const content = session.content;
+    setSaveAsDialog((current) => ({ ...current, open: false }));
+    setSession((current) => ({ ...current, saveStatus: "saving", saveError: null }));
+    void runSaveAsPipeline(id, encoding, lineEnding, content);
+  }
+
+  function handleSaveAsCancel() {
+    setSaveAsDialog((current) => ({ ...current, open: false }));
   }
 
   function handleConfirmDiscard() {
@@ -122,14 +191,12 @@ function App() {
     setSession((current) => cancelSave(current));
   }
 
-  const busy = isBusy(session);
+  const busy = isBusy(session) || saveAsDialog.open;
   const editorLocked =
     session.openStatus === "loading" || session.saveStatus === "saving";
   const canSave =
-    session.path !== null &&
-    session.isDirty &&
-    !session.readOnly &&
-    !busy;
+    !session.readOnly && !busy && (session.path === null || session.isDirty);
+  const canSaveAs = session.path !== null && !busy;
 
   return (
     <main className="app-shell">
@@ -156,6 +223,15 @@ function App() {
             aria-label="Save the current file"
           >
             Save
+          </button>
+          <button
+            type="button"
+            className="save-as-button"
+            onClick={handleSaveAsClick}
+            disabled={!canSaveAs}
+            aria-label="Save the current file to a new location"
+          >
+            Save As…
           </button>
         </div>
         <div className="backend-state" aria-live="polite">
@@ -237,6 +313,58 @@ function App() {
                 autoFocus
               >
                 Discard changes
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {saveAsDialog.open && (
+        <div className="confirm-overlay" role="dialog" aria-modal="true" aria-label="Choose save format">
+          <div className="confirm-dialog save-as-dialog">
+            <p className="confirm-message">Choose the encoding and line ending for the file.</p>
+            <label className="save-as-field">
+              <span>Encoding</span>
+              <select
+                value={saveAsDialog.encoding}
+                onChange={(event) =>
+                  setSaveAsDialog((current) => ({
+                    ...current,
+                    encoding: event.target.value as EncodingChoice,
+                  }))
+                }
+              >
+                <option value="utf8">UTF-8</option>
+                <option value="utf8-bom">UTF-8 (BOM)</option>
+                <option value="gbk">GBK / CP936</option>
+              </select>
+            </label>
+            <label className="save-as-field">
+              <span>Line ending</span>
+              <select
+                value={saveAsDialog.lineEnding}
+                onChange={(event) =>
+                  setSaveAsDialog((current) => ({
+                    ...current,
+                    lineEnding: event.target.value as LineEndingChoice,
+                  }))
+                }
+              >
+                <option value="lf">LF</option>
+                <option value="crlf">CRLF</option>
+              </select>
+            </label>
+            <div className="confirm-actions">
+              <button type="button" className="confirm-cancel" onClick={handleSaveAsCancel}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="confirm-discard"
+                onClick={handleSaveAsConfirm}
+                autoFocus
+              >
+                Save
               </button>
             </div>
           </div>

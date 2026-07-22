@@ -29,7 +29,8 @@ pub fn run() {
             health_check,
             ipc::select_and_open_document,
             ipc::read_document_content,
-            ipc::save_document
+            ipc::save_document,
+            ipc::save_document_as
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

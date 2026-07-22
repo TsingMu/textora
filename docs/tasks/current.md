@@ -4,16 +4,17 @@
 
 ## 进行中
 
-### 实现另存为与新建文档首次保存
-
-- **状态**：规格已确认，待实现
-- **Feature Spec**：`docs/features/save-as-and-first-save.md`
-- **目标**：通过受限 Rust 系统保存对话框取得可信目标，完成 Untitled 首次落盘和已有文档另存；支持显式选择 UTF-8、UTF-8 BOM、严格 GBK 与 LF/CRLF，并在成功后把当前单文档会话安全关联到新目标。
-- **边界**：本切片不实现冲突后的重新加载或强制覆盖、关闭保护、多标签、自动保存及其他编码。选择当前原路径不得绕过普通保存冲突保护；选择新目标时必须同时保护“已存在目标确认后变化”和“不存在目标随后出现”两类竞争。
-- **执行顺序**：先调查系统保存对话框的跨平台覆盖语义并扩展 Rust 安全保存核心，再接入后端可信状态与二进制 IPC，随后实现格式选择和前端状态机，最后补齐自动化与 macOS 真实文件验收。
-- **完成标准**：Feature Spec 的自动化与 macOS 验收条件全部通过，文档记录实际验证结果；Windows 验证可保留为对应环境待执行项，但不得误报为已通过。
+暂无已承诺且进行中的任务。下一候选为冲突解决（重新加载/强制覆盖）、关闭未保存保护、多标签等后续切片，尚未进入 Current Tasks。
 
 ## 最近完成
+
+### 实现另存为与新建文档首次保存
+
+- **状态**：已完成；Windows 验证待对应环境执行
+- **完成日期**：2026-07-22
+- **Feature Spec**：`docs/features/save-as-and-first-save.md`
+- **结果**：通过 Rust 侧 `blocking_save_file` 取得可信目标，交付 Untitled 首次保存与已有文档另存为，并支持 UTF-8/UTF-8 BOM/GBK 与 LF/CRLF 显式选择。保存核心新增 `SaveTarget { InPlace, ExistingTarget, NewTarget }`：`InPlace` 由核心校验源只读（遵守 `safe-save-core`），另存为跳过该检查；`NewTarget` 用同目录临时文件 + `sync_all` + `std::fs::hard_link` 原子且不覆盖提交（不直接对目标 `create_new`），异常仅清理唯一命名临时文件。新增异步 `save_document_as`：对话框返回后首次观测目标并路由（选当前原路径→`InPlace` 不绕过冲突保护；已存在不同目标→`ExistingTarget{observed}`；不存在→`NewTarget`），成功后更新或建立可信关联（首次保存生成新 id）。格式/id 经 header、内容经 Raw body。前端：应用内格式选择 UI、Save（Untitled→首次保存/已开→普通保存）、Save As 入口、忙碌互斥、成功关联/失败保留/取消恢复。`capability` 仍仅 `core:app:default`。竞争保护从对话框返回后首次观测开始，best-effort，OS 确认到首次观测之间窗口不可关闭（已在规格记录）。
+- **验证**：`cargo fmt --check`、`cargo check --all-targets`、`git diff --check` 通过；`cargo test` 默认并发 **78 passed**、`--test-threads=1` 串行 78 passed、两测试进程并发各 78 passed；`npm run check` **40 passed**，`npm run build` 与 `npm run tauri -- build` 通过并生成 `Textora.app`；`./script/build_and_run.sh --verify` 成功启动应用。macOS 原生交互已验收空白首次保存、连续保存、UTF-8 BOM/GBK 与 LF/CRLF、取消、Mixed 转换、不可编码/歧义后改选 UTF-8、只读源与目标、已有目标覆盖确认、当前原路径冲突保护及符号链接连续保存，并核对磁盘字节与原文件保护；目标竞争和 50 MiB/通用 I/O 失败由确定性自动化覆盖。Clippy 未运行（缺组件）；Windows 验证待对应环境执行，详见 Feature Spec。
 
 ### 接入已打开文件的普通保存流程
 
@@ -82,4 +83,4 @@
 - 本地文件打开切片已完成实现、自动化验证与 macOS 原生界面验收：无路径参数的 Tauri `select_and_open_document` 在 Rust 侧选择并打开文件，`read_document_content` 通过原始二进制响应传输内容；前端 capability 未获得 dialog、文件系统、shell 或网络权限。
 - Windows 文件打开验证仍需在对应环境执行。Rust 文档编码与安全保存核心已完成审查修复并通过 macOS 验证（fmt/check/test 68 并发+串行+跨进程/tauri build/git diff --check；Clippy 因组件缺失未运行）：`save_document` 为内部接口（未暴露为 Tauri 命令）；CP936 可表示性用「无替换编码 + 严格帧校验」判定，普通保存还要求重开后仍识别为 GBK 且内容一致，否则返回 `EncodingAmbiguous`（纯 ASCII/空因编码身份无法保持也拒绝，见 D-006）；保存先 `canonicalize` 解析符号链接到真实目标再原子替换（链接保留、目标更新）；冲突检测与只读/权限保护均为 best-effort（再次校验/权限设置与 rename 之间残留 TOCTOU，规格已如实降级）；测试临时目录 PID+纳秒+RAII。
 - `save-opened-file.md` 已完成实现、自动化验证与 macOS 真实文件交互验收：后端候选打开不会提前覆盖当前可信文档，异步 `save_document` 经 Raw body + header 接收内容并在阻塞线程复用安全保存核心，前端保留完整保存错误并使用保存专用提示；capability 未新增宽泛权限。Windows 验证待对应环境执行。
-- 当前已承诺“另存为与新建文档首次保存”：由 Rust 侧系统保存对话框取得可信目标，并显式选择 UTF-8/UTF-8 BOM/GBK 与 LF/CRLF，覆盖 Untitled 落盘、已有文件另存、GBK 失败后转 UTF-8，以及 Mixed 换行选择。实现前先验证系统对话框覆盖语义并补齐目标竞争保护；冲突解决、关闭保护和多标签仍在 backlog。
+- 「另存为与新建文档首次保存」已完成实现、自动化验证与 macOS 原生交互验收（cargo test 78 并发+串行+跨进程 / npm check 40 / build / tauri build / 启动验证）：Rust 侧系统保存对话框取得可信目标，`SaveTarget` 区分普通保存/另存已存在/新建（`NewTarget` 用临时文件+`hard_link` 原子不覆盖提交），源只读校验仅 `InPlace` 在核心执行；过期 id 写盘前拒绝，符号链接选择路径在会话中保留；前端含应用内格式选择 UI 与空白 Untitled Save/已有文件 Save As 入口。竞争保护从对话框返回后首次观测开始、best-effort；Windows 验证待对应环境执行。冲突解决、关闭未保存保护、多标签仍在 backlog，尚未承诺。

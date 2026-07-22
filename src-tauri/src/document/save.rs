@@ -14,15 +14,29 @@ use crate::document::{
     line_ending, read_bounded,
 };
 
-/// 保存请求。字段由上层（已打开文档的描述信息）提供。
-pub struct SaveRequest<'a> {
-    pub content: &'a str,
+/// 保存目标的语义。核心据此区分普通保存与另存为，并决定是否校验源只读。
+pub enum SaveTarget {
+    /// 普通保存：目标即源路径。核心按 `source_read_only` 拒绝只读源（遵守
+    /// `safe-save-core` 不变量「只读描述符必须拒绝普通保存」）；目标须存在且匹配 `expected`。
+    InPlace {
+        source_read_only: bool,
+        expected: FileFingerprint,
+    },
+    /// 另存为到对话框返回后首次观测到的**已存在**目标。不校验源只读；目标须匹配 `observed`，
+    /// 保留目标权限并原子替换。`observed` 是后端在对话框返回后首次读到的目标指纹。
+    ExistingTarget { observed: FileFingerprint },
+    /// 首次保存或另存到首次观测时**不存在**的目标。不校验源只读；以临时文件 + 同步 +
+    /// 原子不覆盖提交（`hard_link`）创建，OS 默认权限。
+    NewTarget,
+}
+
+/// 保存请求。`content` 持有完整 Unicode 文本；`target` 决定落盘语义与源只读校验。
+pub struct SaveRequest {
+    pub content: String,
     pub encoding: TextEncoding,
     /// 保存目标换行；`Mixed` 表示调用方未解析，核心会拒绝。
     pub line_ending: LineEnding,
-    pub original_fingerprint: &'a FileFingerprint,
-    /// 来自打开时描述符的只读标记；为真则拒绝普通保存。
-    pub read_only: bool,
+    pub target: SaveTarget,
 }
 
 /// 保存成功后基于最终写入字节重新计算的身份。
@@ -38,43 +52,54 @@ static NEXT_TEMP_TAG: AtomicU64 = AtomicU64::new(1);
 
 /// 安全保存文档。
 ///
-/// 顺序遵循 Feature Spec：描述符只读前置校验 → 解析符号链接到可靠目标 → 换行规范化与
-/// 无替换编码 → 输出大小限制 → 初次指纹冲突检测 → 初次只读快检 → 对解析目标同目录原子
-/// 替换（替换前 best-effort 再次校验冲突与只读/权限）。任一步失败都保留原文件。
-pub fn save_document(path: &Path, request: SaveRequest<'_>) -> Result<SaveOutcome, DocumentError> {
+/// 按 `SaveTarget` 分派：`InPlace`/`ExistingTarget` 走「解析目标 → 编码/大小限制 → 指纹
+/// 冲突检测 → 只读/权限捕获 → 同目录原子替换（替换前 best-effort 再校验）」；`NewTarget`
+/// 走「解析父目录 → 编码/大小限制 → 同目录临时文件写入同步 → 原子不覆盖提交」。源只读
+/// 校验仅在 `InPlace` 由核心执行。任一步失败都保留原文件。
+pub fn save_document(path: &Path, request: SaveRequest) -> Result<SaveOutcome, DocumentError> {
     save_document_with_before_replace(path, request, || {})
 }
 
 /// 与 [`save_document`] 相同，额外提供 `before_replace` 缝：在临时文件完成写入与同步
-/// 之后、最终校验与原子替换之前调用。测试用它确定性地模拟「校验与替换之间外部修改」。
+/// 之后、最终原子提交之前调用。测试用它确定性地模拟「观测与提交之间外部修改」。
 pub(crate) fn save_document_with_before_replace<F>(
     path: &Path,
-    request: SaveRequest<'_>,
+    request: SaveRequest,
     before_replace: F,
 ) -> Result<SaveOutcome, DocumentError>
 where
     F: FnOnce(),
 {
-    if request.read_only {
-        return Err(DocumentError::ReadOnly);
+    // 源只读校验保留在核心，且仅对普通保存（目标即源）生效；另存为不阻止只读源。
+    if let SaveTarget::InPlace {
+        source_read_only, ..
+    } = &request.target
+    {
+        if *source_read_only {
+            return Err(DocumentError::ReadOnly);
+        }
     }
 
-    // 解析符号链接到真实目标：读取/校验本就跟随链接，若 rename 直接作用于链接路径会
-    // 替换链接目录项（删除链接、原目标不变）。对解析后的真实目标做原子替换，可保留链接。
-    let target = resolve_save_target(path)?;
-
-    let normalized = line_ending::normalize(request.content, request.line_ending)?;
+    let normalized = line_ending::normalize(&request.content, request.line_ending)?;
     let bytes = encoding::encode(&normalized, request.encoding)?;
     check_size(bytes.len() as u64)?;
-    verify_no_conflict(&target, request.original_fingerprint)?;
-    // 初次只读快检：明显只读时直接失败，避免无谓写临时文件；最终权限以替换前重读为准。
-    capture_writable_permissions(&target)?;
-    atomic_write_with_recheck(
-        &target,
-        &bytes,
-        request.original_fingerprint,
-        before_replace,
-    )?;
+
+    match &request.target {
+        SaveTarget::InPlace { expected, .. }
+        | SaveTarget::ExistingTarget { observed: expected } => {
+            // 解析符号链接到真实目标：读取/校验本就跟随链接，rename 作用于真实目标可保留链接。
+            let target = resolve_save_target(path)?;
+            verify_no_conflict(&target, expected)?;
+            // 初次只读快检：明显只读时直接失败；最终权限以替换前重读为准。
+            capture_writable_permissions(&target)?;
+            atomic_write_with_recheck(&target, &bytes, expected, before_replace)?;
+        }
+        SaveTarget::NewTarget => {
+            // 目标尚不存在：解析父目录（跟随其中的符号链接），临时文件与提交均作用于真实父目录。
+            let (resolved_parent, resolved_target) = resolve_new_target(path)?;
+            atomic_create_with_recheck(&resolved_parent, &resolved_target, &bytes, before_replace)?;
+        }
+    }
 
     Ok(SaveOutcome {
         byte_count: bytes.len() as u64,
@@ -92,6 +117,26 @@ fn resolve_save_target(path: &Path) -> Result<PathBuf, DocumentError> {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Err(DocumentError::SaveConflict),
         Err(err) => Err(DocumentError::Io(err)),
     }
+}
+
+/// 解析「尚不存在」的目标：canonicalize 父目录（跟随其中的符号链接），再拼回文件名。
+/// 父目录缺失视为冲突。返回 (解析后的父目录, 解析后的目标路径)，二者同卷以便原子提交。
+fn resolve_new_target(path: &Path) -> Result<(PathBuf, PathBuf), DocumentError> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let resolved_parent = match std::fs::canonicalize(parent) {
+        Ok(resolved) => resolved,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Err(DocumentError::SaveConflict);
+        }
+        Err(err) => return Err(DocumentError::Io(err)),
+    };
+    let file_name = path.file_name().ok_or_else(|| {
+        DocumentError::Io(std::io::Error::other(
+            "save target has no file name component",
+        ))
+    })?;
+    let resolved_target = resolved_parent.join(file_name);
+    Ok((resolved_parent, resolved_target))
 }
 
 /// 写入前确认磁盘目标仍与打开时指纹一致。
@@ -234,6 +279,63 @@ fn make_temp_path(parent: &Path, target: &Path) -> PathBuf {
     parent.join(format!(".{stem}.textora-save.{pid}.{tag}.tmp"))
 }
 
+/// 创建一个尚不存在的目标：先在同目录写临时文件并 `sync_all`，再以**原子且不覆盖**的
+/// `hard_link(temp, target)` 提交。
+///
+/// - 不直接对目标 `create_new`：写入/同步/进程异常会在目标路径留下部分文件，按路径清理
+///   还可能误删竞争产生的新文件；这里异常仅留下带唯一名称的临时文件，并按其名称清理。
+/// - `hard_link` 在目标已存在时失败（Unix `EEXIST` / Windows `ERROR_FILE_EXISTS`），从而
+///   既原子又绝不覆盖「观测后出现」的新文件，失败返回 `SaveConflict`。
+/// - `before_replace` 缝在临时文件写入同步后、`hard_link` 前调用，测试据此模拟「目标在
+///   首次观测后被其他进程创建」。
+fn atomic_create_with_recheck<F>(
+    parent: &Path,
+    target: &Path,
+    bytes: &[u8],
+    before_replace: F,
+) -> Result<(), DocumentError>
+where
+    F: FnOnce(),
+{
+    let (temp_path, file) = create_temp_exclusive(parent, target)?;
+
+    let outcome = finish_atomic_create(file, &temp_path, target, bytes, before_replace);
+    if outcome.is_err() {
+        // 成功路径下临时文件已通过 hard_link 消费（再 remove 其目录项，inode 由 target 保持）；
+        // 仅在失败时清理临时文件本身。
+        let _ = std::fs::remove_file(&temp_path);
+    }
+    outcome
+}
+
+fn finish_atomic_create<F>(
+    mut file: File,
+    temp_path: &Path,
+    target: &Path,
+    bytes: &[u8],
+    before_replace: F,
+) -> Result<(), DocumentError>
+where
+    F: FnOnce(),
+{
+    write_and_sync(&mut file, bytes)?;
+    // 关闭句柄后再提交：Windows 不允许对正被本进程打开的文件建立硬链接或重命名。
+    drop(file);
+    before_replace();
+    // 原子且不覆盖提交：目标已存在（观测后被创建）即失败为 SaveConflict，绝不覆盖。
+    match std::fs::hard_link(temp_path, target) {
+        Ok(()) => {
+            // 提交成功：temp 与 target 为同一 inode 的两个目录项，移除 temp 目录项，内容保留于 target。
+            let _ = std::fs::remove_file(temp_path);
+            Ok(())
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+            Err(DocumentError::SaveConflict)
+        }
+        Err(err) => Err(DocumentError::Io(err)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,11 +359,13 @@ mod tests {
         save_document(
             path,
             SaveRequest {
-                content,
+                content: content.to_owned(),
                 encoding,
                 line_ending,
-                original_fingerprint: fingerprint,
-                read_only: false,
+                target: SaveTarget::InPlace {
+                    source_read_only: false,
+                    expected: fingerprint.clone(),
+                },
             },
         )
     }
@@ -471,11 +575,13 @@ mod tests {
         let err = save_document(
             &path,
             SaveRequest {
-                content: "changed",
+                content: "changed".to_owned(),
                 encoding: TextEncoding::Utf8 { bom: false },
                 line_ending: LineEnding::Lf,
-                original_fingerprint: &fingerprint,
-                read_only: true,
+                target: SaveTarget::InPlace {
+                    source_read_only: true,
+                    expected: fingerprint.clone(),
+                },
             },
         )
         .unwrap_err();
@@ -562,11 +668,13 @@ mod tests {
         let err = save_document_with_before_replace(
             &path,
             SaveRequest {
-                content: "my edit",
+                content: "my edit".to_owned(),
                 encoding: TextEncoding::Utf8 { bom: false },
                 line_ending: LineEnding::Lf,
-                original_fingerprint: &fingerprint,
-                read_only: false,
+                target: SaveTarget::InPlace {
+                    source_read_only: false,
+                    expected: fingerprint.clone(),
+                },
             },
             || {
                 std::fs::write(&target, b"changed by another process").unwrap();
@@ -642,11 +750,13 @@ mod tests {
         let err = save_document_with_before_replace(
             &path,
             SaveRequest {
-                content: "orig",
+                content: "orig".to_owned(),
                 encoding: TextEncoding::Utf8 { bom: false },
                 line_ending: LineEnding::Lf,
-                original_fingerprint: &fingerprint,
-                read_only: false,
+                target: SaveTarget::InPlace {
+                    source_read_only: false,
+                    expected: fingerprint.clone(),
+                },
             },
             || {
                 std::fs::set_permissions(&target, PermissionsExt::from_mode(0o444)).unwrap();
@@ -710,5 +820,146 @@ mod tests {
         // 真实目标内容已更新；经链接读取到的也是新内容。
         assert_eq!(std::fs::read(&target).unwrap(), b"updated");
         assert_eq!(std::fs::read(&link).unwrap(), b"updated");
+    }
+
+    #[test]
+    fn new_target_creates_file_atomically_without_overwrite() {
+        // 首次保存到尚不存在的目标：临时文件 + 同步 + hard_link 原子提交。
+        let dir = TestDir::new();
+        let path = dir.join("first-save.txt");
+        let outcome = save_document(
+            &path,
+            SaveRequest {
+                content: "fresh content".to_owned(),
+                encoding: TextEncoding::Utf8 { bom: false },
+                line_ending: LineEnding::Lf,
+                target: SaveTarget::NewTarget,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"fresh content");
+        assert_eq!(outcome.byte_count, 13);
+        assert_eq!(FileFingerprint::of(b"fresh content"), outcome.fingerprint);
+        assert_no_temp_residue(dir.path());
+    }
+
+    #[test]
+    fn new_target_refuses_when_target_appears_and_leaves_only_temp() {
+        // 首次观测时目标不存在；before_replace 阶段被其他进程创建 → hard_link 失败为
+        // SaveConflict，绝不覆盖新出现的文件，且仅残留临时文件（随后被清理）。
+        let dir = TestDir::new();
+        let path = dir.join("appeared.txt");
+        let created = path.clone();
+
+        let err = save_document_with_before_replace(
+            &path,
+            SaveRequest {
+                content: "mine".to_owned(),
+                encoding: TextEncoding::Utf8 { bom: false },
+                line_ending: LineEnding::Lf,
+                target: SaveTarget::NewTarget,
+            },
+            || {
+                std::fs::write(&created, b"created by another process").unwrap();
+            },
+        )
+        .unwrap_err();
+
+        assert!(matches!(err, DocumentError::SaveConflict));
+        // 新出现的文件被保留，未被覆盖。
+        assert_eq!(std::fs::read(&path).unwrap(), b"created by another process");
+        assert_no_temp_residue(dir.path());
+    }
+
+    #[test]
+    fn existing_target_saves_with_observed_fingerprint_and_preserves_perms() {
+        // 另存为到已存在的不同目标：以对话框返回后观测到的指纹做 best-effort 校验并原子替换。
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = TestDir::new();
+            let path = dir.join("existing.txt");
+            std::fs::write(&path, b"old").unwrap();
+            std::fs::set_permissions(&path, PermissionsExt::from_mode(0o600)).unwrap();
+            let observed = FileFingerprint::of(b"old");
+
+            let outcome = save_document(
+                &path,
+                SaveRequest {
+                    content: "new".to_owned(),
+                    encoding: TextEncoding::Utf8 { bom: false },
+                    line_ending: LineEnding::Lf,
+                    target: SaveTarget::ExistingTarget { observed },
+                },
+            )
+            .unwrap();
+
+            assert_eq!(std::fs::read(&path).unwrap(), b"new");
+            assert_eq!(outcome.byte_count, 3);
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(
+                mode & 0o777,
+                0o600,
+                "existing target perms must be preserved"
+            );
+        }
+    }
+
+    #[test]
+    fn existing_target_refuses_when_changed_since_observation() {
+        let dir = TestDir::new();
+        let path = dir.join("existing-changed.txt");
+        std::fs::write(&path, b"observed").unwrap();
+        let observed = FileFingerprint::of(b"observed");
+        let target = path.clone();
+
+        let err = save_document_with_before_replace(
+            &path,
+            SaveRequest {
+                content: "new".to_owned(),
+                encoding: TextEncoding::Utf8 { bom: false },
+                line_ending: LineEnding::Lf,
+                target: SaveTarget::ExistingTarget { observed },
+            },
+            || {
+                std::fs::write(&target, b"changed after observation").unwrap();
+            },
+        )
+        .unwrap_err();
+
+        assert!(matches!(err, DocumentError::SaveConflict));
+        assert_eq!(std::fs::read(&path).unwrap(), b"changed after observation");
+        assert_no_temp_residue(dir.path());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_as_skips_source_read_only_for_a_different_target() {
+        // 只读源可另存到其他可写目标：SaveTarget::NewTarget/ExistingTarget 不校验源只读。
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TestDir::new();
+        let source = dir.join("readonly-source.txt");
+        std::fs::write(&source, b"src").unwrap();
+        std::fs::set_permissions(&source, PermissionsExt::from_mode(0o444)).unwrap();
+        let destination = dir.join("new-target.txt");
+
+        save_document(
+            &destination,
+            SaveRequest {
+                content: "src content".to_owned(),
+                encoding: TextEncoding::Utf8 { bom: false },
+                line_ending: LineEnding::Lf,
+                target: SaveTarget::NewTarget,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(std::fs::read(&destination).unwrap(), b"src content");
+        // 源仍只读、未被改动。
+        assert_eq!(std::fs::read(&source).unwrap(), b"src");
+        let mode = std::fs::metadata(&source).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o444);
+        std::fs::set_permissions(&source, PermissionsExt::from_mode(0o644)).unwrap();
     }
 }

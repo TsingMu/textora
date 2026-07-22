@@ -153,3 +153,25 @@ export function commitSavedDocument(
     readOnly: descriptor.readOnly,
   };
 }
+
+/// 首次保存 / 另存为成功：关联到新目标（id/路径/显示名/编码/换行/只读），清除未保存
+/// 与保存状态。内容保持为用户当前所见（即刚写入的完整快照）。
+export function commitSavedAs(
+  document: DocumentSession,
+  descriptor: DocumentDescriptor,
+): DocumentSession {
+  return {
+    ...document,
+    id: descriptor.id,
+    path: descriptor.path,
+    displayName: descriptor.displayName,
+    encoding: descriptor.encoding,
+    lineEnding: descriptor.lineEnding,
+    readOnly: descriptor.readOnly,
+    isDirty: false,
+    openStatus: "idle",
+    openErrorCode: null,
+    saveStatus: "idle",
+    saveError: null,
+  };
+}

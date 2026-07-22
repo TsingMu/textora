@@ -85,6 +85,45 @@ export async function saveDocument(
   });
 }
 
+/** 保存格式选择（首次保存/另存为时由用户在应用内界面选择）。 */
+export type EncodingChoice = "utf8" | "utf8-bom" | "gbk";
+export type LineEndingChoice = "lf" | "crlf";
+
+/**
+ * 另存为 / 首次保存。系统保存对话框由 Rust 发起，前端只提交格式选择（header）与二进制
+ * UTF-8 内容（Raw body）；目标路径不出现在前端。`id` 为已打开文档的后端 id，省略（null）
+ * 表示 Untitled 首次保存。用户在系统对话框取消时返回 `null`，成功返回新描述符。
+ */
+export async function saveAs(options: {
+  id: string | null;
+  encoding: EncodingChoice;
+  lineEnding: LineEndingChoice;
+  content: string;
+}): Promise<DocumentDescriptor | null> {
+  const body = new TextEncoder().encode(options.content);
+  const headers: Record<string, string> = {
+    "textora-encoding": options.encoding,
+    "textora-line-ending": options.lineEnding,
+  };
+  if (options.id !== null) {
+    headers["textora-document-id"] = options.id;
+  }
+  return invoke<DocumentDescriptor | null>("save_document_as", body, { headers });
+}
+
+/** 将会话当前编码映射为格式选择的默认值。 */
+export function encodingToChoice(encoding: TextEncoding): EncodingChoice {
+  if (typeof encoding === "string") {
+    return "gbk";
+  }
+  return encoding.utf8.bom ? "utf8-bom" : "utf8";
+}
+
+/** 将会话当前换行映射为格式选择的默认值（Mixed 归 LF，需用户在界面确认）。 */
+export function lineEndingToChoice(lineEnding: LineEnding): LineEndingChoice {
+  return lineEnding === "crlf" ? "crlf" : "lf";
+}
+
 const COMMAND_ERROR_CODES: readonly DocumentErrorCode[] = [
   "file-too-large",
   "unsupported-encoding",

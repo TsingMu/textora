@@ -251,13 +251,21 @@ describe("App save entry", () => {
     container.remove();
   });
 
-  it("disables save for a fresh untitled document", async () => {
+  it("allows a fresh untitled document to enter first save", async () => {
     await act(async () => {
       root.render(<App />);
     });
     const saveButton = container.querySelector<HTMLButtonElement>(".save-button");
     expect(saveButton).not.toBeNull();
-    expect(saveButton?.disabled).toBe(true);
+    expect(saveButton?.disabled).toBe(false);
+
+    await act(async () => {
+      saveButton?.click();
+    });
+    expect(container.querySelector(".save-as-dialog")).not.toBeNull();
+    expect(
+      invokeMock.mock.calls.some((call) => call[0] === "save_document_as"),
+    ).toBe(false);
   });
 
   it("keeps save disabled right after opening a clean file", async () => {
@@ -296,5 +304,70 @@ describe("App save entry", () => {
     await act(async () => {
       resolveSelection?.(null);
     });
+  });
+
+  it("save-as opens the format chooser and associates the session to the new target", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        return {
+          id: "doc-1",
+          path: "/tmp/notes.txt",
+          displayName: "notes.txt",
+          byteCount: 5,
+          encoding: "gbk",
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 5, sha256: "deadbeef" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode("Hello").buffer;
+      }
+      if (cmd === "save_document_as") {
+        return {
+          id: "doc-1",
+          path: "/tmp/copy.txt",
+          displayName: "copy.txt",
+          byteCount: 5,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "crlf",
+          fingerprint: { sizeBytes: 5, sha256: "new" },
+          readOnly: false,
+        };
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await act(async () => root.render(<App />));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".save-as-button")?.click();
+    });
+
+    // 格式选择对话框出现。
+    const chooser = container.querySelector(".save-as-dialog");
+    expect(chooser).not.toBeNull();
+
+    await act(async () => {
+      chooser
+        ?.querySelector<HTMLButtonElement>(".confirm-discard")
+        ?.click();
+    });
+
+    // 关联到新目标，标签更新；save_document_as 被调用。
+    expect(container.querySelector(".document-tab")?.textContent).toContain("copy.txt");
+    expect(container.querySelector(".statusbar")?.textContent).toContain("UTF-8");
+    expect(container.querySelector(".statusbar")?.textContent).toContain("CRLF");
+    expect(
+      invokeMock.mock.calls.some((call) => call[0] === "save_document_as"),
+    ).toBe(true);
+    // 对话框已关闭。
+    expect(container.querySelector(".save-as-dialog")).toBeNull();
   });
 });

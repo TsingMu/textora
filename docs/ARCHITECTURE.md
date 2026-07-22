@@ -2,7 +2,7 @@
 
 ## 当前状态
 
-技术方案采用 Tauri 2 桌面壳、React/TypeScript 前端、CodeMirror 6 编辑器和 Rust 文档核心。前端由 Vite 构建；macOS 使用系统 WebKit，Windows 使用 WebView2。当前已建立可运行工程基线和 CodeMirror 文档编辑，并已打通系统文件选择、Rust 一致快照与严格 UTF-8/CP936 解码、双向二进制 IPC、React 文档会话及错误保护。文件打开与已打开文件的普通保存均已完成实现、自动化验证和 macOS 交互验收；Windows 验证待对应环境执行。
+技术方案采用 Tauri 2 桌面壳、React/TypeScript 前端、CodeMirror 6 编辑器和 Rust 文档核心。前端由 Vite 构建；macOS 使用系统 WebKit，Windows 使用 WebView2。当前已建立可运行工程基线和 CodeMirror 文档编辑，并已打通系统文件选择、Rust 一致快照与严格 UTF-8/CP936 解码、双向二进制 IPC、React 文档会话及错误保护。文件打开、已打开文件的普通保存、首次保存与另存为均已完成实现、自动化验证和 macOS 交互验收；Windows 验证待对应环境执行。
 
 ## 系统边界
 
