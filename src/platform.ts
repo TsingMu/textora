@@ -37,6 +37,8 @@ export type DocumentErrorCode =
   | "unencodable-content"
   | "encoding-ambiguous"
   | "save-conflict"
+  | "save-conflict-content-changed"
+  | "save-conflict-target-missing"
   | "save-failed"
   | "unknown-document";
 
@@ -134,6 +136,8 @@ const COMMAND_ERROR_CODES: readonly DocumentErrorCode[] = [
   "unencodable-content",
   "encoding-ambiguous",
   "save-conflict",
+  "save-conflict-content-changed",
+  "save-conflict-target-missing",
   "save-failed",
   "unknown-document",
 ];
@@ -220,6 +224,10 @@ export function describeSaveError(error: DocumentCommandError): string {
       return "Saving as GBK would not reopen with the same encoding and content. Save as UTF-8 instead.";
     case "save-conflict":
       return "The file changed on disk since it was opened. Saving was refused.";
+    case "save-conflict-content-changed":
+      return "The file changed on disk since it was opened. Saving was refused to protect both versions.";
+    case "save-conflict-target-missing":
+      return "The file no longer exists on disk. Saving was refused to protect the current content.";
     case "unknown-document":
       return "This document is no longer associated with an open file.";
     case "unsupported-encoding":

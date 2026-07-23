@@ -20,7 +20,7 @@ use crate::document::{
 const DOCUMENT_ID_HEADER: &str = "textora-document-id";
 
 /// 稳定、面向前端的错误代码。新增代码即视为公共契约变更。
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DocumentErrorCode {
     // 打开与保存共有
@@ -35,6 +35,8 @@ pub enum DocumentErrorCode {
     UnencodableContent,
     EncodingAmbiguous,
     SaveConflict,
+    SaveConflictContentChanged,
+    SaveConflictTargetMissing,
     SaveFailed,
     /// 前端提交的文档 id 后端未知或已过期（如新建文档、被新打开覆盖）。
     UnknownDocument,
@@ -133,7 +135,7 @@ impl DocumentCommandError {
 }
 
 /// 后端持有的可信文档元数据。打开成功后建立，保存成功后更新指纹与字节数。
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 struct TrustedDocument {
     path: PathBuf,
     display_name: String,
@@ -164,6 +166,24 @@ impl TrustedDocument {
     }
 }
 
+/// 普通保存冲突的分类：磁盘内容已变化 vs 目标已缺失。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConflictKind {
+    ContentChanged,
+    TargetMissing,
+}
+
+/// 待解决的冲突状态，绑定当前活动文档 id。持有冲突发生时的完整编辑快照和可信描述信息，
+/// 供后续重新加载、强制覆盖或缺失处理操作使用。前端不能提交路径、指纹或冲突类型。
+// 当前切片只负责可信写入；字段将在紧随其后的解决命令切片中读取。
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+struct ConflictState {
+    kind: ConflictKind,
+    snapshot: Vec<u8>,
+    trusted: TrustedDocument,
+}
+
 #[derive(Default)]
 struct DocumentStoreInner {
     /// 打开时暂存的解码后内容，供 `read_document_content` 取回一次。
@@ -172,6 +192,8 @@ struct DocumentStoreInner {
     pending_document: Option<(String, TrustedDocument)>,
     /// 当前已打开文档的可信元数据，供保存按 id 解析。
     active: Option<(String, TrustedDocument)>,
+    /// 当前活动文档的待解决冲突状态。
+    conflict: Option<ConflictState>,
 }
 
 /// 单标签会话下的后端文档状态：同时维护打开内容缓冲与可信保存元数据。
@@ -210,6 +232,7 @@ impl DocumentStore {
             .take()
             .expect("matching pending document must exist");
         guard.active = Some(pending);
+        guard.conflict = None;
         Some(bytes)
     }
 
@@ -228,6 +251,7 @@ impl DocumentStore {
             if stored_id == id {
                 document.fingerprint = fingerprint;
                 document.byte_count = byte_count;
+                guard.conflict = None;
             }
         }
     }
@@ -239,6 +263,7 @@ impl DocumentStore {
         if let Some((stored_id, existing)) = guard.active.as_mut() {
             if stored_id == id {
                 *existing = document;
+                guard.conflict = None;
             }
         }
     }
@@ -248,7 +273,38 @@ impl DocumentStore {
         let id = crate::document::next_document_id();
         let mut guard = self.inner.lock().expect("document store lock poisoned");
         guard.active = Some((id.clone(), document));
+        guard.conflict = None;
         id
+    }
+
+    /// 普通保存冲突时记录待解决冲突状态。必须绑定当前活动文档 id，否则视为过期不记录。
+    /// 首次冲突不得更新可信指纹、字节数或描述信息——此处只记录状态，不修改 active。
+    fn record_conflict(&self, id: &str, kind: ConflictKind, snapshot: Vec<u8>) {
+        let mut guard = self.inner.lock().expect("document store lock poisoned");
+        if let Some((stored_id, trusted)) = guard.active.as_ref() {
+            if stored_id == id {
+                guard.conflict = Some(ConflictState {
+                    kind,
+                    snapshot,
+                    trusted: trusted.clone(),
+                });
+            }
+        }
+    }
+
+    /// 测试辅助：读取但不消费当前冲突。真实解决命令必须在成功或明确取消后才清除状态，
+    /// 不能在可能失败的文件 I/O 之前把冲突标记为已解决。
+    #[cfg(test)]
+    fn conflict_for(&self, id: &str) -> Option<ConflictState> {
+        let guard = self.inner.lock().expect("document store lock poisoned");
+        let active_matches = guard
+            .active
+            .as_ref()
+            .is_some_and(|(stored_id, _)| stored_id == id);
+        if !active_matches {
+            return None;
+        }
+        guard.conflict.clone()
     }
 }
 
@@ -356,7 +412,8 @@ pub async fn save_document(
     })?;
 
     let save_input = trusted.clone();
-    let outcome = tauri::async_runtime::spawn_blocking(move || {
+    let snapshot = content.clone();
+    let core_result = tauri::async_runtime::spawn_blocking(move || {
         document::save_document(
             &save_input.path,
             document::SaveRequest {
@@ -376,12 +433,25 @@ pub async fn save_document(
             DocumentErrorCode::SaveFailed,
             "save worker could not complete",
         )
-    })?
-    .map_err(DocumentCommandError::from_save_core)?;
+    })?;
 
-    state.update_active(&id, outcome.fingerprint.clone(), outcome.byte_count);
-
-    Ok(trusted.to_descriptor(&id, outcome.fingerprint, outcome.byte_count))
+    match core_result {
+        Ok(outcome) => {
+            state.update_active(&id, outcome.fingerprint.clone(), outcome.byte_count);
+            Ok(trusted.to_descriptor(&id, outcome.fingerprint, outcome.byte_count))
+        }
+        Err(DocumentError::SaveConflict) => {
+            // 普通保存冲突：分类并记录待解决冲突状态（不更新指纹/字节数/描述信息，不清脏）。
+            let kind =
+                classify_conflict(&trusted.path).map_err(DocumentCommandError::from_save_core)?;
+            state.record_conflict(&id, kind, snapshot.into_bytes());
+            Err(DocumentCommandError::new(
+                conflict_error_code(kind),
+                "save conflict detected",
+            ))
+        }
+        Err(other) => Err(DocumentCommandError::from_save_core(other)),
+    }
 }
 
 /// 保存格式 header 名。编码值：`utf8` / `utf8-bom` / `gbk`；换行值：`lf` / `crlf`。
@@ -478,6 +548,24 @@ fn display_name_of(path: &std::path::Path) -> String {
     path.file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "Untitled".to_owned())
+}
+
+/// 按可信路径当前是否存在分类普通保存冲突。目标存在但指纹不匹配→内容已变化；
+/// 目标不存在→目标已缺失。此分类基于后端 Rust 的 `metadata` 调用，不依赖前端猜测。
+fn classify_conflict(path: &std::path::Path) -> Result<ConflictKind, DocumentError> {
+    match std::fs::metadata(path) {
+        Ok(_) => Ok(ConflictKind::ContentChanged),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(ConflictKind::TargetMissing),
+        Err(err) => Err(DocumentError::Io(err)),
+    }
+}
+
+/// 把冲突分类映射到稳定错误代码。
+fn conflict_error_code(kind: ConflictKind) -> DocumentErrorCode {
+    match kind {
+        ConflictKind::ContentChanged => DocumentErrorCode::SaveConflictContentChanged,
+        ConflictKind::TargetMissing => DocumentErrorCode::SaveConflictTargetMissing,
+    }
 }
 
 fn trusted_for_save_as(
@@ -868,5 +956,139 @@ mod tests {
             descriptor.path
         );
         assert_eq!(std::fs::read(&descriptor.path).unwrap(), b"saved");
+    }
+
+    fn test_trusted(path: &str) -> TrustedDocument {
+        TrustedDocument {
+            path: PathBuf::from(path),
+            display_name: "test.txt".to_owned(),
+            encoding: TextEncoding::Utf8 { bom: false },
+            line_ending: LineEnding::Lf,
+            fingerprint: FileFingerprint {
+                size_bytes: 3,
+                sha256: "abc".to_owned(),
+            },
+            byte_count: 3,
+            read_only: false,
+        }
+    }
+
+    #[test]
+    fn classify_conflict_distinguishes_existing_vs_missing() {
+        use crate::document::test_support::TestDir;
+        let dir = TestDir::new();
+        let existing = dir.join("exists.txt");
+        std::fs::write(&existing, b"data").unwrap();
+        let missing = dir.join("missing.txt");
+        assert_eq!(
+            classify_conflict(&existing).unwrap(),
+            ConflictKind::ContentChanged
+        );
+        assert_eq!(
+            classify_conflict(&missing).unwrap(),
+            ConflictKind::TargetMissing
+        );
+    }
+
+    #[test]
+    fn classify_conflict_preserves_non_not_found_io_errors() {
+        let invalid = std::path::Path::new("\0");
+        assert!(matches!(
+            classify_conflict(invalid),
+            Err(DocumentError::Io(_))
+        ));
+    }
+
+    #[test]
+    fn record_conflict_and_query_by_matching_id() {
+        let store = DocumentStore::default();
+        let id = store.create_active(test_trusted("/tmp/x.txt"));
+        store.record_conflict(&id, ConflictKind::ContentChanged, b"snap".to_vec());
+        assert_eq!(
+            store.conflict_for(&id).map(|conflict| conflict.kind),
+            Some(ConflictKind::ContentChanged)
+        );
+    }
+
+    #[test]
+    fn conflict_kind_for_stale_id_returns_none() {
+        let store = DocumentStore::default();
+        let id = store.create_active(test_trusted("/tmp/x.txt"));
+        store.record_conflict(&id, ConflictKind::TargetMissing, b"snap".to_vec());
+        // 过期 id（不匹配活动文档）不得返回冲突状态。
+        assert!(store.conflict_for("stale-doc").is_none());
+    }
+
+    #[test]
+    fn reading_conflict_does_not_consume_it_before_resolution_succeeds() {
+        let store = DocumentStore::default();
+        let id = store.create_active(test_trusted("/tmp/x.txt"));
+        store.record_conflict(&id, ConflictKind::ContentChanged, b"snap".to_vec());
+        let first = store.conflict_for(&id).unwrap();
+        let retry = store.conflict_for(&id).unwrap();
+        assert_eq!(first.kind, ConflictKind::ContentChanged);
+        assert_eq!(first.snapshot, b"snap");
+        assert_eq!(retry.snapshot, first.snapshot);
+        assert_eq!(retry.trusted.path, first.trusted.path);
+    }
+
+    #[test]
+    fn candidate_open_keeps_conflict_until_content_is_committed() {
+        let store = DocumentStore::default();
+        let active_id = store.create_active(test_trusted("/tmp/active.txt"));
+        store.record_conflict(&active_id, ConflictKind::ContentChanged, b"snap".to_vec());
+
+        let candidate_id = "candidate".to_owned();
+        store.store_open(
+            candidate_id.clone(),
+            b"new content".to_vec(),
+            test_trusted("/tmp/candidate.txt"),
+        );
+        assert!(store.conflict_for(&active_id).is_some());
+
+        assert_eq!(
+            store.take_content(&candidate_id),
+            Some(b"new content".to_vec())
+        );
+        assert!(store.conflict_for(&active_id).is_none());
+    }
+
+    #[test]
+    fn create_active_clears_existing_conflict() {
+        let store = DocumentStore::default();
+        let id = store.create_active(test_trusted("/tmp/x.txt"));
+        store.record_conflict(&id, ConflictKind::ContentChanged, b"snap".to_vec());
+        let _new = store.create_active(test_trusted("/tmp/y.txt"));
+        // 会话变更（新文档打开/首次保存）清除旧冲突状态。
+        assert!(store.conflict_for(&id).is_none());
+    }
+
+    #[test]
+    fn update_active_clears_conflict_on_successful_save() {
+        let store = DocumentStore::default();
+        let id = store.create_active(test_trusted("/tmp/x.txt"));
+        store.record_conflict(&id, ConflictKind::ContentChanged, b"snap".to_vec());
+        store.update_active(
+            &id,
+            FileFingerprint {
+                size_bytes: 4,
+                sha256: "new".to_owned(),
+            },
+            4,
+        );
+        // 普通保存成功后冲突状态被清除。
+        assert!(store.conflict_for(&id).is_none());
+    }
+
+    #[test]
+    fn conflict_error_code_maps_each_kind() {
+        assert_eq!(
+            conflict_error_code(ConflictKind::ContentChanged),
+            DocumentErrorCode::SaveConflictContentChanged
+        );
+        assert_eq!(
+            conflict_error_code(ConflictKind::TargetMissing),
+            DocumentErrorCode::SaveConflictTargetMissing
+        );
     }
 }

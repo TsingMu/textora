@@ -42,6 +42,22 @@ describe("document error descriptions", () => {
     ).toBe("The file could not be saved.");
   });
 
+  it("does not advertise conflict actions before their UI is available", () => {
+    const changed = describeSaveError({
+      code: "save-conflict-content-changed",
+      message: "changed",
+    });
+    const missing = describeSaveError({
+      code: "save-conflict-target-missing",
+      message: "missing",
+    });
+
+    expect(changed).toContain("Saving was refused");
+    expect(changed).not.toMatch(/reload|overwrite|cancel/i);
+    expect(missing).toContain("Saving was refused");
+    expect(missing).not.toMatch(/keep|discard/i);
+  });
+
   it("shows the unencodable character and UTF-8 byte offset", () => {
     const message = describeSaveError({
       code: "unencodable-content",
@@ -58,6 +74,12 @@ describe("isDocumentCommandError", () => {
   it("accepts known open and save codes and rejects anything else", () => {
     expect(isDocumentCommandError({ code: "file-too-large", message: "x" })).toBe(true);
     expect(isDocumentCommandError({ code: "save-conflict", message: "x" })).toBe(true);
+    expect(
+      isDocumentCommandError({ code: "save-conflict-content-changed", message: "x" }),
+    ).toBe(true);
+    expect(
+      isDocumentCommandError({ code: "save-conflict-target-missing", message: "x" }),
+    ).toBe(true);
     expect(isDocumentCommandError({ code: "unknown", message: "x" })).toBe(false);
     expect(isDocumentCommandError({ code: "save-failed" })).toBe(false);
     expect(isDocumentCommandError(null)).toBe(false);
