@@ -175,11 +175,12 @@ enum ConflictKind {
 
 /// 待解决的冲突状态，绑定当前活动文档 id。持有冲突发生时的完整编辑快照和可信描述信息，
 /// 供后续重新加载、强制覆盖或缺失处理操作使用。前端不能提交路径、指纹或冲突类型。
-// 当前切片只负责可信写入；字段将在紧随其后的解决命令切片中读取。
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct ConflictState {
+    revision: u64,
     kind: ConflictKind,
+    // 当前重新加载/取消切片不读取编辑快照；紧随其后的强制覆盖切片会消费它。
+    #[allow(dead_code)]
     snapshot: Vec<u8>,
     trusted: TrustedDocument,
 }
@@ -190,10 +191,14 @@ struct DocumentStoreInner {
     pending_content: Option<(String, Vec<u8>)>,
     /// 与 `pending_content` 同属一次候选打开；内容成功取回前不得替换当前可信文档。
     pending_document: Option<(String, TrustedDocument)>,
+    /// 重新加载候选绑定的冲突版本；普通打开候选为 `None`。
+    pending_reload_revision: Option<(String, u64)>,
     /// 当前已打开文档的可信元数据，供保存按 id 解析。
     active: Option<(String, TrustedDocument)>,
     /// 当前活动文档的待解决冲突状态。
     conflict: Option<ConflictState>,
+    /// 单调递增的内部冲突版本，只在 Rust 可信状态中使用，不暴露给前端。
+    next_conflict_revision: u64,
 }
 
 /// 单标签会话下的后端文档状态：同时维护打开内容缓冲与可信保存元数据。
@@ -207,6 +212,7 @@ impl DocumentStore {
         let mut guard = self.inner.lock().expect("document store lock poisoned");
         guard.pending_content = Some((id.clone(), content));
         guard.pending_document = Some((id, document));
+        guard.pending_reload_revision = None;
     }
 
     fn take_content(&self, id: &str) -> Option<Vec<u8>> {
@@ -219,7 +225,22 @@ impl DocumentStore {
             .pending_document
             .as_ref()
             .is_some_and(|(stored_id, _)| stored_id == id);
-        if !content_matches || !document_matches {
+        let reload_matches = match guard.pending_reload_revision.as_ref() {
+            None => true,
+            Some((reload_id, revision)) => {
+                reload_id == id
+                    && guard.conflict.as_ref().is_some_and(|conflict| {
+                        conflict.revision == *revision
+                            && conflict.kind == ConflictKind::ContentChanged
+                    })
+            }
+        };
+        if !content_matches || !document_matches || !reload_matches {
+            if content_matches && document_matches {
+                guard.pending_content = None;
+                guard.pending_document = None;
+                guard.pending_reload_revision = None;
+            }
             return None;
         }
 
@@ -231,6 +252,7 @@ impl DocumentStore {
             .pending_document
             .take()
             .expect("matching pending document must exist");
+        guard.pending_reload_revision = None;
         guard.active = Some(pending);
         guard.conflict = None;
         Some(bytes)
@@ -281,14 +303,20 @@ impl DocumentStore {
     /// 首次冲突不得更新可信指纹、字节数或描述信息——此处只记录状态，不修改 active。
     fn record_conflict(&self, id: &str, kind: ConflictKind, snapshot: Vec<u8>) {
         let mut guard = self.inner.lock().expect("document store lock poisoned");
-        if let Some((stored_id, trusted)) = guard.active.as_ref() {
-            if stored_id == id {
-                guard.conflict = Some(ConflictState {
-                    kind,
-                    snapshot,
-                    trusted: trusted.clone(),
-                });
-            }
+        let trusted = guard
+            .active
+            .as_ref()
+            .filter(|(stored_id, _)| stored_id == id)
+            .map(|(_, trusted)| trusted.clone());
+        if let Some(trusted) = trusted {
+            guard.next_conflict_revision = guard.next_conflict_revision.wrapping_add(1);
+            let revision = guard.next_conflict_revision;
+            guard.conflict = Some(ConflictState {
+                revision,
+                kind,
+                snapshot,
+                trusted,
+            });
         }
     }
 
@@ -305,6 +333,82 @@ impl DocumentStore {
             return None;
         }
         guard.conflict.clone()
+    }
+
+    /// 取得当前活动文档的内容变化冲突。返回内部快照但不消费状态；重新加载失败时
+    /// 用户仍可重试或取消。目标缺失冲突必须走独立的保留/关闭流程。
+    fn content_conflict_for(&self, id: &str) -> Option<ConflictState> {
+        let guard = self.inner.lock().expect("document store lock poisoned");
+        let active_matches = guard
+            .active
+            .as_ref()
+            .is_some_and(|(stored_id, _)| stored_id == id);
+        if !active_matches {
+            return None;
+        }
+        guard
+            .conflict
+            .as_ref()
+            .filter(|conflict| conflict.kind == ConflictKind::ContentChanged)
+            .cloned()
+    }
+
+    /// 明确取消当前活动文档的内容变化冲突。不执行文件 I/O，不影响活动文档或内容。
+    /// 未知、过期、已解决或其他类型的冲突返回 false。
+    fn clear_content_conflict(&self, id: &str) -> bool {
+        let mut guard = self.inner.lock().expect("document store lock poisoned");
+        let active_matches = guard
+            .active
+            .as_ref()
+            .is_some_and(|(stored_id, _)| stored_id == id);
+        let revision = guard.conflict.as_ref().and_then(|conflict| {
+            (active_matches && conflict.kind == ConflictKind::ContentChanged)
+                .then_some(conflict.revision)
+        });
+        let Some(revision) = revision else {
+            return false;
+        };
+
+        guard.conflict = None;
+        if guard
+            .pending_reload_revision
+            .as_ref()
+            .is_some_and(|(pending_id, pending_revision)| {
+                pending_id == id && *pending_revision == revision
+            })
+        {
+            guard.pending_content = None;
+            guard.pending_document = None;
+            guard.pending_reload_revision = None;
+        }
+        true
+    }
+
+    /// 重新加载成功后，把新内容和更新后的可信描述缓冲为候选，供 `read_document_content`
+    /// 取回。取回时 `take_content` 会原子提升为活动文档并清除冲突状态——因此冲突状态
+    /// 在内容被前端成功取回前不会被标记为已解决。
+    fn prepare_reload(
+        &self,
+        id: &str,
+        revision: u64,
+        content: Vec<u8>,
+        document: TrustedDocument,
+    ) -> bool {
+        let mut guard = self.inner.lock().expect("document store lock poisoned");
+        let still_current = guard
+            .active
+            .as_ref()
+            .is_some_and(|(stored_id, _)| stored_id == id)
+            && guard.conflict.as_ref().is_some_and(|conflict| {
+                conflict.revision == revision && conflict.kind == ConflictKind::ContentChanged
+            });
+        if !still_current {
+            return false;
+        }
+        guard.pending_content = Some((id.to_owned(), content));
+        guard.pending_document = Some((id.to_owned(), document));
+        guard.pending_reload_revision = Some((id.to_owned(), revision));
+        true
     }
 }
 
@@ -452,6 +556,72 @@ pub async fn save_document(
         }
         Err(other) => Err(DocumentCommandError::from_save_core(other)),
     }
+}
+
+/// 取消当前内容变化冲突。消费待解决冲突状态（标记为已解决），不执行任何文件 I/O。
+/// 未知、过期、已解决或其他类型的冲突明确拒绝，不清除不属于该请求的状态。
+#[tauri::command]
+pub fn cancel_conflict(
+    id: String,
+    state: tauri::State<'_, DocumentStore>,
+) -> Result<(), DocumentCommandError> {
+    if state.clear_content_conflict(&id) {
+        Ok(())
+    } else {
+        Err(DocumentCommandError::new(
+            DocumentErrorCode::UnknownDocument,
+            "no pending content conflict for this document",
+        ))
+    }
+}
+
+/// 从后端可信路径重新加载磁盘内容以解决内容变化冲突。
+///
+/// 读取磁盘快照（复用 `open_document` 的一致读取、编码检测与指纹），成功后缓冲新内容
+/// 供 `read_document_content` 取回（取回时原子提升活动文档并清除冲突）。读取失败时
+/// 冲突状态保持待解决，用户可重试或取消。
+#[tauri::command]
+pub async fn reload_from_conflict(
+    id: String,
+    state: tauri::State<'_, DocumentStore>,
+) -> Result<DocumentDescriptor, DocumentCommandError> {
+    let conflict = state.content_conflict_for(&id).ok_or_else(|| {
+        DocumentCommandError::new(
+            DocumentErrorCode::UnknownDocument,
+            "no pending content conflict for this document",
+        )
+    })?;
+
+    let revision = conflict.revision;
+    let path = conflict.trusted.path.clone();
+
+    let opened = tauri::async_runtime::spawn_blocking(move || document::open_document(&path))
+        .await
+        .map_err(|_| {
+            DocumentCommandError::new(
+                DocumentErrorCode::SaveFailed,
+                "reload worker could not complete",
+            )
+        })?
+        .map_err(DocumentCommandError::from_open_core)?;
+
+    // 构建更新后的可信描述：路径/显示名不变，指纹/编码/换行/字节数/只读以新快照为准。
+    let mut updated = conflict.trusted;
+    updated.encoding = opened.descriptor.encoding;
+    updated.line_ending = opened.descriptor.line_ending;
+    updated.fingerprint = opened.descriptor.fingerprint.clone();
+    updated.byte_count = opened.descriptor.byte_count;
+    updated.read_only = opened.descriptor.read_only;
+
+    // 缓冲新内容为候选，供 read_document_content 取回并原子提升（清除冲突）。
+    if !state.prepare_reload(&id, revision, opened.content.into_bytes(), updated.clone()) {
+        return Err(DocumentCommandError::new(
+            DocumentErrorCode::UnknownDocument,
+            "content conflict changed while the file was being reloaded",
+        ));
+    }
+
+    Ok(updated.to_descriptor(&id, updated.fingerprint.clone(), updated.byte_count))
 }
 
 /// 保存格式 header 名。编码值：`utf8` / `utf8-bom` / `gbk`；换行值：`lf` / `crlf`。
@@ -1090,5 +1260,98 @@ mod tests {
             conflict_error_code(ConflictKind::TargetMissing),
             DocumentErrorCode::SaveConflictTargetMissing
         );
+    }
+
+    #[test]
+    fn clear_conflict_resolves_pending_state() {
+        let store = DocumentStore::default();
+        let id = store.create_active(test_trusted("/tmp/x.txt"));
+        store.record_conflict(&id, ConflictKind::ContentChanged, b"snap".to_vec());
+        assert!(store.conflict_for(&id).is_some());
+        assert!(store.clear_content_conflict(&id));
+        // 取消后冲突状态已清除。
+        assert!(store.conflict_for(&id).is_none());
+        assert!(!store.clear_content_conflict(&id));
+    }
+
+    #[test]
+    fn clear_conflict_on_stale_id_is_noop() {
+        let store = DocumentStore::default();
+        let id = store.create_active(test_trusted("/tmp/x.txt"));
+        store.record_conflict(&id, ConflictKind::ContentChanged, b"snap".to_vec());
+        // 过期 id 的取消不清除不属于该 id 的冲突。
+        assert!(!store.clear_content_conflict("stale-doc"));
+        assert!(store.conflict_for(&id).is_some());
+    }
+
+    #[test]
+    fn prepare_reload_then_take_content_promotes_and_clears_conflict() {
+        let store = DocumentStore::default();
+        let id = store.create_active(test_trusted("/tmp/x.txt"));
+        store.record_conflict(&id, ConflictKind::ContentChanged, b"old snap".to_vec());
+        let revision = store.conflict_for(&id).unwrap().revision;
+
+        // 重新加载成功：缓冲新内容为候选。
+        let updated = test_trusted("/tmp/x.txt");
+        assert!(store.prepare_reload(&id, revision, b"reloaded content".to_vec(), updated));
+
+        // 取回内容时原子提升活动文档并清除冲突。
+        let content = store.take_content(&id);
+        assert_eq!(content, Some(b"reloaded content".to_vec()));
+        assert!(store.conflict_for(&id).is_none());
+    }
+
+    #[test]
+    fn content_conflict_for_returns_only_content_changed_state() {
+        let store = DocumentStore::default();
+        let id = store.create_active(test_trusted("/tmp/specific.txt"));
+        store.record_conflict(&id, ConflictKind::ContentChanged, b"snap".to_vec());
+        assert_eq!(
+            store
+                .content_conflict_for(&id)
+                .map(|conflict| conflict.trusted.path),
+            Some(PathBuf::from("/tmp/specific.txt"))
+        );
+        // 过期 id 不返回路径。
+        assert!(store.content_conflict_for("stale").is_none());
+
+        store.record_conflict(&id, ConflictKind::TargetMissing, b"snap".to_vec());
+        assert!(store.content_conflict_for(&id).is_none());
+        assert!(!store.clear_content_conflict(&id));
+    }
+
+    #[test]
+    fn stale_reload_revision_cannot_publish_a_candidate() {
+        let store = DocumentStore::default();
+        let id = store.create_active(test_trusted("/tmp/x.txt"));
+        store.record_conflict(&id, ConflictKind::ContentChanged, b"first".to_vec());
+        let stale_revision = store.conflict_for(&id).unwrap().revision;
+        store.record_conflict(&id, ConflictKind::ContentChanged, b"second".to_vec());
+
+        assert!(!store.prepare_reload(
+            &id,
+            stale_revision,
+            b"stale reload".to_vec(),
+            test_trusted("/tmp/x.txt")
+        ));
+        assert!(store.take_content(&id).is_none());
+        assert_eq!(store.conflict_for(&id).unwrap().snapshot, b"second");
+    }
+
+    #[test]
+    fn cancel_after_prepare_prevents_candidate_commit() {
+        let store = DocumentStore::default();
+        let id = store.create_active(test_trusted("/tmp/x.txt"));
+        store.record_conflict(&id, ConflictKind::ContentChanged, b"snap".to_vec());
+        let revision = store.conflict_for(&id).unwrap().revision;
+        assert!(store.prepare_reload(
+            &id,
+            revision,
+            b"reload".to_vec(),
+            test_trusted("/tmp/x.txt")
+        ));
+
+        assert!(store.clear_content_conflict(&id));
+        assert!(store.take_content(&id).is_none());
     }
 }

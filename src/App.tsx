@@ -18,7 +18,9 @@ import {
 } from "./documentSession";
 import { Editor } from "./Editor";
 import {
+  cancelConflict,
   checkBackendHealth,
+  describeConflictReloadError,
   describeOpenError,
   describeSaveError,
   encodingDisplayName,
@@ -27,6 +29,7 @@ import {
   lineEndingDisplayName,
   lineEndingToChoice,
   readDocumentContent,
+  reloadFromConflict,
   saveAs,
   saveDocument,
   selectAndOpenDocument,
@@ -37,11 +40,16 @@ import {
 } from "./platform";
 
 const initialDocument = createNewDocument();
+type ConflictOperationStatus = "idle" | "canceling" | "reloading";
 
 function App() {
   const [session, setSession] = useState<DocumentSession>(initialDocument);
   const [health, setHealth] = useState<HealthStatus | null>(null);
   const [backendUnavailable, setBackendUnavailable] = useState(false);
+  const [conflictOperation, setConflictOperation] = useState<{
+    status: ConflictOperationStatus;
+    errorMessage: string | null;
+  }>({ status: "idle", errorMessage: null });
   const [saveAsDialog, setSaveAsDialog] = useState<{
     open: boolean;
     encoding: EncodingChoice;
@@ -85,11 +93,15 @@ function App() {
   async function runSavePipeline(id: string, content: string) {
     try {
       const descriptor = await saveDocument(id, content);
+      setConflictOperation({ status: "idle", errorMessage: null });
       setSession((current) => commitSavedDocument(current, descriptor));
     } catch (err) {
       const error: DocumentCommandError = isDocumentCommandError(err)
         ? err
         : { code: "save-failed", message: "save request failed" };
+      if (error.code === "save-conflict-content-changed") {
+        setConflictOperation({ status: "idle", errorMessage: null });
+      }
       setSession((current) => failSave(current, error));
     }
   }
@@ -191,9 +203,87 @@ function App() {
     setSession((current) => cancelSave(current));
   }
 
-  const busy = isBusy(session) || saveAsDialog.open;
+  const conflictPending =
+    session.saveStatus === "error" &&
+    session.saveError?.code === "save-conflict-content-changed";
+
+  async function handleConflictReload() {
+    if (!conflictPending || conflictOperation.status !== "idle") {
+      return;
+    }
+    const documentId = session.id;
+    setConflictOperation({ status: "reloading", errorMessage: null });
+    try {
+      const descriptor = await reloadFromConflict(documentId);
+      const buffer = await readDocumentContent(descriptor.id);
+      const content = new TextDecoder().decode(buffer);
+      setSession((current) => {
+        if (
+          current.id !== documentId ||
+          current.saveError?.code !== "save-conflict-content-changed"
+        ) {
+          return current;
+        }
+        return commitOpenedDocument(current, descriptor, content);
+      });
+      setConflictOperation({ status: "idle", errorMessage: null });
+    } catch (err) {
+      const error: DocumentCommandError = isDocumentCommandError(err)
+        ? err
+        : { code: "save-failed", message: "reload failed" };
+      setConflictOperation({
+        status: "idle",
+        errorMessage: describeConflictReloadError(error),
+      });
+    }
+  }
+
+  async function handleConflictCancel() {
+    if (!conflictPending || conflictOperation.status !== "idle") {
+      return;
+    }
+    const documentId = session.id;
+    setConflictOperation({ status: "canceling", errorMessage: null });
+    try {
+      await cancelConflict(documentId);
+    } catch {
+      setConflictOperation({
+        status: "idle",
+        errorMessage: "The conflict could not be cancelled. Please try again.",
+      });
+      return;
+    }
+    setSession((current) => {
+      if (
+        current.id !== documentId ||
+        current.saveError?.code !== "save-conflict-content-changed"
+      ) {
+        return current;
+      }
+      return cancelSave(current);
+    });
+    setConflictOperation({ status: "idle", errorMessage: null });
+  }
+
+  useEffect(() => {
+    if (!conflictPending || conflictOperation.status !== "idle") {
+      return;
+    }
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        void handleConflictCancel();
+      }
+    };
+    window.addEventListener("keydown", handleEscape);
+    return () => window.removeEventListener("keydown", handleEscape);
+  }, [conflictPending, conflictOperation.status, session.id]);
+
+  const busy = isBusy(session) || saveAsDialog.open || conflictPending;
   const editorLocked =
-    session.openStatus === "loading" || session.saveStatus === "saving";
+    session.openStatus === "loading" ||
+    session.saveStatus === "saving" ||
+    conflictPending;
   const canSave =
     !session.readOnly && !busy && (session.path === null || session.isDirty);
   const canSaveAs = session.path !== null && !busy;
@@ -276,12 +366,53 @@ function App() {
               </button>
             </div>
           )}
-          {session.saveStatus === "error" && session.saveError !== null && (
-            <div className="notice notice-error" role="alert">
-              <span>{describeSaveError(session.saveError)}</span>
-              <button type="button" className="notice-dismiss" onClick={handleDismissSaveError}>
-                Dismiss
-              </button>
+          {session.saveStatus === "error" &&
+            session.saveError !== null &&
+            !conflictPending && (
+              <div className="notice notice-error" role="alert">
+                <span>{describeSaveError(session.saveError)}</span>
+                <button
+                  type="button"
+                  className="notice-dismiss"
+                  onClick={handleDismissSaveError}
+                >
+                  Dismiss
+                </button>
+              </div>
+            )}
+          {conflictPending && (
+            <div className="notice notice-conflict" role="alert">
+              <span>
+                The file changed on disk. Reload the disk version or cancel to
+                keep your edits.
+              </span>
+              {conflictOperation.errorMessage !== null && (
+                <span className="notice-conflict-error">
+                  {conflictOperation.errorMessage}
+                </span>
+              )}
+              <div className="notice-actions">
+                <button
+                  type="button"
+                  className="notice-action"
+                  onClick={handleConflictCancel}
+                  disabled={conflictOperation.status !== "idle"}
+                >
+                  {conflictOperation.status === "canceling"
+                    ? "Cancelling…"
+                    : "Cancel"}
+                </button>
+                <button
+                  type="button"
+                  className="notice-action notice-action-primary"
+                  onClick={handleConflictReload}
+                  disabled={conflictOperation.status !== "idle"}
+                >
+                  {conflictOperation.status === "reloading"
+                    ? "Reloading…"
+                    : "Reload"}
+                </button>
+              </div>
             </div>
           )}
         </div>

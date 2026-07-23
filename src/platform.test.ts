@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  describeConflictReloadError,
   describeOpenError,
   describeSaveError,
   encodingDisplayName,
@@ -56,6 +57,27 @@ describe("document error descriptions", () => {
     expect(changed).not.toMatch(/reload|overwrite|cancel/i);
     expect(missing).toContain("Saving was refused");
     expect(missing).not.toMatch(/keep|discard/i);
+  });
+
+  it("preserves stable reload failure reasons", () => {
+    expect(
+      describeConflictReloadError({
+        code: "file-too-large",
+        message: "too large",
+      }),
+    ).toContain("larger than 50 MB");
+    expect(
+      describeConflictReloadError({
+        code: "changed-during-read",
+        message: "changed",
+      }),
+    ).toContain("changed while being read");
+    expect(
+      describeConflictReloadError({
+        code: "unknown-document",
+        message: "stale",
+      }),
+    ).toContain("no longer active");
   });
 
   it("shows the unencodable character and UTF-8 byte offset", () => {

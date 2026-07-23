@@ -126,6 +126,23 @@ export function lineEndingToChoice(lineEnding: LineEnding): LineEndingChoice {
   return lineEnding === "crlf" ? "crlf" : "lf";
 }
 
+/**
+ * 取消当前内容变化冲突。后端清除待解决冲突状态，不执行文件 I/O。
+ */
+export async function cancelConflict(id: string): Promise<void> {
+  return invoke<void>("cancel_conflict", { id });
+}
+
+/**
+ * 从后端可信路径重新加载磁盘内容以解决冲突。返回更新后的描述符；内容随后经
+ * `readDocumentContent` 以原始二进制取回。读取失败时后端保留冲突状态。
+ */
+export async function reloadFromConflict(
+  id: string,
+): Promise<DocumentDescriptor> {
+  return invoke<DocumentDescriptor>("reload_from_conflict", { id });
+}
+
 const COMMAND_ERROR_CODES: readonly DocumentErrorCode[] = [
   "file-too-large",
   "unsupported-encoding",
@@ -200,6 +217,23 @@ export function describeOpenError(code: DocumentErrorCode): string {
       return "The file could not be read.";
     default:
       return "The file could not be opened.";
+  }
+}
+
+/** 重新加载冲突磁盘版本时使用读取侧文案，同时保留过期请求的明确提示。 */
+export function describeConflictReloadError(
+  error: DocumentCommandError,
+): string {
+  switch (error.code) {
+    case "file-too-large":
+    case "unsupported-encoding":
+    case "changed-during-read":
+    case "read-failed":
+      return describeOpenError(error.code);
+    case "unknown-document":
+      return "This conflict is no longer active. Cancel it or save again to refresh the document state.";
+    default:
+      return "The disk version could not be reloaded. Your edits are still preserved.";
   }
 }
 

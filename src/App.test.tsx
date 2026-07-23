@@ -251,6 +251,35 @@ describe("App save entry", () => {
     container.remove();
   });
 
+  async function openEditAndSave() {
+    await act(async () => root.render(<App />));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+
+    const editable = container.querySelector<HTMLElement>(".cm-content");
+    await act(async () => {
+      if (editable !== null) {
+        editable.textContent = "Hello edited";
+        editable.dispatchEvent(
+          new InputEvent("input", {
+            bubbles: true,
+            inputType: "insertText",
+            data: " edited",
+          }),
+        );
+      }
+      await Promise.resolve();
+    });
+    expect(container.querySelector<HTMLButtonElement>(".save-button")?.disabled).toBe(
+      false,
+    );
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".save-button")?.click();
+    });
+  }
+
   it("allows a fresh untitled document to enter first save", async () => {
     await act(async () => {
       root.render(<App />);
@@ -369,5 +398,216 @@ describe("App save entry", () => {
     ).toBe(true);
     // 对话框已关闭。
     expect(container.querySelector(".save-as-dialog")).toBeNull();
+  });
+
+  it("keeps reload failure details while leaving the conflict actionable", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        return {
+          id: "doc-conflict",
+          path: "/tmp/conflict.txt",
+          displayName: "conflict.txt",
+          byteCount: 5,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 5, sha256: "old" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode("Hello").buffer;
+      }
+      if (cmd === "save_document") {
+        throw {
+          code: "save-conflict-content-changed",
+          message: "conflict",
+        };
+      }
+      if (cmd === "reload_from_conflict") {
+        throw { code: "file-too-large", message: "too large" };
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await openEditAndSave();
+    const reload = container.querySelector<HTMLButtonElement>(
+      ".notice-action-primary",
+    );
+    expect(reload).not.toBeNull();
+    await act(async () => {
+      reload?.click();
+    });
+
+    expect(container.querySelector(".notice-conflict-error")?.textContent).toContain(
+      "larger than 50 MB",
+    );
+    expect(
+      container.querySelector<HTMLButtonElement>(".notice-action-primary")?.disabled,
+    ).toBe(false);
+    expect(container.querySelector(".notice-conflict")).not.toBeNull();
+  });
+
+  it("commits a successfully reloaded disk snapshot", async () => {
+    let contentReads = 0;
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        return {
+          id: "doc-conflict",
+          path: "/tmp/conflict.txt",
+          displayName: "conflict.txt",
+          byteCount: 5,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 5, sha256: "old" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "read_document_content") {
+        contentReads += 1;
+        return new TextEncoder()
+          .encode(contentReads === 1 ? "Hello" : "Disk version")
+          .buffer;
+      }
+      if (cmd === "save_document") {
+        throw {
+          code: "save-conflict-content-changed",
+          message: "conflict",
+        };
+      }
+      if (cmd === "reload_from_conflict") {
+        return {
+          id: "doc-conflict",
+          path: "/tmp/conflict.txt",
+          displayName: "conflict.txt",
+          byteCount: 12,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 12, sha256: "disk" },
+          readOnly: false,
+        };
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await openEditAndSave();
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(".notice-action-primary")
+        ?.click();
+    });
+
+    expect(container.querySelector(".cm-content")?.textContent).toContain(
+      "Disk version",
+    );
+    expect(container.querySelector(".notice-conflict")).toBeNull();
+    expect(container.querySelector(".statusbar")?.textContent).toContain("Saved");
+  });
+
+  it("serializes conflict actions while cancellation is pending", async () => {
+    let resolveCancel: (() => void) | undefined;
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "health_check") {
+        return Promise.resolve({ service: "document-core", version: "0.1.0" });
+      }
+      if (cmd === "select_and_open_document") {
+        return Promise.resolve({
+          id: "doc-conflict",
+          path: "/tmp/conflict.txt",
+          displayName: "conflict.txt",
+          byteCount: 5,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 5, sha256: "old" },
+          readOnly: false,
+        });
+      }
+      if (cmd === "read_document_content") {
+        return Promise.resolve(new TextEncoder().encode("Hello").buffer);
+      }
+      if (cmd === "save_document") {
+        return Promise.reject({
+          code: "save-conflict-content-changed",
+          message: "conflict",
+        });
+      }
+      if (cmd === "cancel_conflict") {
+        return new Promise<void>((resolve) => {
+          resolveCancel = resolve;
+        });
+      }
+      if (cmd === "reload_from_conflict") {
+        return Promise.reject(new Error("reload must stay disabled"));
+      }
+      return Promise.reject(new Error(`unexpected invoke ${cmd}`));
+    });
+
+    await openEditAndSave();
+    const actions = container.querySelectorAll<HTMLButtonElement>(".notice-action");
+    await act(async () => {
+      actions[0]?.click();
+    });
+
+    expect(actions[0]?.disabled).toBe(true);
+    expect(actions[1]?.disabled).toBe(true);
+    actions[1]?.click();
+    expect(
+      invokeMock.mock.calls.filter((call) => call[0] === "reload_from_conflict"),
+    ).toHaveLength(0);
+
+    await act(async () => {
+      resolveCancel?.();
+    });
+    expect(container.querySelector(".notice-conflict")).toBeNull();
+  });
+
+  it("treats Escape as cancelling a content conflict", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        return {
+          id: "doc-conflict",
+          path: "/tmp/conflict.txt",
+          displayName: "conflict.txt",
+          byteCount: 5,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 5, sha256: "old" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode("Hello").buffer;
+      }
+      if (cmd === "save_document") {
+        throw {
+          code: "save-conflict-content-changed",
+          message: "conflict",
+        };
+      }
+      if (cmd === "cancel_conflict") {
+        return undefined;
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await openEditAndSave();
+    await act(async () => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+      );
+    });
+
+    expect(
+      invokeMock.mock.calls.filter((call) => call[0] === "cancel_conflict"),
+    ).toHaveLength(1);
+    expect(container.querySelector(".notice-conflict")).toBeNull();
   });
 });
