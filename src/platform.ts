@@ -143,6 +143,17 @@ export async function reloadFromConflict(
   return invoke<DocumentDescriptor>("reload_from_conflict", { id });
 }
 
+/**
+ * 用户明确确认后，以冲突时保留的完整编辑快照覆盖确认后的最新磁盘基线。
+ * 后端重新观测目标取得基线并复用全部文件安全保护。确认后目标再次变化时覆盖被拒绝，
+ * 冲突保持待解决。
+ */
+export async function forceOverwrite(
+  id: string,
+): Promise<DocumentDescriptor> {
+  return invoke<DocumentDescriptor>("force_overwrite", { id });
+}
+
 const COMMAND_ERROR_CODES: readonly DocumentErrorCode[] = [
   "file-too-large",
   "unsupported-encoding",

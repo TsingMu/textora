@@ -197,6 +197,9 @@ struct DocumentStoreInner {
     active: Option<(String, TrustedDocument)>,
     /// 当前活动文档的待解决冲突状态。
     conflict: Option<ConflictState>,
+    /// 正在执行的强制覆盖，绑定活动文档与冲突版本。租约存在期间其他冲突解决操作
+    /// 必须拒绝，避免取消或新操作使已经确认的破坏性写入失去状态归属。
+    pending_overwrite: Option<(String, u64)>,
     /// 单调递增的内部冲突版本，只在 Rust 可信状态中使用，不暴露给前端。
     next_conflict_revision: u64,
 }
@@ -235,7 +238,8 @@ impl DocumentStore {
                     })
             }
         };
-        if !content_matches || !document_matches || !reload_matches {
+        let overwrite_allows_promotion = guard.pending_overwrite.is_none();
+        if !content_matches || !document_matches || !reload_matches || !overwrite_allows_promotion {
             if content_matches && document_matches {
                 guard.pending_content = None;
                 guard.pending_document = None;
@@ -260,6 +264,9 @@ impl DocumentStore {
 
     fn active_for(&self, id: &str) -> Option<TrustedDocument> {
         let guard = self.inner.lock().expect("document store lock poisoned");
+        if guard.pending_overwrite.is_some() {
+            return None;
+        }
         guard
             .active
             .as_ref()
@@ -269,6 +276,9 @@ impl DocumentStore {
 
     fn update_active(&self, id: &str, fingerprint: FileFingerprint, byte_count: u64) {
         let mut guard = self.inner.lock().expect("document store lock poisoned");
+        if guard.pending_overwrite.is_some() {
+            return;
+        }
         if let Some((stored_id, document)) = guard.active.as_mut() {
             if stored_id == id {
                 document.fingerprint = fingerprint;
@@ -303,6 +313,9 @@ impl DocumentStore {
     /// 首次冲突不得更新可信指纹、字节数或描述信息——此处只记录状态，不修改 active。
     fn record_conflict(&self, id: &str, kind: ConflictKind, snapshot: Vec<u8>) {
         let mut guard = self.inner.lock().expect("document store lock poisoned");
+        if guard.pending_overwrite.is_some() {
+            return;
+        }
         let trusted = guard
             .active
             .as_ref()
@@ -368,6 +381,15 @@ impl DocumentStore {
         let Some(revision) = revision else {
             return false;
         };
+        if guard
+            .pending_overwrite
+            .as_ref()
+            .is_some_and(|(pending_id, pending_revision)| {
+                pending_id == id && *pending_revision == revision
+            })
+        {
+            return false;
+        }
 
         guard.conflict = None;
         if guard
@@ -382,6 +404,80 @@ impl DocumentStore {
             guard.pending_reload_revision = None;
         }
         true
+    }
+
+    /// 为当前内容冲突取得强制覆盖租约。快照在租约建立后返回，失败或成功提交前都不消费
+    /// 冲突；同一时刻只允许一个覆盖操作。
+    fn begin_overwrite(&self, id: &str) -> Option<ConflictState> {
+        let mut guard = self.inner.lock().expect("document store lock poisoned");
+        if guard.pending_overwrite.is_some() || guard.pending_reload_revision.is_some() {
+            return None;
+        }
+        let active_matches = guard
+            .active
+            .as_ref()
+            .is_some_and(|(stored_id, _)| stored_id == id);
+        let conflict = guard
+            .conflict
+            .as_ref()
+            .filter(|conflict| active_matches && conflict.kind == ConflictKind::ContentChanged)
+            .cloned()?;
+        guard.pending_overwrite = Some((id.to_owned(), conflict.revision));
+        Some(conflict)
+    }
+
+    /// 覆盖 I/O 失败时仅释放匹配租约，保留原冲突供用户重试或取消。
+    fn abort_overwrite(&self, id: &str, revision: u64) -> bool {
+        let mut guard = self.inner.lock().expect("document store lock poisoned");
+        let matches =
+            guard
+                .pending_overwrite
+                .as_ref()
+                .is_some_and(|(pending_id, pending_revision)| {
+                    pending_id == id && *pending_revision == revision
+                });
+        if matches {
+            guard.pending_overwrite = None;
+        }
+        matches
+    }
+
+    /// 覆盖成功后，在同一锁内复核活动文档、冲突版本与租约，再更新可信状态并清除冲突。
+    fn commit_overwrite(
+        &self,
+        id: &str,
+        revision: u64,
+        fingerprint: FileFingerprint,
+        byte_count: u64,
+    ) -> Option<TrustedDocument> {
+        let mut guard = self.inner.lock().expect("document store lock poisoned");
+        let still_current = guard
+            .active
+            .as_ref()
+            .is_some_and(|(stored_id, _)| stored_id == id)
+            && guard.conflict.as_ref().is_some_and(|conflict| {
+                conflict.revision == revision && conflict.kind == ConflictKind::ContentChanged
+            })
+            && guard
+                .pending_overwrite
+                .as_ref()
+                .is_some_and(|(pending_id, pending_revision)| {
+                    pending_id == id && *pending_revision == revision
+                });
+        if !still_current {
+            return None;
+        }
+
+        let (_, document) = guard
+            .active
+            .as_mut()
+            .expect("matching active document must exist");
+        document.fingerprint = fingerprint;
+        document.byte_count = byte_count;
+        let updated = document.clone();
+        guard.conflict = None;
+        guard.pending_overwrite = None;
+        Some(updated)
     }
 
     /// 重新加载成功后，把新内容和更新后的可信描述缓冲为候选，供 `read_document_content`
@@ -401,7 +497,8 @@ impl DocumentStore {
             .is_some_and(|(stored_id, _)| stored_id == id)
             && guard.conflict.as_ref().is_some_and(|conflict| {
                 conflict.revision == revision && conflict.kind == ConflictKind::ContentChanged
-            });
+            })
+            && guard.pending_overwrite.is_none();
         if !still_current {
             return false;
         }
@@ -622,6 +719,85 @@ pub async fn reload_from_conflict(
     }
 
     Ok(updated.to_descriptor(&id, updated.fingerprint.clone(), updated.byte_count))
+}
+
+/// 用户明确确认后，以冲突时保留的完整编辑快照覆盖确认后的最新磁盘基线。
+///
+/// 重新观测目标取得当前指纹作为覆盖基线（前端不能提供），再以 `ExistingTarget` 写入，
+/// 复用严格编码、换行规范化、50 MiB 限制、只读/权限检查、同目录临时文件与原子替换。
+/// 确认后到替换前若目标再次变化或消失，覆盖被拒绝，冲突状态保持待解决。成功后清除冲突
+/// 并更新可信指纹与字节数。只接受 `ContentChanged` 冲突。
+#[tauri::command]
+pub async fn force_overwrite(
+    id: String,
+    state: tauri::State<'_, DocumentStore>,
+) -> Result<DocumentDescriptor, DocumentCommandError> {
+    force_overwrite_inner(id, state.inner()).await
+}
+
+async fn force_overwrite_inner(
+    id: String,
+    state: &DocumentStore,
+) -> Result<DocumentDescriptor, DocumentCommandError> {
+    let conflict = state.begin_overwrite(&id).ok_or_else(|| {
+        DocumentCommandError::new(
+            DocumentErrorCode::UnknownDocument,
+            "no available content conflict for this document",
+        )
+    })?;
+    let revision = conflict.revision;
+    let snapshot = String::from_utf8(conflict.snapshot.clone()).map_err(|_| {
+        state.abort_overwrite(&id, revision);
+        DocumentCommandError::new(
+            DocumentErrorCode::SaveFailed,
+            "conflict snapshot is not valid UTF-8",
+        )
+    })?;
+    let trusted = conflict.trusted.clone();
+
+    let core_result = tauri::async_runtime::spawn_blocking(move || {
+        // 确认后重新观测目标取得覆盖基线（前端不能提供或修改）。
+        let observed = read_target_fingerprint(&trusted.path)?;
+        document::save_document(
+            &trusted.path,
+            document::SaveRequest {
+                content: snapshot,
+                encoding: trusted.encoding,
+                line_ending: trusted.line_ending,
+                target: document::SaveTarget::ExistingTarget { observed },
+            },
+        )
+    })
+    .await
+    .map_err(|_| {
+        DocumentCommandError::new(
+            DocumentErrorCode::SaveFailed,
+            "force-overwrite worker could not complete",
+        )
+    })
+    .and_then(|result| result.map_err(DocumentCommandError::from_save_core));
+
+    let outcome = match core_result {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            state.abort_overwrite(&id, revision);
+            return Err(error);
+        }
+    };
+
+    let Some(updated) = state.commit_overwrite(
+        &id,
+        revision,
+        outcome.fingerprint.clone(),
+        outcome.byte_count,
+    ) else {
+        state.abort_overwrite(&id, revision);
+        return Err(DocumentCommandError::new(
+            DocumentErrorCode::UnknownDocument,
+            "content conflict changed while the file was being overwritten",
+        ));
+    };
+    Ok(updated.to_descriptor(&id, outcome.fingerprint, outcome.byte_count))
 }
 
 /// 保存格式 header 名。编码值：`utf8` / `utf8-bom` / `gbk`；换行值：`lf` / `crlf`。
@@ -1318,6 +1494,126 @@ mod tests {
         store.record_conflict(&id, ConflictKind::TargetMissing, b"snap".to_vec());
         assert!(store.content_conflict_for(&id).is_none());
         assert!(!store.clear_content_conflict(&id));
+    }
+
+    #[test]
+    fn overwrite_lease_blocks_other_resolutions_and_failure_releases_for_retry() {
+        let store = DocumentStore::default();
+        let id = store.create_active(test_trusted("/tmp/overwrite.txt"));
+        store.record_conflict(&id, ConflictKind::ContentChanged, b"my edits".to_vec());
+
+        let conflict = store.begin_overwrite(&id).unwrap();
+        assert_eq!(conflict.snapshot, b"my edits");
+        assert!(store.begin_overwrite(&id).is_none());
+        assert!(!store.clear_content_conflict(&id));
+        assert!(!store.prepare_reload(
+            &id,
+            conflict.revision,
+            b"disk".to_vec(),
+            test_trusted("/tmp/overwrite.txt")
+        ));
+
+        assert!(store.abort_overwrite(&id, conflict.revision));
+        assert!(store.conflict_for(&id).is_some());
+        let retry = store.begin_overwrite(&id).unwrap();
+        assert_eq!(retry.revision, conflict.revision);
+        assert!(store.abort_overwrite(&id, retry.revision));
+        assert!(store.clear_content_conflict(&id));
+    }
+
+    #[test]
+    fn overwrite_commit_atomically_checks_revision_and_updates_active() {
+        let store = DocumentStore::default();
+        let id = store.create_active(test_trusted("/tmp/overwrite.txt"));
+        store.record_conflict(&id, ConflictKind::ContentChanged, b"my edits".to_vec());
+        let conflict = store.begin_overwrite(&id).unwrap();
+        let fingerprint = FileFingerprint::of(b"my edits");
+
+        let updated = store
+            .commit_overwrite(&id, conflict.revision, fingerprint.clone(), 8)
+            .unwrap();
+        assert_eq!(updated.fingerprint, fingerprint);
+        assert_eq!(updated.byte_count, 8);
+        assert!(store.conflict_for(&id).is_none());
+        assert_eq!(store.active_for(&id).unwrap().fingerprint, fingerprint);
+        assert!(
+            store
+                .commit_overwrite(&id, conflict.revision, FileFingerprint::of(b"x"), 1)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn stale_overwrite_commit_cannot_clear_a_newer_conflict() {
+        let store = DocumentStore::default();
+        let id = store.create_active(test_trusted("/tmp/overwrite.txt"));
+        store.record_conflict(&id, ConflictKind::ContentChanged, b"first".to_vec());
+        let first = store.begin_overwrite(&id).unwrap();
+        assert!(store.abort_overwrite(&id, first.revision));
+
+        store.record_conflict(&id, ConflictKind::ContentChanged, b"second".to_vec());
+        let second = store.conflict_for(&id).unwrap();
+        assert_ne!(second.revision, first.revision);
+        assert!(
+            store
+                .commit_overwrite(&id, first.revision, FileFingerprint::of(b"first"), 5)
+                .is_none()
+        );
+        assert_eq!(store.conflict_for(&id).unwrap().snapshot, b"second");
+    }
+
+    #[test]
+    fn force_overwrite_writes_the_conflict_snapshot_and_commits_trusted_state() {
+        use crate::document::test_support::TestDir;
+
+        let dir = TestDir::new();
+        let path = dir.join("overwrite.txt");
+        std::fs::write(&path, b"external version").unwrap();
+        let mut trusted = test_trusted(path.to_str().unwrap());
+        trusted.fingerprint = FileFingerprint::of(b"original");
+        trusted.byte_count = 8;
+        let store = DocumentStore::default();
+        let id = store.create_active(trusted);
+        store.record_conflict(
+            &id,
+            ConflictKind::ContentChanged,
+            b"my complete edits".to_vec(),
+        );
+
+        let descriptor =
+            tauri::async_runtime::block_on(force_overwrite_inner(id.clone(), &store)).unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"my complete edits");
+        assert_eq!(
+            descriptor.fingerprint,
+            FileFingerprint::of(b"my complete edits")
+        );
+        assert_eq!(descriptor.byte_count, 17);
+        assert!(store.conflict_for(&id).is_none());
+        assert_eq!(
+            store.active_for(&id).unwrap().fingerprint,
+            descriptor.fingerprint
+        );
+    }
+
+    #[test]
+    fn force_overwrite_failure_keeps_conflict_and_releases_lease() {
+        use crate::document::test_support::TestDir;
+
+        let dir = TestDir::new();
+        let path = dir.join("missing.txt");
+        let mut trusted = test_trusted(path.to_str().unwrap());
+        trusted.fingerprint = FileFingerprint::of(b"original");
+        let store = DocumentStore::default();
+        let id = store.create_active(trusted);
+        store.record_conflict(&id, ConflictKind::ContentChanged, b"my edits".to_vec());
+
+        let error =
+            tauri::async_runtime::block_on(force_overwrite_inner(id.clone(), &store)).unwrap_err();
+        assert_eq!(error.code, DocumentErrorCode::SaveFailed);
+        assert_eq!(store.conflict_for(&id).unwrap().snapshot, b"my edits");
+        let retry = store.begin_overwrite(&id).unwrap();
+        assert!(store.abort_overwrite(&id, retry.revision));
     }
 
     #[test]

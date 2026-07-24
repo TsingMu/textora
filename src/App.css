@@ -328,6 +328,12 @@ textarea {
   border-color: var(--accent);
 }
 
+.notice-action-danger {
+  background: #c45042;
+  color: #fffaf3;
+  border-color: #c45042;
+}
+
 .notice-dismiss {
   border: none;
   background: transparent;

@@ -25,6 +25,7 @@ import {
   describeSaveError,
   encodingDisplayName,
   encodingToChoice,
+  forceOverwrite,
   isDocumentCommandError,
   lineEndingDisplayName,
   lineEndingToChoice,
@@ -40,7 +41,7 @@ import {
 } from "./platform";
 
 const initialDocument = createNewDocument();
-type ConflictOperationStatus = "idle" | "canceling" | "reloading";
+type ConflictOperationStatus = "idle" | "canceling" | "reloading" | "overwriting";
 
 function App() {
   const [session, setSession] = useState<DocumentSession>(initialDocument);
@@ -265,6 +266,35 @@ function App() {
     setConflictOperation({ status: "idle", errorMessage: null });
   }
 
+  async function handleConflictOverwrite() {
+    if (!conflictPending || conflictOperation.status !== "idle") {
+      return;
+    }
+    const documentId = session.id;
+    setConflictOperation({ status: "overwriting", errorMessage: null });
+    try {
+      const descriptor = await forceOverwrite(documentId);
+      setSession((current) => {
+        if (
+          current.id !== documentId ||
+          current.saveError?.code !== "save-conflict-content-changed"
+        ) {
+          return current;
+        }
+        return commitSavedDocument(current, descriptor);
+      });
+      setConflictOperation({ status: "idle", errorMessage: null });
+    } catch (err) {
+      const error: DocumentCommandError = isDocumentCommandError(err)
+        ? err
+        : { code: "save-failed", message: "force-overwrite failed" };
+      setConflictOperation({
+        status: "idle",
+        errorMessage: describeSaveError(error),
+      });
+    }
+  }
+
   useEffect(() => {
     if (!conflictPending || conflictOperation.status !== "idle") {
       return;
@@ -383,8 +413,8 @@ function App() {
           {conflictPending && (
             <div className="notice notice-conflict" role="alert">
               <span>
-                The file changed on disk. Reload the disk version or cancel to
-                keep your edits.
+                The file changed on disk. Reload the disk version, overwrite it
+                with your edits, or cancel.
               </span>
               {conflictOperation.errorMessage !== null && (
                 <span className="notice-conflict-error">
@@ -411,6 +441,16 @@ function App() {
                   {conflictOperation.status === "reloading"
                     ? "Reloading…"
                     : "Reload"}
+                </button>
+                <button
+                  type="button"
+                  className="notice-action notice-action-danger"
+                  onClick={handleConflictOverwrite}
+                  disabled={conflictOperation.status !== "idle"}
+                >
+                  {conflictOperation.status === "overwriting"
+                    ? "Overwriting…"
+                    : "Overwrite"}
                 </button>
               </div>
             </div>

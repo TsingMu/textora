@@ -4,6 +4,16 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+// jsdom does not implement Range geometry. CodeMirror schedules text measurement
+// with requestAnimationFrame, so the missing method can otherwise surface after an
+// assertion or unmount as a nondeterministic unhandled error.
+if (!("getClientRects" in Range.prototype)) {
+  Object.defineProperty(Range.prototype, "getClientRects", {
+    configurable: true,
+    value: () => [],
+  });
+}
+
 const invokeMock = vi.fn();
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -507,6 +517,196 @@ describe("App save entry", () => {
     );
     expect(container.querySelector(".notice-conflict")).toBeNull();
     expect(container.querySelector(".statusbar")?.textContent).toContain("Saved");
+  });
+
+  it("commits a successful force overwrite and clears the conflict", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        return {
+          id: "doc-conflict",
+          path: "/tmp/conflict.txt",
+          displayName: "conflict.txt",
+          byteCount: 5,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 5, sha256: "old" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode("Hello").buffer;
+      }
+      if (cmd === "save_document") {
+        throw {
+          code: "save-conflict-content-changed",
+          message: "conflict",
+        };
+      }
+      if (cmd === "force_overwrite") {
+        return {
+          id: "doc-conflict",
+          path: "/tmp/conflict.txt",
+          displayName: "conflict.txt",
+          byteCount: 12,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 12, sha256: "overwritten" },
+          readOnly: false,
+        };
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await openEditAndSave();
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(".notice-action-danger")
+        ?.click();
+    });
+
+    expect(
+      invokeMock.mock.calls.find((call) => call[0] === "force_overwrite"),
+    ).toEqual(["force_overwrite", { id: "doc-conflict" }]);
+    expect(container.querySelector(".notice-conflict")).toBeNull();
+    expect(container.querySelector(".statusbar")?.textContent).toContain("Saved");
+  });
+
+  it("keeps a failed force overwrite actionable with its stable error", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        return {
+          id: "doc-conflict",
+          path: "/tmp/conflict.txt",
+          displayName: "conflict.txt",
+          byteCount: 5,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 5, sha256: "old" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode("Hello").buffer;
+      }
+      if (cmd === "save_document") {
+        throw {
+          code: "save-conflict-content-changed",
+          message: "conflict",
+        };
+      }
+      if (cmd === "force_overwrite") {
+        throw { code: "read-only", message: "read only" };
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await openEditAndSave();
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(".notice-action-danger")
+        ?.click();
+    });
+
+    expect(container.querySelector(".notice-conflict-error")?.textContent).toContain(
+      "read-only",
+    );
+    expect(container.querySelector(".notice-conflict")).not.toBeNull();
+    for (const action of container.querySelectorAll<HTMLButtonElement>(
+      ".notice-action",
+    )) {
+      expect(action.disabled).toBe(false);
+    }
+  });
+
+  it("serializes all conflict actions while force overwrite is pending", async () => {
+    let resolveOverwrite:
+      | ((descriptor: {
+          id: string;
+          path: string;
+          displayName: string;
+          byteCount: number;
+          encoding: { utf8: { bom: boolean } };
+          lineEnding: string;
+          fingerprint: { sizeBytes: number; sha256: string };
+          readOnly: boolean;
+        }) => void)
+      | undefined;
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "health_check") {
+        return Promise.resolve({ service: "document-core", version: "0.1.0" });
+      }
+      if (cmd === "select_and_open_document") {
+        return Promise.resolve({
+          id: "doc-conflict",
+          path: "/tmp/conflict.txt",
+          displayName: "conflict.txt",
+          byteCount: 5,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 5, sha256: "old" },
+          readOnly: false,
+        });
+      }
+      if (cmd === "read_document_content") {
+        return Promise.resolve(new TextEncoder().encode("Hello").buffer);
+      }
+      if (cmd === "save_document") {
+        return Promise.reject({
+          code: "save-conflict-content-changed",
+          message: "conflict",
+        });
+      }
+      if (cmd === "force_overwrite") {
+        return new Promise((resolve) => {
+          resolveOverwrite = resolve;
+        });
+      }
+      return Promise.reject(new Error(`unexpected invoke ${cmd}`));
+    });
+
+    await openEditAndSave();
+    const overwrite = container.querySelector<HTMLButtonElement>(
+      ".notice-action-danger",
+    );
+    await act(async () => {
+      overwrite?.click();
+    });
+
+    const actions =
+      container.querySelectorAll<HTMLButtonElement>(".notice-action");
+    for (const action of actions) {
+      expect(action.disabled).toBe(true);
+      action.click();
+    }
+    expect(
+      invokeMock.mock.calls.filter((call) => call[0] === "force_overwrite"),
+    ).toHaveLength(1);
+    expect(
+      invokeMock.mock.calls.filter((call) => call[0] === "cancel_conflict"),
+    ).toHaveLength(0);
+    expect(
+      invokeMock.mock.calls.filter((call) => call[0] === "reload_from_conflict"),
+    ).toHaveLength(0);
+
+    await act(async () => {
+      resolveOverwrite?.({
+        id: "doc-conflict",
+        path: "/tmp/conflict.txt",
+        displayName: "conflict.txt",
+        byteCount: 12,
+        encoding: { utf8: { bom: false } },
+        lineEnding: "lf",
+        fingerprint: { sizeBytes: 12, sha256: "overwritten" },
+        readOnly: false,
+      });
+    });
+    expect(container.querySelector(".notice-conflict")).toBeNull();
   });
 
   it("serializes conflict actions while cancellation is pending", async () => {
