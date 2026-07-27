@@ -154,6 +154,22 @@ export async function forceOverwrite(
   return invoke<DocumentDescriptor>("force_overwrite", { id });
 }
 
+/**
+ * 检查当前文档的可信路径文件是否仍存在。只做 metadata 调用，不读取内容。
+ * 未知或过期 id 返回 true（不触发缺失提示）。
+ */
+export async function checkTargetExists(id: string): Promise<boolean> {
+  return invoke<boolean>("check_target_exists", { id });
+}
+
+/**
+ * 关闭文档：清除后端活动文档关联与冲突状态。用于「保留」（解除路径关联）和
+ * 「不保留」（关闭文档）两个分支。未知 id 为安全 no-op。
+ */
+export async function closeDocument(id: string): Promise<void> {
+  return invoke<void>("close_document", { id });
+}
+
 const COMMAND_ERROR_CODES: readonly DocumentErrorCode[] = [
   "file-too-large",
   "unsupported-encoding",

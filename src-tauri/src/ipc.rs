@@ -507,6 +507,34 @@ impl DocumentStore {
         guard.pending_reload_revision = Some((id.to_owned(), revision));
         true
     }
+
+    /// 返回活动文档的可信路径（不读取内容）。用于聚焦时检查文件是否仍存在。
+    fn active_path_for(&self, id: &str) -> Option<PathBuf> {
+        let guard = self.inner.lock().expect("document store lock poisoned");
+        guard
+            .active
+            .as_ref()
+            .filter(|(stored_id, _)| stored_id == id)
+            .map(|(_, document)| document.path.clone())
+    }
+
+    /// 关闭文档：清除活动文档关联与所有待解决/待提交状态。未知 id 返回 false。
+    fn close_active(&self, id: &str) -> bool {
+        let mut guard = self.inner.lock().expect("document store lock poisoned");
+        let active_matches = guard
+            .active
+            .as_ref()
+            .is_some_and(|(stored_id, _)| stored_id == id);
+        if active_matches {
+            guard.active = None;
+            guard.conflict = None;
+            guard.pending_overwrite = None;
+            guard.pending_reload_revision = None;
+            guard.pending_content = None;
+            guard.pending_document = None;
+        }
+        active_matches
+    }
 }
 
 fn trusted_from_descriptor(descriptor: &DocumentDescriptor) -> TrustedDocument {
@@ -798,6 +826,54 @@ async fn force_overwrite_inner(
         ));
     };
     Ok(updated.to_descriptor(&id, outcome.fingerprint, outcome.byte_count))
+}
+
+fn target_exists(path: &std::path::Path) -> Result<bool, DocumentError> {
+    match std::fs::metadata(path) {
+        Ok(_) => Ok(true),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(DocumentError::Io(err)),
+    }
+}
+
+/// 检查当前活动文档的可信路径文件是否仍存在。只做 `metadata` 调用，不读取内容；
+/// 仅 `NotFound` 表示缺失，其他 I/O 错误明确失败。未知或过期 id 返回 `true`，避免触发
+/// 不属于当前会话的缺失提示。前端在窗口重新聚焦时调用。
+#[tauri::command]
+pub async fn check_target_exists(
+    id: String,
+    state: tauri::State<'_, DocumentStore>,
+) -> Result<bool, DocumentCommandError> {
+    let Some(path) = state.active_path_for(&id) else {
+        return Ok(true);
+    };
+    tauri::async_runtime::spawn_blocking(move || target_exists(&path))
+        .await
+        .map_err(|_| {
+            DocumentCommandError::new(
+                DocumentErrorCode::ReadFailed,
+                "target existence worker could not complete",
+            )
+        })?
+        .map_err(DocumentCommandError::from_open_core)
+}
+
+/// 关闭文档：清除后端活动文档关联与待解决冲突状态。用于「保留」（解除路径关联后
+/// 文档变为内存 Untitled）和「不保留」（关闭文档）两个分支。未知 id 明确拒绝，避免
+/// 前端在后端状态未改变时提交本地会话转换。
+#[tauri::command]
+pub fn close_document(
+    id: String,
+    state: tauri::State<'_, DocumentStore>,
+) -> Result<(), DocumentCommandError> {
+    if state.close_active(&id) {
+        Ok(())
+    } else {
+        Err(DocumentCommandError::new(
+            DocumentErrorCode::UnknownDocument,
+            "unknown or stale document id",
+        ))
+    }
 }
 
 /// 保存格式 header 名。编码值：`utf8` / `utf8-bom` / `gbk`；换行值：`lf` / `crlf`。
@@ -1343,6 +1419,35 @@ mod tests {
             classify_conflict(invalid),
             Err(DocumentError::Io(_))
         ));
+    }
+
+    #[test]
+    fn target_exists_distinguishes_missing_from_other_io_errors() {
+        use crate::document::test_support::TestDir;
+
+        let dir = TestDir::new();
+        let existing = dir.join("exists.txt");
+        std::fs::write(&existing, b"data").unwrap();
+        assert_eq!(target_exists(&existing).unwrap(), true);
+        assert_eq!(target_exists(&dir.join("missing.txt")).unwrap(), false);
+        assert!(matches!(
+            target_exists(std::path::Path::new("\0")),
+            Err(DocumentError::Io(_))
+        ));
+    }
+
+    #[test]
+    fn close_active_clears_matching_state_and_rejects_stale_id() {
+        let store = DocumentStore::default();
+        let id = store.create_active(test_trusted("/tmp/close.txt"));
+        store.record_conflict(&id, ConflictKind::ContentChanged, b"edits".to_vec());
+
+        assert!(!store.close_active("stale"));
+        assert!(store.active_for(&id).is_some());
+        assert!(store.close_active(&id));
+        assert!(store.active_for(&id).is_none());
+        assert!(store.conflict_for(&id).is_none());
+        assert!(!store.close_active(&id));
     }
 
     #[test]

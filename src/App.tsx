@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import "./App.css";
 import {
   cancelOpen,
@@ -20,6 +20,8 @@ import { Editor } from "./Editor";
 import {
   cancelConflict,
   checkBackendHealth,
+  checkTargetExists,
+  closeDocument,
   describeConflictReloadError,
   describeOpenError,
   describeSaveError,
@@ -42,6 +44,7 @@ import {
 
 const initialDocument = createNewDocument();
 type ConflictOperationStatus = "idle" | "canceling" | "reloading" | "overwriting";
+type FileMissingOperationStatus = "idle" | "keeping" | "discarding";
 
 function App() {
   const [session, setSession] = useState<DocumentSession>(initialDocument);
@@ -56,6 +59,22 @@ function App() {
     encoding: EncodingChoice;
     lineEnding: LineEndingChoice;
   }>({ open: false, encoding: "utf8", lineEnding: "lf" });
+  const [fileMissingPending, setFileMissingPending] = useState(false);
+  const [fileMissingOperation, setFileMissingOperation] = useState<{
+    status: FileMissingOperationStatus;
+    errorMessage: string | null;
+  }>({ status: "idle", errorMessage: null });
+  const sessionRef = useRef(session);
+  const fileMissingPendingRef = useRef(fileMissingPending);
+  const fileMissingResolvingRef = useRef(false);
+  const targetCheckRevisionRef = useRef(0);
+  const targetCheckInFlightRef = useRef<{
+    revision: number;
+    documentId: string;
+    path: string;
+  } | null>(null);
+  sessionRef.current = session;
+  fileMissingPendingRef.current = fileMissingPending;
 
   useEffect(() => {
     let active = true;
@@ -72,6 +91,175 @@ function App() {
       active = false;
     };
   }, []);
+
+  // 窗口重新聚焦时检查当前文档文件是否仍存在（仅对已打开且有路径的文档）。
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+
+    const checkCurrentTarget = () => {
+      const current = sessionRef.current;
+      if (
+        current.path === null ||
+        isBusy(current) ||
+        current.saveStatus === "error" ||
+        fileMissingPendingRef.current
+      ) {
+        return;
+      }
+
+      const existing = targetCheckInFlightRef.current;
+      if (
+        existing?.documentId === current.id &&
+        existing.path === current.path
+      ) {
+        return;
+      }
+
+      const revision = targetCheckRevisionRef.current + 1;
+      targetCheckRevisionRef.current = revision;
+      const request = {
+        revision,
+        documentId: current.id,
+        path: current.path,
+      };
+      targetCheckInFlightRef.current = request;
+
+      void checkTargetExists(request.documentId)
+        .then((exists) => {
+          if (
+            cancelled ||
+            targetCheckInFlightRef.current?.revision !== request.revision
+          ) {
+            return;
+          }
+          targetCheckInFlightRef.current = null;
+          const latest = sessionRef.current;
+          if (
+            exists ||
+            latest.id !== request.documentId ||
+            latest.path !== request.path ||
+            isBusy(latest) ||
+            latest.saveStatus === "error" ||
+            fileMissingPendingRef.current
+          ) {
+            return;
+          }
+          fileMissingPendingRef.current = true;
+          setFileMissingOperation({ status: "idle", errorMessage: null });
+          setFileMissingPending(true);
+        })
+        .catch(() => {
+          // 检查失败不等价于文件缺失；保持当前会话并允许下次聚焦重试。
+          if (targetCheckInFlightRef.current?.revision === request.revision) {
+            targetCheckInFlightRef.current = null;
+          }
+        });
+    };
+
+    (async () => {
+      try {
+        const { getCurrentWindow } = await import("@tauri-apps/api/window");
+        const stopListening = await getCurrentWindow().onFocusChanged(
+          ({ payload: focused }) => {
+            if (focused && !cancelled) {
+              checkCurrentTarget();
+            }
+          },
+        );
+        if (cancelled) {
+          stopListening();
+        } else {
+          unlisten = stopListening;
+        }
+      } catch {
+        // 非 Tauri 环境（测试）中不设置监听。
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      targetCheckRevisionRef.current += 1;
+      targetCheckInFlightRef.current = null;
+      unlisten?.();
+    };
+  }, []);
+
+  async function handleFileMissingKeep() {
+    if (!fileMissingPending || fileMissingResolvingRef.current) {
+      return;
+    }
+    const documentId = session.id;
+    fileMissingResolvingRef.current = true;
+    setFileMissingOperation({ status: "keeping", errorMessage: null });
+    try {
+      await closeDocument(documentId);
+    } catch {
+      fileMissingResolvingRef.current = false;
+      setFileMissingOperation({
+        status: "idle",
+        errorMessage:
+          "The file could not be detached from this session. Please try again.",
+      });
+      return;
+    }
+    setSession((current) => {
+      if (current.id !== documentId) return current;
+      return {
+        ...current,
+        path: null,
+        isDirty: true,
+        saveStatus: "idle",
+        saveError: null,
+      };
+    });
+    fileMissingResolvingRef.current = false;
+    fileMissingPendingRef.current = false;
+    setFileMissingPending(false);
+    setFileMissingOperation({ status: "idle", errorMessage: null });
+  }
+
+  async function handleFileMissingDiscard() {
+    if (!fileMissingPending || fileMissingResolvingRef.current) {
+      return;
+    }
+    const documentId = session.id;
+    fileMissingResolvingRef.current = true;
+    setFileMissingOperation({ status: "discarding", errorMessage: null });
+    try {
+      await closeDocument(documentId);
+    } catch {
+      fileMissingResolvingRef.current = false;
+      setFileMissingOperation({
+        status: "idle",
+        errorMessage:
+          "The file could not be closed. Your content is still preserved.",
+      });
+      return;
+    }
+    setSession((current) => {
+      if (current.id !== documentId) return current;
+      return createNewDocument();
+    });
+    fileMissingResolvingRef.current = false;
+    fileMissingPendingRef.current = false;
+    setFileMissingPending(false);
+    setFileMissingOperation({ status: "idle", errorMessage: null });
+  }
+
+  useEffect(() => {
+    if (!fileMissingPending || fileMissingOperation.status !== "idle") {
+      return;
+    }
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        void handleFileMissingKeep();
+      }
+    };
+    window.addEventListener("keydown", handleEscape);
+    return () => window.removeEventListener("keydown", handleEscape);
+  }, [fileMissingPending, fileMissingOperation.status, session.id]);
 
   async function runOpenPipeline() {
     setSession((current) => startLoading(current));
@@ -102,6 +290,15 @@ function App() {
         : { code: "save-failed", message: "save request failed" };
       if (error.code === "save-conflict-content-changed") {
         setConflictOperation({ status: "idle", errorMessage: null });
+      }
+      if (error.code === "save-conflict-target-missing") {
+        // 文件已删除：进入保留/关闭流程，不走通用保存失败。
+        targetCheckRevisionRef.current += 1;
+        targetCheckInFlightRef.current = null;
+        fileMissingPendingRef.current = true;
+        setFileMissingOperation({ status: "idle", errorMessage: null });
+        setFileMissingPending(true);
+        return;
       }
       setSession((current) => failSave(current, error));
     }
@@ -309,11 +506,13 @@ function App() {
     return () => window.removeEventListener("keydown", handleEscape);
   }, [conflictPending, conflictOperation.status, session.id]);
 
-  const busy = isBusy(session) || saveAsDialog.open || conflictPending;
+  const busy =
+    isBusy(session) || saveAsDialog.open || conflictPending || fileMissingPending;
   const editorLocked =
     session.openStatus === "loading" ||
     session.saveStatus === "saving" ||
-    conflictPending;
+    conflictPending ||
+    fileMissingPending;
   const canSave =
     !session.readOnly && !busy && (session.path === null || session.isDirty);
   const canSaveAs = session.path !== null && !busy;
@@ -536,6 +735,51 @@ function App() {
                 autoFocus
               >
                 Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {fileMissingPending && (
+        <div
+          className="confirm-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label="File missing on disk"
+        >
+          <div className="confirm-dialog">
+            <p className="confirm-message">
+              The file "{session.displayName}" no longer exists on disk. Keep
+              the current content in the editor (you will need to save it to a
+              new location), or discard it and start fresh?
+            </p>
+            {fileMissingOperation.errorMessage !== null && (
+              <p className="notice-conflict-error" role="alert">
+                {fileMissingOperation.errorMessage}
+              </p>
+            )}
+            <div className="confirm-actions">
+              <button
+                type="button"
+                className="confirm-cancel"
+                onClick={handleFileMissingKeep}
+                disabled={fileMissingOperation.status !== "idle"}
+                autoFocus
+              >
+                {fileMissingOperation.status === "keeping"
+                  ? "Keeping…"
+                  : "Keep content"}
+              </button>
+              <button
+                type="button"
+                className="confirm-discard"
+                onClick={handleFileMissingDiscard}
+                disabled={fileMissingOperation.status !== "idle"}
+              >
+                {fileMissingOperation.status === "discarding"
+                  ? "Discarding…"
+                  : "Discard"}
               </button>
             </div>
           </div>

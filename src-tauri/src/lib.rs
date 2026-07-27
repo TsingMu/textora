@@ -33,7 +33,9 @@ pub fn run() {
             ipc::save_document_as,
             ipc::cancel_conflict,
             ipc::reload_from_conflict,
-            ipc::force_overwrite
+            ipc::force_overwrite,
+            ipc::check_target_exists,
+            ipc::close_document
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

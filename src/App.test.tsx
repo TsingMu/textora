@@ -15,9 +15,25 @@ if (!("getClientRects" in Range.prototype)) {
 }
 
 const invokeMock = vi.fn();
+const tauriWindowMock = vi.hoisted(() => ({
+  focusHandler: undefined as
+    | ((event: { payload: boolean }) => void)
+    | undefined,
+  unlisten: vi.fn(),
+}));
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
+}));
+vi.mock("@tauri-apps/api/window", () => ({
+  getCurrentWindow: () => ({
+    onFocusChanged: async (
+      handler: (event: { payload: boolean }) => void,
+    ) => {
+      tauriWindowMock.focusHandler = handler;
+      return tauriWindowMock.unlisten;
+    },
+  }),
 }));
 import App from "./App";
 
@@ -46,6 +62,16 @@ function setupInvoke() {
   });
 }
 
+async function emitWindowFocus(focused = true) {
+  await vi.waitFor(() => {
+    expect(tauriWindowMock.focusHandler).toBeTypeOf("function");
+  });
+  await act(async () => {
+    tauriWindowMock.focusHandler?.({ payload: focused });
+    await Promise.resolve();
+  });
+}
+
 describe("App open flow", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot>;
@@ -55,6 +81,8 @@ describe("App open flow", () => {
       globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
     ).IS_REACT_ACT_ENVIRONMENT = true;
     invokeMock.mockReset();
+    tauriWindowMock.focusHandler = undefined;
+    tauriWindowMock.unlisten.mockReset();
     setupInvoke();
     container = document.createElement("div");
     document.body.append(container);
@@ -250,6 +278,8 @@ describe("App save entry", () => {
       globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
     ).IS_REACT_ACT_ENVIRONMENT = true;
     invokeMock.mockReset();
+    tauriWindowMock.focusHandler = undefined;
+    tauriWindowMock.unlisten.mockReset();
     setupInvoke();
     container = document.createElement("div");
     document.body.append(container);
@@ -809,5 +839,335 @@ describe("App save entry", () => {
       invokeMock.mock.calls.filter((call) => call[0] === "cancel_conflict"),
     ).toHaveLength(1);
     expect(container.querySelector(".notice-conflict")).toBeNull();
+  });
+
+  it("skips focus checks for Untitled and while an open is pending", async () => {
+    let resolveSelection: ((descriptor: null) => void) | undefined;
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "health_check") {
+        return Promise.resolve({ service: "document-core", version: "0.1.0" });
+      }
+      if (cmd === "select_and_open_document") {
+        return new Promise<null>((resolve) => {
+          resolveSelection = resolve;
+        });
+      }
+      if (cmd === "check_target_exists") {
+        return Promise.reject(
+          new Error("existence check must not run in this state"),
+        );
+      }
+      return Promise.reject(new Error(`unexpected invoke ${cmd}`));
+    });
+
+    await act(async () => root.render(<App />));
+    await emitWindowFocus();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    await emitWindowFocus();
+    expect(
+      invokeMock.mock.calls.filter((call) => call[0] === "check_target_exists"),
+    ).toHaveLength(0);
+
+    await act(async () => {
+      resolveSelection?.(null);
+    });
+  });
+
+  it("keeps the session on an existence-check error and retries on next focus", async () => {
+    let checkCount = 0;
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        return {
+          id: "doc-retry",
+          path: "/tmp/retry.txt",
+          displayName: "retry.txt",
+          byteCount: 5,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 5, sha256: "old" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode("Hello").buffer;
+      }
+      if (cmd === "check_target_exists") {
+        checkCount += 1;
+        if (checkCount === 1) {
+          throw { code: "read-failed", message: "permission denied" };
+        }
+        return false;
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await act(async () => root.render(<App />));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    await emitWindowFocus();
+    await vi.waitFor(() => expect(checkCount).toBe(1));
+    expect(container.querySelector('[aria-label="File missing on disk"]')).toBeNull();
+    expect(container.querySelector(".document-tab")?.textContent).toContain(
+      "retry.txt",
+    );
+
+    await emitWindowFocus();
+    await vi.waitFor(() => {
+      expect(
+        container.querySelector('[aria-label="File missing on disk"]'),
+      ).not.toBeNull();
+    });
+    expect(checkCount).toBe(2);
+  });
+
+  it("deduplicates focus checks and ignores a missing result for an old document", async () => {
+    let selectionCount = 0;
+    let resolveExistence: ((exists: boolean) => void) | undefined;
+    invokeMock.mockImplementation(
+      (cmd: string, args?: { id?: string }) => {
+        if (cmd === "health_check") {
+          return Promise.resolve({ service: "document-core", version: "0.1.0" });
+        }
+        if (cmd === "select_and_open_document") {
+          selectionCount += 1;
+          const suffix = selectionCount === 1 ? "a" : "b";
+          return Promise.resolve({
+            id: `doc-${suffix}`,
+            path: `/tmp/${suffix}.txt`,
+            displayName: `${suffix}.txt`,
+            byteCount: 1,
+            encoding: { utf8: { bom: false } },
+            lineEnding: "lf",
+            fingerprint: { sizeBytes: 1, sha256: suffix },
+            readOnly: false,
+          });
+        }
+        if (cmd === "read_document_content") {
+          return Promise.resolve(
+            new TextEncoder().encode(args?.id === "doc-a" ? "A" : "B").buffer,
+          );
+        }
+        if (cmd === "check_target_exists") {
+          return new Promise<boolean>((resolve) => {
+            resolveExistence = resolve;
+          });
+        }
+        return Promise.reject(new Error(`unexpected invoke ${cmd}`));
+      },
+    );
+
+    await act(async () => root.render(<App />));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    await emitWindowFocus();
+    await emitWindowFocus();
+    expect(
+      invokeMock.mock.calls.filter((call) => call[0] === "check_target_exists"),
+    ).toHaveLength(1);
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    expect(container.querySelector(".document-tab")?.textContent).toContain(
+      "b.txt",
+    );
+
+    await act(async () => {
+      resolveExistence?.(false);
+      await Promise.resolve();
+    });
+    expect(container.querySelector('[aria-label="File missing on disk"]')).toBeNull();
+    expect(container.querySelector(".document-tab")?.textContent).toContain(
+      "b.txt",
+    );
+  });
+
+  it("treats Escape on a missing-file prompt as keeping the content", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        return {
+          id: "doc-missing",
+          path: "/tmp/missing.txt",
+          displayName: "missing.txt",
+          byteCount: 5,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 5, sha256: "old" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode("Hello").buffer;
+      }
+      if (cmd === "check_target_exists") {
+        return false;
+      }
+      if (cmd === "close_document") {
+        return undefined;
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await act(async () => root.render(<App />));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    await emitWindowFocus();
+    await vi.waitFor(() => {
+      expect(
+        container.querySelector('[aria-label="File missing on disk"]'),
+      ).not.toBeNull();
+    });
+
+    await act(async () => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+      );
+      await Promise.resolve();
+    });
+
+    expect(
+      invokeMock.mock.calls.find((call) => call[0] === "close_document"),
+    ).toEqual(["close_document", { id: "doc-missing" }]);
+    expect(container.querySelector('[aria-label="File missing on disk"]')).toBeNull();
+    expect(container.querySelector(".document-tab")?.textContent).toContain(
+      "missing.txt",
+    );
+    expect(container.querySelector(".statusbar")?.textContent).toContain(
+      "Modified",
+    );
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".save-button")?.click();
+    });
+    expect(container.querySelector(".save-as-dialog")).not.toBeNull();
+  });
+
+  it("keeps the missing prompt on close failure and discards only after success", async () => {
+    let closeAttempts = 0;
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        return {
+          id: "doc-missing",
+          path: "/tmp/missing.txt",
+          displayName: "missing.txt",
+          byteCount: 5,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 5, sha256: "old" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode("Hello").buffer;
+      }
+      if (cmd === "check_target_exists") {
+        return false;
+      }
+      if (cmd === "close_document") {
+        closeAttempts += 1;
+        if (closeAttempts === 1) {
+          throw { code: "unknown-document", message: "stale" };
+        }
+        return undefined;
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await act(async () => root.render(<App />));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    await emitWindowFocus();
+    await vi.waitFor(() => {
+      expect(
+        container.querySelector('[aria-label="File missing on disk"]'),
+      ).not.toBeNull();
+    });
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".confirm-cancel")?.click();
+    });
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "could not be detached",
+    );
+    expect(container.querySelector(".document-tab")?.textContent).toContain(
+      "missing.txt",
+    );
+    expect(
+      container.querySelector<HTMLButtonElement>(".confirm-discard")?.disabled,
+    ).toBe(false);
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".confirm-discard")?.click();
+    });
+    expect(container.querySelector('[aria-label="File missing on disk"]')).toBeNull();
+    expect(container.querySelector(".document-tab")?.textContent).toContain(
+      "Untitled",
+    );
+  });
+
+  it("routes a normal save missing conflict to the same safe prompt", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        return {
+          id: "doc-missing",
+          path: "/tmp/missing.txt",
+          displayName: "missing.txt",
+          byteCount: 5,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 5, sha256: "old" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode("Hello").buffer;
+      }
+      if (cmd === "save_document") {
+        throw {
+          code: "save-conflict-target-missing",
+          message: "missing",
+        };
+      }
+      if (cmd === "close_document") {
+        return undefined;
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await openEditAndSave();
+    expect(
+      container.querySelector('[aria-label="File missing on disk"]'),
+    ).not.toBeNull();
+    expect(
+      container
+        .querySelector<HTMLElement>(".cm-content")
+        ?.getAttribute("contenteditable"),
+    ).toBe("false");
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".confirm-cancel")?.click();
+    });
+    expect(container.querySelector('[aria-label="File missing on disk"]')).toBeNull();
+    expect(container.querySelector(".statusbar")?.textContent).toContain(
+      "Modified",
+    );
   });
 });
