@@ -2,11 +2,11 @@
 
 ## 当前状态
 
-技术方案采用 Tauri 2 桌面壳、React/TypeScript 前端、CodeMirror 6 编辑器和 Rust 文档核心。前端由 Vite 构建；macOS 使用系统 WebKit，Windows 使用 WebView2。当前已建立可运行工程基线和 CodeMirror 文档编辑，并已打通系统文件选择、Rust 一致快照与严格 UTF-8/CP936 解码、双向二进制 IPC、React 文档会话及错误保护。文件打开、已打开文件的普通保存、首次保存与另存为均已完成实现、自动化验证和 macOS 交互验收；Windows 验证待对应环境执行。
+技术方案采用 Tauri 2 桌面壳、React/TypeScript 前端、CodeMirror 6 编辑器和 Rust 文档核心。前端由 Vite 构建，macOS 使用系统 WebKit。当前已建立可运行工程基线和 CodeMirror 文档编辑，并已打通系统文件选择、Rust 一致快照与严格 UTF-8/CP936 解码、双向二进制 IPC、React 文档会话及错误保护。文件打开、已打开文件的普通保存、首次保存、另存为与保存冲突解决均已完成实现、自动化验证和 macOS 交互验收。
 
 ## 系统边界
 
-Textora 是运行在 macOS 与 Windows 上的桌面应用，核心职责是读取、呈现、编辑并保存用户选择的文本文件。代码、Markdown 和 Mermaid 是文本内容之上的能力，不应改变原始文本作为可编辑数据源的地位。
+Textora 是运行在 macOS 上的桌面应用，核心职责是读取、呈现、编辑并保存用户选择的本地文本文件，包括由 Windows 与 Unix 工具生成的 UTF-8、GBK/CP936、LF、CRLF 或 Mixed 文件。代码、Markdown 和 Mermaid 是文本内容之上的能力，不应改变原始文本作为可编辑数据源的地位。
 
 ## 概念模块
 
@@ -38,7 +38,7 @@ CodeMirror UTF-8 内容 → 二进制 IPC → Rust 编码/冲突检测/原子保
 - 前端不得获得宽泛文件系统、shell、远程页面或任意网络能力。
 - 大文本内容必须使用二进制 IPC，不能序列化为 JSON 数字数组或大字符串。
 - UTF-8/GBK 检测与保存由 Rust 文档核心统一实现；无法编码时必须失败而不是替换字符。
-- WebKit 与 WebView2 以行为一致为目标，不以逐像素相同为架构要求。
+- Windows 来源文件兼容属于文档核心的数据兼容职责，不引入 Windows 运行时、WebView2 或跨平台 UI 验证要求。
 
 ## 文档接口
 
@@ -51,14 +51,13 @@ CodeMirror UTF-8 内容 → 二进制 IPC → Rust 编码/冲突检测/原子保
 ## 平台基线
 
 - macOS 13+，arm64 与 x86_64。
-- Windows 10 22H2+ / Windows 11，x64。
 - 首版单文件最大 50 MiB。
 - 新文件默认 UTF-8、无 BOM、LF；普通保存保持原编码与换行风格。
 
 ## 开放问题
 
-- 公开版本采用哪种签名、安装包和更新渠道？
 - 超过 50 MiB 的文件未来采用只读模式还是独立分块编辑内核？
 - 基础编辑之后采用单窗口多标签还是同时强化多窗口？
+- Markdown 所见即所得模式如何与源码权威和无损往返不变量共存？
 
 这些问题应在首个相关功能进入规格或实现前决定；未决定前不要将候选方案写成架构事实。

@@ -1,10 +1,10 @@
 # Textora
 
-Textora 是一款面向 macOS 与 Windows 的桌面文本编辑器，定位类似 Notepad++ 和 UltraEdit，计划支持普通文本、代码、Markdown 和 Mermaid。
+Textora 是一款 macOS 个人文本工作台，把 Windows 内网工作中常用的普通文本、列块编辑和 Markdown 工作流整合到一个本地应用，并兼容 UTF-8、GBK/CP936、LF 与 CRLF 等常见文件格式。
 
 ## 当前状态
 
-项目已建立 Tauri 2、React、TypeScript、Vite、CodeMirror 6 与 Rust 可运行工程基线。当前可新建、打开和普通保存文档，也可通过格式选择完成首次保存与另存为；文件打开、普通保存、首次保存和另存为均已完成 macOS 验收。保存冲突解决已进入开发，关闭未保存保护和多标签仍在 Backlog；Windows 验证待对应环境执行。
+项目已建立 Tauri 2、React、TypeScript、Vite、CodeMirror 6 与 Rust 可运行工程基线。当前可新建、打开和普通保存文档，也可通过格式选择完成首次保存与另存为；文件打开、普通保存、首次保存、另存为和保存冲突解决均已完成自动化及 macOS 交互验收。关闭未保存保护、多标签、列块编辑和 Markdown 模式仍在 Backlog。
 
 ## 文档导航
 
@@ -17,7 +17,7 @@ Textora 是一款面向 macOS 与 Windows 的桌面文本编辑器，定位类�
 - `docs/features/safe-save-core.md`：已完成的 Rust 文档编码与安全保存核心规格
 - `docs/features/save-opened-file.md`：已完成的已打开文件普通保存规格
 - `docs/features/save-as-and-first-save.md`：已完成的另存为与新建文档首次保存规格
-- `docs/features/resolve-save-conflict.md`：实现中的保存冲突解决规格
+- `docs/features/resolve-save-conflict.md`：已完成的保存冲突解决规格
 - `docs/tasks/current.md`：当前已承诺任务
 - `docs/tasks/TEMPLATE.md`：当前任务条目与颗粒度模板
 - `docs/tasks/backlog.md`：尚未承诺的候选事项
@@ -29,7 +29,7 @@ Textora 是一款面向 macOS 与 Windows 的桌面文本编辑器，定位类�
 
 - Node.js 20+ 与 npm
 - Rust stable（通过 rustup 安装）
-- macOS 上的 Xcode Command Line Tools，或 Windows 上的 Tauri 2 系统依赖
+- macOS 上的 Xcode Command Line Tools
 
 首次安装前端依赖：
 

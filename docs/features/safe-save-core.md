@@ -66,13 +66,13 @@ Textora 已能通过 Rust 文档核心安全打开受支持的本地文本文件
 - [x] 通过符号链接保存时链接保留、真实目标内容被原子更新。
 - [x] 成功保存采用同目录原子替换，返回的字节数与指纹和最终文件一致，且不残留临时文件。
 - [x] 保存错误可稳定分类（含编码歧义）且不泄露内部临时路径。
-- [x] macOS 与 Windows 使用同一核心行为；当前环境无法验证的平台必须明确记录。
+- [x] macOS 保存行为通过确定性测试；Windows/Unix 来源文件的编码与换行往返由跨平台纯数据测试覆盖。
 
 ## 依赖与约束
 
 - 属于 `docs/features/basic-text-editing.md` 的保存子切片。
 - 遵守 `docs/ARCHITECTURE.md` 的 Rust 文档核心、文档权威源、严格编码、冲突检测和原子保存不变量。
-- 文件规模和编码边界由 D-005 约束；跨平台行为由 D-003、D-004 约束。
+- 产品平台由 D-007 约束；文件规模和编码边界由 D-005 约束，技术边界由 D-004 约束。
 - 复用现有 `TextEncoding`、`LineEnding`、`FileFingerprint`、`DocumentDescriptor` 和 `open_document` 语义，不在前端重复编码或文件安全逻辑。
 - 不无故引入新依赖；若标准库不能可靠满足两平台原子替换，再单独评估最小依赖并记录理由。
 
@@ -82,7 +82,7 @@ Textora 已能通过 Rust 文档核心安全打开受支持的本地文本文件
 
 ## 验证记录
 
-实现、审查修复与自动化验证已完成（2026-07-21）。本切片为纯 Rust 核心，未接入 IPC 与界面，各验收条件由确定性单元/集成测试覆盖；Windows 与 Clippy 因当前环境不可用而保留为待验证项。
+实现、审查修复与自动化验证已完成（2026-07-21）。本切片为纯 Rust 核心，未接入 IPC 与界面，各验收条件由确定性单元/集成测试覆盖；根据 D-007，Windows 不再是产品运行或验收平台，Clippy 因当前环境不可用仍保留为工具待验证项。
 
 审查修复要点：
 
@@ -109,7 +109,7 @@ Textora 已能通过 Rust 文档核心安全打开受支持的本地文本文件
 
 实现要点：未引入新依赖——同目录原子替换使用标准库 `OpenOptions::create_new` + `fs::rename`，失败路径清理临时文件。错误含 `ReadOnly`、`MixedLineEndingNotChosen`、`UnencodableContent { character, byte_offset }`、`SaveConflict`、`EncodingAmbiguous`，`Io` 仅展示 OS 文本不泄露临时路径。
 
-平台/工具待验证：
+平台/工具说明：
 
-- Windows 10 22H2+ / Windows 11 的 `fs::rename` 跨进程占用、符号链接行为、只读属性、NTFS 权限/ACL 保留需在对应环境确认；当前 macOS 环境无法执行，不作为本切片完成阻塞项。
+- Windows 的 `fs::rename`、NTFS 权限/ACL 与原生符号链接行为已由 D-007 移出产品范围，不再是待验证项。
 - Clippy（见上）待组件安装后在对应环境执行。
