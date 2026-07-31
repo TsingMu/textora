@@ -4,7 +4,7 @@ Textora 是一款 macOS 个人文本工作台，把 Windows 内网工作中常�
 
 ## 当前状态
 
-项目已建立 Tauri 2、React、TypeScript、Vite、CodeMirror 6 与 Rust 可运行工程基线。当前可新建、打开和普通保存文档，也可通过格式选择完成首次保存与另存为；文件打开、普通保存、首次保存、另存为和保存冲突解决均已完成自动化及 macOS 交互验收。关闭未保存保护、多标签、列块编辑和 Markdown 模式仍在 Backlog。
+项目已建立 Tauri 2、React、TypeScript、Vite、CodeMirror 6 与 Rust 可运行工程基线。当前可新建、打开和普通保存文档，也可通过格式选择完成首次保存与另存为；文件打开、普通保存、首次保存、另存为和保存冲突解决均已完成自动化及 macOS 交互验收。未保存主窗口关闭保护已完成自动化验证，应用退出与完整交互验收为下一项已承诺任务；多标签、列块编辑和 Markdown 模式仍在 Backlog。
 
 ## 文档导航
 
@@ -18,6 +18,7 @@ Textora 是一款 macOS 个人文本工作台，把 Windows 内网工作中常�
 - `docs/features/save-opened-file.md`：已完成的已打开文件普通保存规格
 - `docs/features/save-as-and-first-save.md`：已完成的另存为与新建文档首次保存规格
 - `docs/features/resolve-save-conflict.md`：已完成的保存冲突解决规格
+- `docs/features/unsaved-close-protection.md`：已确认的未保存关闭保护规格
 - `docs/tasks/current.md`：当前已承诺任务
 - `docs/tasks/TEMPLATE.md`：当前任务条目与颗粒度模板
 - `docs/tasks/backlog.md`：尚未承诺的候选事项

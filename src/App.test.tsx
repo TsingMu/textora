@@ -19,6 +19,15 @@ const tauriWindowMock = vi.hoisted(() => ({
   focusHandler: undefined as
     | ((event: { payload: boolean }) => void)
     | undefined,
+  closeHandler: undefined as
+    | ((event: { preventDefault: () => void }) => void | Promise<void>)
+    | undefined,
+  close: vi.fn(),
+  allowedCloseCount: 0,
+  deferCloseEvent: false,
+  pendingProgrammaticClose: undefined as
+    | (() => Promise<void>)
+    | undefined,
   unlisten: vi.fn(),
 }));
 
@@ -32,6 +41,27 @@ vi.mock("@tauri-apps/api/window", () => ({
     ) => {
       tauriWindowMock.focusHandler = handler;
       return tauriWindowMock.unlisten;
+    },
+    onCloseRequested: async (
+      handler: (event: { preventDefault: () => void }) => void | Promise<void>,
+    ) => {
+      tauriWindowMock.closeHandler = handler;
+      return tauriWindowMock.unlisten;
+    },
+    close: async () => {
+      tauriWindowMock.close();
+      const dispatchClose = async () => {
+        const preventDefault = vi.fn();
+        await tauriWindowMock.closeHandler?.({ preventDefault });
+        if (preventDefault.mock.calls.length === 0) {
+          tauriWindowMock.allowedCloseCount += 1;
+        }
+      };
+      if (tauriWindowMock.deferCloseEvent) {
+        tauriWindowMock.pendingProgrammaticClose = dispatchClose;
+      } else {
+        await dispatchClose();
+      }
     },
   }),
 }));
@@ -72,6 +102,27 @@ async function emitWindowFocus(focused = true) {
   });
 }
 
+async function emitWindowClose() {
+  await vi.waitFor(() => {
+    expect(tauriWindowMock.closeHandler).toBeTypeOf("function");
+  });
+  const preventDefault = vi.fn();
+  await act(async () => {
+    await tauriWindowMock.closeHandler?.({ preventDefault });
+  });
+  return preventDefault;
+}
+
+function resetTauriWindowMock() {
+  tauriWindowMock.focusHandler = undefined;
+  tauriWindowMock.closeHandler = undefined;
+  tauriWindowMock.close.mockReset();
+  tauriWindowMock.allowedCloseCount = 0;
+  tauriWindowMock.deferCloseEvent = false;
+  tauriWindowMock.pendingProgrammaticClose = undefined;
+  tauriWindowMock.unlisten.mockReset();
+}
+
 describe("App open flow", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot>;
@@ -81,8 +132,7 @@ describe("App open flow", () => {
       globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
     ).IS_REACT_ACT_ENVIRONMENT = true;
     invokeMock.mockReset();
-    tauriWindowMock.focusHandler = undefined;
-    tauriWindowMock.unlisten.mockReset();
+    resetTauriWindowMock();
     setupInvoke();
     container = document.createElement("div");
     document.body.append(container);
@@ -278,8 +328,7 @@ describe("App save entry", () => {
       globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
     ).IS_REACT_ACT_ENVIRONMENT = true;
     invokeMock.mockReset();
-    tauriWindowMock.focusHandler = undefined;
-    tauriWindowMock.unlisten.mockReset();
+    resetTauriWindowMock();
     setupInvoke();
     container = document.createElement("div");
     document.body.append(container);
@@ -1166,6 +1215,448 @@ describe("App save entry", () => {
       container.querySelector<HTMLButtonElement>(".confirm-cancel")?.click();
     });
     expect(container.querySelector('[aria-label="File missing on disk"]')).toBeNull();
+    expect(container.querySelector(".statusbar")?.textContent).toContain(
+      "Modified",
+    );
+  });
+});
+
+describe("App window close protection", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+
+  beforeEach(() => {
+    (
+      globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
+    ).IS_REACT_ACT_ENVIRONMENT = true;
+    invokeMock.mockReset();
+    resetTauriWindowMock();
+    setupInvoke();
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  async function renderAndEdit(openDocument = true) {
+    await act(async () => root.render(<App />));
+    if (openDocument) {
+      await act(async () => {
+        container.querySelector<HTMLButtonElement>(".open-button")?.click();
+      });
+    }
+    const editable = container.querySelector<HTMLElement>(".cm-content");
+    await act(async () => {
+      if (editable !== null) {
+        editable.textContent = openDocument ? "Hello edited" : "Draft";
+        editable.dispatchEvent(
+          new InputEvent("input", {
+            bubbles: true,
+            inputType: "insertText",
+            data: openDocument ? " edited" : "Draft",
+          }),
+        );
+      }
+      await Promise.resolve();
+    });
+    expect(container.querySelector(".statusbar")?.textContent).toContain(
+      "Modified",
+    );
+  }
+
+  it("allows a clean document to close without a confirmation", async () => {
+    await act(async () => root.render(<App />));
+
+    const preventDefault = await emitWindowClose();
+
+    expect(preventDefault).not.toHaveBeenCalled();
+    expect(
+      container.querySelector('[aria-label="Save before closing?"]'),
+    ).toBeNull();
+  });
+
+  it("keeps one confirmation for repeated requests and Escape cancels it", async () => {
+    await renderAndEdit();
+
+    const first = await emitWindowClose();
+    const second = await emitWindowClose();
+
+    expect(first).toHaveBeenCalledOnce();
+    expect(second).toHaveBeenCalledOnce();
+    expect(
+      container.querySelectorAll('[aria-label="Save before closing?"]'),
+    ).toHaveLength(1);
+
+    await act(async () => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+      );
+    });
+    expect(
+      container.querySelector('[aria-label="Save before closing?"]'),
+    ).toBeNull();
+    expect(container.querySelector(".statusbar")?.textContent).toContain(
+      "Modified",
+    );
+
+    const retried = await emitWindowClose();
+    expect(retried).toHaveBeenCalledOnce();
+    expect(
+      container.querySelector('[aria-label="Save before closing?"]'),
+    ).not.toBeNull();
+  });
+
+  it("authorizes exactly one close after explicitly discarding", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        return {
+          id: "doc-discard",
+          path: "/tmp/discard.txt",
+          displayName: "discard.txt",
+          byteCount: 5,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 5, sha256: "old" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode("Hello").buffer;
+      }
+      if (cmd === "close_document") {
+        return undefined;
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+    await renderAndEdit();
+    await emitWindowClose();
+
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(".confirm-discard")
+        ?.click();
+    });
+
+    expect(
+      invokeMock.mock.calls.find((call) => call[0] === "close_document"),
+    ).toEqual(["close_document", { id: "doc-discard" }]);
+    expect(tauriWindowMock.close).toHaveBeenCalledOnce();
+    expect(tauriWindowMock.allowedCloseCount).toBe(1);
+    expect(
+      container.querySelector('[aria-label="Save before closing?"]'),
+    ).toBeNull();
+  });
+
+  it("saves an opened document and consumes one close authorization", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        return {
+          id: "doc-save-close",
+          path: "/tmp/save-close.txt",
+          displayName: "save-close.txt",
+          byteCount: 5,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 5, sha256: "old" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode("Hello").buffer;
+      }
+      if (cmd === "save_document") {
+        return {
+          id: "doc-save-close",
+          path: "/tmp/save-close.txt",
+          displayName: "save-close.txt",
+          byteCount: 12,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 12, sha256: "saved" },
+          readOnly: false,
+        };
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+    await renderAndEdit();
+    await emitWindowClose();
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".confirm-save")?.click();
+    });
+
+    expect(
+      invokeMock.mock.calls.filter((call) => call[0] === "save_document"),
+    ).toHaveLength(1);
+    expect(tauriWindowMock.close).toHaveBeenCalledOnce();
+    expect(tauriWindowMock.allowedCloseCount).toBe(1);
+  });
+
+  it("rejects a delayed close authorization after the document changes", async () => {
+    let selectionCount = 0;
+    tauriWindowMock.deferCloseEvent = true;
+    invokeMock.mockImplementation(
+      async (cmd: string, args?: { id?: string }) => {
+        if (cmd === "health_check") {
+          return { service: "document-core", version: "0.1.0" };
+        }
+        if (cmd === "select_and_open_document") {
+          selectionCount += 1;
+          const suffix = selectionCount === 1 ? "a" : "b";
+          return {
+            id: `doc-${suffix}`,
+            path: `/tmp/${suffix}.txt`,
+            displayName: `${suffix}.txt`,
+            byteCount: 5,
+            encoding: { utf8: { bom: false } },
+            lineEnding: "lf",
+            fingerprint: { sizeBytes: 5, sha256: suffix },
+            readOnly: false,
+          };
+        }
+        if (cmd === "read_document_content") {
+          return new TextEncoder()
+            .encode(args?.id === "doc-b" ? "Second" : "Hello")
+            .buffer;
+        }
+        if (cmd === "save_document") {
+          return {
+            id: "doc-a",
+            path: "/tmp/a.txt",
+            displayName: "a.txt",
+            byteCount: 12,
+            encoding: { utf8: { bom: false } },
+            lineEnding: "lf",
+            fingerprint: { sizeBytes: 12, sha256: "saved" },
+            readOnly: false,
+          };
+        }
+        throw new Error(`unexpected invoke ${cmd}`);
+      },
+    );
+    await renderAndEdit();
+    await emitWindowClose();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".confirm-save")?.click();
+    });
+    expect(tauriWindowMock.pendingProgrammaticClose).toBeTypeOf("function");
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    expect(container.querySelector(".document-tab")?.textContent).toContain(
+      "b.txt",
+    );
+
+    await act(async () => {
+      await tauriWindowMock.pendingProgrammaticClose?.();
+    });
+    expect(tauriWindowMock.allowedCloseCount).toBe(0);
+    expect(container.querySelector(".document-tab")?.textContent).toContain(
+      "b.txt",
+    );
+  });
+
+  it("routes a close-time content conflict without closing or staying busy", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        return {
+          id: "doc-close-conflict",
+          path: "/tmp/conflict.txt",
+          displayName: "conflict.txt",
+          byteCount: 5,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 5, sha256: "old" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode("Hello").buffer;
+      }
+      if (cmd === "save_document") {
+        throw {
+          code: "save-conflict-content-changed",
+          message: "conflict",
+        };
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+    await renderAndEdit();
+    await emitWindowClose();
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".confirm-save")?.click();
+    });
+
+    expect(container.querySelector(".notice-conflict")).not.toBeNull();
+    expect(tauriWindowMock.close).not.toHaveBeenCalled();
+    expect(
+      container.querySelector<HTMLElement>(".cm-content")?.getAttribute(
+        "contenteditable",
+      ),
+    ).toBe("false");
+  });
+
+  it("continues an Untitled first save into the authorized close", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "save_document_as") {
+        return {
+          id: "doc-first-save",
+          path: "/tmp/draft.txt",
+          displayName: "draft.txt",
+          byteCount: 5,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 5, sha256: "saved" },
+          readOnly: false,
+        };
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+    await renderAndEdit(false);
+    await emitWindowClose();
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".confirm-save")?.click();
+    });
+    expect(container.querySelector(".save-as-dialog")).not.toBeNull();
+
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(
+          ".save-as-dialog .confirm-discard",
+        )
+        ?.click();
+    });
+
+    expect(
+      invokeMock.mock.calls.filter((call) => call[0] === "save_document_as"),
+    ).toHaveLength(1);
+    expect(tauriWindowMock.close).toHaveBeenCalledOnce();
+    expect(tauriWindowMock.allowedCloseCount).toBe(1);
+  });
+
+  it("cancels the close intent when the format chooser is cancelled", async () => {
+    await renderAndEdit(false);
+    await emitWindowClose();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".confirm-save")?.click();
+    });
+
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(".save-as-dialog .confirm-cancel")
+        ?.click();
+    });
+
+    expect(tauriWindowMock.close).not.toHaveBeenCalled();
+    expect(container.querySelector(".statusbar")?.textContent).toContain(
+      "Modified",
+    );
+    const retried = await emitWindowClose();
+    expect(retried).toHaveBeenCalledOnce();
+    expect(
+      container.querySelector('[aria-label="Save before closing?"]'),
+    ).not.toBeNull();
+  });
+
+  it("cancels the close intent when the system save dialog is cancelled", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "save_document_as") {
+        return null;
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+    await renderAndEdit(false);
+    await emitWindowClose();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".confirm-save")?.click();
+    });
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(
+          ".save-as-dialog .confirm-discard",
+        )
+        ?.click();
+    });
+
+    expect(tauriWindowMock.close).not.toHaveBeenCalled();
+    expect(container.querySelector(".statusbar")?.textContent).toContain(
+      "Modified",
+    );
+    const retried = await emitWindowClose();
+    expect(retried).toHaveBeenCalledOnce();
+  });
+
+  it("routes a close-time missing target and never closes after resolving it", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        return {
+          id: "doc-close-missing",
+          path: "/tmp/missing.txt",
+          displayName: "missing.txt",
+          byteCount: 5,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 5, sha256: "old" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode("Hello").buffer;
+      }
+      if (cmd === "save_document") {
+        throw {
+          code: "save-conflict-target-missing",
+          message: "missing",
+        };
+      }
+      if (cmd === "close_document") {
+        return undefined;
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+    await renderAndEdit();
+    await emitWindowClose();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".confirm-save")?.click();
+    });
+
+    expect(
+      container.querySelector('[aria-label="File missing on disk"]'),
+    ).not.toBeNull();
+    expect(tauriWindowMock.close).not.toHaveBeenCalled();
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".confirm-cancel")?.click();
+    });
+    expect(
+      container.querySelector('[aria-label="File missing on disk"]'),
+    ).toBeNull();
+    expect(tauriWindowMock.close).not.toHaveBeenCalled();
     expect(container.querySelector(".statusbar")?.textContent).toContain(
       "Modified",
     );

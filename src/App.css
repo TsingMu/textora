@@ -394,6 +394,12 @@ textarea {
   border-color: var(--accent);
 }
 
+.confirm-save {
+  background: #5f9a68;
+  color: #fffaf3;
+  border-color: #5f9a68;
+}
+
 @media (prefers-color-scheme: dark) {
   :root {
     color: #e5dfd5;

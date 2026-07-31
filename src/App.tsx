@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import "./App.css";
+import type { CloseRequestedEvent } from "@tauri-apps/api/window";
 import {
   cancelOpen,
   cancelSave,
@@ -45,6 +46,10 @@ import {
 const initialDocument = createNewDocument();
 type ConflictOperationStatus = "idle" | "canceling" | "reloading" | "overwriting";
 type FileMissingOperationStatus = "idle" | "keeping" | "discarding";
+type CloseIntent = {
+  documentId: string;
+  content: string;
+};
 
 function App() {
   const [session, setSession] = useState<DocumentSession>(initialDocument);
@@ -64,6 +69,8 @@ function App() {
     status: FileMissingOperationStatus;
     errorMessage: string | null;
   }>({ status: "idle", errorMessage: null });
+  const [closeConfirmPending, setCloseConfirmPending] = useState(false);
+  const [closeConfirmError, setCloseConfirmError] = useState<string | null>(null);
   const sessionRef = useRef(session);
   const fileMissingPendingRef = useRef(fileMissingPending);
   const fileMissingResolvingRef = useRef(false);
@@ -72,6 +79,12 @@ function App() {
     revision: number;
     documentId: string;
     path: string;
+  } | null>(null);
+  const busyRef = useRef(false);
+  const closeConfirmPendingRef = useRef(false);
+  const closeIntentRef = useRef<CloseIntent | null>(null);
+  const closeAuthorizationRef = useRef<{
+    validDocumentIds: readonly string[];
   } | null>(null);
   sessionRef.current = session;
   fileMissingPendingRef.current = fileMissingPending;
@@ -92,10 +105,11 @@ function App() {
     };
   }, []);
 
-  // 窗口重新聚焦时检查当前文档文件是否仍存在（仅对已打开且有路径的文档）。
+  // 窗口关闭拦截 + 聚焦缺失检查（合并到同一 effect 以共享一次 dynamic import）。
   useEffect(() => {
-    let unlisten: (() => void) | undefined;
     let cancelled = false;
+    let unlistenClose: (() => void) | undefined;
+    let unlistenFocus: (() => void) | undefined;
 
     const checkCurrentTarget = () => {
       const current = sessionRef.current;
@@ -150,7 +164,6 @@ function App() {
           setFileMissingPending(true);
         })
         .catch(() => {
-          // 检查失败不等价于文件缺失；保持当前会话并允许下次聚焦重试。
           if (targetCheckInFlightRef.current?.revision === request.revision) {
             targetCheckInFlightRef.current = null;
           }
@@ -160,7 +173,48 @@ function App() {
     (async () => {
       try {
         const { getCurrentWindow } = await import("@tauri-apps/api/window");
-        const stopListening = await getCurrentWindow().onFocusChanged(
+        if (cancelled) return;
+
+        const stopListeningClose = await getCurrentWindow().onCloseRequested(
+          (event: CloseRequestedEvent) => {
+            const current = sessionRef.current;
+            const authorization = closeAuthorizationRef.current;
+            if (authorization !== null) {
+              closeAuthorizationRef.current = null;
+              if (authorization.validDocumentIds.includes(current.id)) {
+                return;
+              }
+              event.preventDefault();
+              return;
+            }
+            if (
+              busyRef.current ||
+              closeConfirmPendingRef.current ||
+              closeIntentRef.current !== null
+            ) {
+              event.preventDefault();
+              return;
+            }
+            if (!current.isDirty) {
+              return;
+            }
+            event.preventDefault();
+            closeIntentRef.current = {
+              documentId: current.id,
+              content: current.content,
+            };
+            closeConfirmPendingRef.current = true;
+            setCloseConfirmError(null);
+            setCloseConfirmPending(true);
+          },
+        );
+        if (cancelled) {
+          stopListeningClose();
+          return;
+        }
+        unlistenClose = stopListeningClose;
+
+        const stopListeningFocus = await getCurrentWindow().onFocusChanged(
           ({ payload: focused }) => {
             if (focused && !cancelled) {
               checkCurrentTarget();
@@ -168,12 +222,12 @@ function App() {
           },
         );
         if (cancelled) {
-          stopListening();
-        } else {
-          unlisten = stopListening;
+          stopListeningFocus();
+          return;
         }
+        unlistenFocus = stopListeningFocus;
       } catch {
-        // 非 Tauri 环境（测试）中不设置监听。
+        // 非 Tauri 环境不设置监听。
       }
     })();
 
@@ -181,9 +235,104 @@ function App() {
       cancelled = true;
       targetCheckRevisionRef.current += 1;
       targetCheckInFlightRef.current = null;
-      unlisten?.();
+      unlistenClose?.();
+      unlistenFocus?.();
     };
   }, []);
+
+  function clearCloseIntent() {
+    closeIntentRef.current = null;
+    closeAuthorizationRef.current = null;
+  }
+
+  async function executeAuthorizedClose(validDocumentIds: readonly string[]) {
+    const authorization = { validDocumentIds };
+    closeAuthorizationRef.current = authorization;
+    closeIntentRef.current = null;
+    try {
+      const { getCurrentWindow } = await import("@tauri-apps/api/window");
+      await getCurrentWindow().close();
+    } catch {
+      if (closeAuthorizationRef.current === authorization) {
+        closeAuthorizationRef.current = null;
+      }
+    }
+  }
+
+  async function handleCloseSave() {
+    const intent = closeIntentRef.current;
+    if (intent === null || intent.documentId !== sessionRef.current.id) {
+      clearCloseIntent();
+      setCloseConfirmPending(false);
+      closeConfirmPendingRef.current = false;
+      return;
+    }
+    setCloseConfirmPending(false);
+    closeConfirmPendingRef.current = false;
+    const current = sessionRef.current;
+
+    if (current.path !== null && !current.readOnly) {
+      setSession((s) => ({ ...s, saveStatus: "saving", saveError: null }));
+      try {
+        const descriptor = await saveDocument(intent.documentId, intent.content);
+        setSession((s) => commitSavedDocument(s, descriptor));
+        await executeAuthorizedClose([intent.documentId]);
+      } catch (err) {
+        clearCloseIntent();
+        const error: DocumentCommandError = isDocumentCommandError(err)
+          ? err
+          : { code: "save-failed", message: "save request failed" };
+        if (error.code === "save-conflict-content-changed") {
+          setConflictOperation({ status: "idle", errorMessage: null });
+          setSession((s) => failSave(s, error));
+          return;
+        }
+        if (error.code === "save-conflict-target-missing") {
+          targetCheckRevisionRef.current += 1;
+          targetCheckInFlightRef.current = null;
+          fileMissingPendingRef.current = true;
+          setFileMissingOperation({ status: "idle", errorMessage: null });
+          setFileMissingPending(true);
+          return;
+        }
+        setSession((s) => failSave(s, error));
+      }
+    } else {
+      openSaveAsDialog();
+    }
+  }
+
+  async function handleCloseDiscard() {
+    const intent = closeIntentRef.current;
+    if (intent === null || intent.documentId !== sessionRef.current.id) {
+      clearCloseIntent();
+      setCloseConfirmPending(false);
+      closeConfirmPendingRef.current = false;
+      return;
+    }
+    setCloseConfirmPending(false);
+    closeConfirmPendingRef.current = false;
+    if (intent.documentId !== "untitled-1") {
+      try {
+        await closeDocument(intent.documentId);
+      } catch {
+        setCloseConfirmError(
+          "The document could not be closed safely. Please try again.",
+        );
+        closeConfirmPendingRef.current = true;
+        setCloseConfirmPending(true);
+        return;
+      }
+    }
+    await executeAuthorizedClose([intent.documentId]);
+  }
+
+  function handleCloseCancel() {
+    clearCloseIntent();
+    setCloseConfirmError(null);
+    setCloseConfirmPending(false);
+    closeConfirmPendingRef.current = false;
+  }
 
   async function handleFileMissingKeep() {
     if (!fileMissingPending || fileMissingResolvingRef.current) {
@@ -310,15 +459,24 @@ function App() {
     lineEnding: LineEndingChoice,
     content: string,
   ) {
+    const closeIntent = closeIntentRef.current;
     try {
       const descriptor = await saveAs({ id, encoding, lineEnding, content });
       if (descriptor === null) {
         // 用户在系统保存对话框取消；内容、关联与未保存状态保持不变。
+        clearCloseIntent();
         setSession((current) => cancelSave(current));
         return;
       }
       setSession((current) => commitSavedAs(current, descriptor));
+      if (closeIntent !== null) {
+        await executeAuthorizedClose([
+          closeIntent.documentId,
+          descriptor.id,
+        ]);
+      }
     } catch (err) {
+      clearCloseIntent();
       const error: DocumentCommandError = isDocumentCommandError(err)
         ? err
         : { code: "save-failed", message: "save request failed" };
@@ -381,6 +539,9 @@ function App() {
   }
 
   function handleSaveAsCancel() {
+    if (closeIntentRef.current !== null) {
+      clearCloseIntent();
+    }
     setSaveAsDialog((current) => ({ ...current, open: false }));
   }
 
@@ -506,13 +667,28 @@ function App() {
     return () => window.removeEventListener("keydown", handleEscape);
   }, [conflictPending, conflictOperation.status, session.id]);
 
+  // 关闭确认期间 Escape 等价于取消关闭。
+  useEffect(() => {
+    if (!closeConfirmPending) return;
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        handleCloseCancel();
+      }
+    };
+    window.addEventListener("keydown", handleEscape);
+    return () => window.removeEventListener("keydown", handleEscape);
+  }, [closeConfirmPending]);
+
   const busy =
-    isBusy(session) || saveAsDialog.open || conflictPending || fileMissingPending;
+    isBusy(session) || saveAsDialog.open || conflictPending || fileMissingPending || closeConfirmPending;
+  busyRef.current = busy;
   const editorLocked =
     session.openStatus === "loading" ||
     session.saveStatus === "saving" ||
     conflictPending ||
-    fileMissingPending;
+    fileMissingPending ||
+    closeConfirmPending;
   const canSave =
     !session.readOnly && !busy && (session.path === null || session.isDirty);
   const canSaveAs = session.path !== null && !busy;
@@ -780,6 +956,51 @@ function App() {
                 {fileMissingOperation.status === "discarding"
                   ? "Discarding…"
                   : "Discard"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {closeConfirmPending && (
+        <div
+          className="confirm-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Save before closing?"
+        >
+          <div className="confirm-dialog">
+            <p className="confirm-message">
+              Do you want to save the changes to "{session.displayName}" before
+              closing?
+            </p>
+            {closeConfirmError !== null && (
+              <p className="notice-conflict-error" role="alert">
+                {closeConfirmError}
+              </p>
+            )}
+            <div className="confirm-actions">
+              <button
+                type="button"
+                className="confirm-cancel"
+                onClick={handleCloseCancel}
+                autoFocus
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="confirm-discard"
+                onClick={handleCloseDiscard}
+              >
+                Don't Save
+              </button>
+              <button
+                type="button"
+                className="confirm-save"
+                onClick={handleCloseSave}
+              >
+                Save
               </button>
             </div>
           </div>
