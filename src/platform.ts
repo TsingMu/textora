@@ -170,6 +170,18 @@ export async function closeDocument(id: string): Promise<void> {
   return invoke<void>("close_document", { id });
 }
 
+/**
+ * 在未保存关闭确认完成后请求正常退出。后端经 `AppHandle::exit` 触发程序化退出，
+ * 该路径不被用户退出保护再次拦截。失败时应用保持运行。
+ */
+export async function requestAppExit(): Promise<void> {
+  try {
+    await invoke<void>("request_app_exit");
+  } catch {
+    // 退出失败时保持运行，让用户重试。
+  }
+}
+
 const COMMAND_ERROR_CODES: readonly DocumentErrorCode[] = [
   "file-too-large",
   "unsupported-encoding",

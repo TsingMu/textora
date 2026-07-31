@@ -31,6 +31,11 @@ const tauriWindowMock = vi.hoisted(() => ({
   unlisten: vi.fn(),
 }));
 
+const tauriEventMock = vi.hoisted(() => ({
+  exitRequestedHandler: undefined as (() => void) | undefined,
+  unlisten: vi.fn(),
+}));
+
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
 }));
@@ -65,6 +70,15 @@ vi.mock("@tauri-apps/api/window", () => ({
     },
   }),
 }));
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: async (
+    _event: string,
+    handler: (event: { payload: unknown }) => void,
+  ) => {
+    tauriEventMock.exitRequestedHandler = () => handler({ payload: null });
+    return tauriEventMock.unlisten;
+  },
+}));
 import App from "./App";
 
 function setupInvoke() {
@@ -87,6 +101,9 @@ function setupInvoke() {
     if (cmd === "read_document_content") {
       const buffer = new TextEncoder().encode("Hello").buffer;
       return buffer;
+    }
+    if (cmd === "request_app_exit") {
+      return undefined;
     }
     throw new Error(`unexpected invoke ${cmd}`);
   });
@@ -113,6 +130,16 @@ async function emitWindowClose() {
   return preventDefault;
 }
 
+async function emitAppExitRequest() {
+  await vi.waitFor(() => {
+    expect(tauriEventMock.exitRequestedHandler).toBeTypeOf("function");
+  });
+  await act(async () => {
+    tauriEventMock.exitRequestedHandler?.();
+    await Promise.resolve();
+  });
+}
+
 function resetTauriWindowMock() {
   tauriWindowMock.focusHandler = undefined;
   tauriWindowMock.closeHandler = undefined;
@@ -121,6 +148,8 @@ function resetTauriWindowMock() {
   tauriWindowMock.deferCloseEvent = false;
   tauriWindowMock.pendingProgrammaticClose = undefined;
   tauriWindowMock.unlisten.mockReset();
+  tauriEventMock.exitRequestedHandler = undefined;
+  tauriEventMock.unlisten.mockReset();
 }
 
 describe("App open flow", () => {
@@ -1660,5 +1689,157 @@ describe("App window close protection", () => {
     expect(container.querySelector(".statusbar")?.textContent).toContain(
       "Modified",
     );
+  });
+
+  it("exits directly when an app-exit request arrives for a clean document", async () => {
+    await act(async () => root.render(<App />));
+
+    await emitAppExitRequest();
+
+    expect(
+      invokeMock.mock.calls.some((call) => call[0] === "request_app_exit"),
+    ).toBe(true);
+    expect(
+      container.querySelector('[aria-label="Save before closing?"]'),
+    ).toBeNull();
+  });
+
+  it("prompts once for an app-exit request on a dirty document and cancel keeps it alive", async () => {
+    await renderAndEdit();
+
+    await emitAppExitRequest();
+
+    expect(
+      container.querySelector('[aria-label="Save before closing?"]'),
+    ).not.toBeNull();
+
+    await act(async () => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+      );
+    });
+    expect(
+      container.querySelector('[aria-label="Save before closing?"]'),
+    ).toBeNull();
+    expect(container.querySelector(".statusbar")?.textContent).toContain(
+      "Modified",
+    );
+    expect(
+      invokeMock.mock.calls.some((call) => call[0] === "request_app_exit"),
+    ).toBe(false);
+  });
+
+  it("protects a dirty document from the exit event without pre-arming any guard", async () => {
+    await renderAndEdit();
+
+    await emitAppExitRequest();
+
+    expect(
+      container.querySelector('[aria-label="Save before closing?"]'),
+    ).not.toBeNull();
+    expect(
+      invokeMock.mock.calls.some((call) => call[0] === "request_app_exit"),
+    ).toBe(false);
+    // 保护不依赖任何异步武装 IPC：前端从不调用 set_exit_guard，消除时序窗口。
+    expect(
+      invokeMock.mock.calls.some((call) => call[0] === "set_exit_guard"),
+    ).toBe(false);
+  });
+
+  it("keeps one confirmation for repeated app-exit requests", async () => {
+    await renderAndEdit();
+
+    await emitAppExitRequest();
+    await emitAppExitRequest();
+
+    expect(
+      container.querySelectorAll('[aria-label="Save before closing?"]'),
+    ).toHaveLength(1);
+    expect(
+      invokeMock.mock.calls.some((call) => call[0] === "request_app_exit"),
+    ).toBe(false);
+  });
+
+  it("blocks an app-exit request while another interaction is busy", async () => {
+    await renderAndEdit(false);
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".save-button")?.click();
+    });
+    expect(container.querySelector(".save-as-dialog")).not.toBeNull();
+
+    await emitAppExitRequest();
+
+    expect(
+      container.querySelector('[aria-label="Save before closing?"]'),
+    ).toBeNull();
+    expect(
+      invokeMock.mock.calls.some((call) => call[0] === "request_app_exit"),
+    ).toBe(false);
+  });
+
+  it("blocks a window close that arrives during an app-exit intent", async () => {
+    await renderAndEdit();
+    await emitAppExitRequest();
+
+    const preventDefault = await emitWindowClose();
+
+    expect(preventDefault).toHaveBeenCalledOnce();
+    expect(
+      container.querySelectorAll('[aria-label="Save before closing?"]'),
+    ).toHaveLength(1);
+  });
+
+  it("upgrades a window-close intent to an app exit and completes via request_app_exit", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        return {
+          id: "doc-exit-save",
+          path: "/tmp/exit-save.txt",
+          displayName: "exit-save.txt",
+          byteCount: 5,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 5, sha256: "old" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode("Hello").buffer;
+      }
+      if (cmd === "save_document") {
+        return {
+          id: "doc-exit-save",
+          path: "/tmp/exit-save.txt",
+          displayName: "exit-save.txt",
+          byteCount: 12,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 12, sha256: "saved" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "request_app_exit") {
+        return undefined;
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+    await renderAndEdit();
+    await emitWindowClose();
+    await emitAppExitRequest();
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".confirm-save")?.click();
+    });
+
+    expect(
+      invokeMock.mock.calls.filter((call) => call[0] === "save_document"),
+    ).toHaveLength(1);
+    expect(
+      invokeMock.mock.calls.some((call) => call[0] === "request_app_exit"),
+    ).toBe(true);
+    expect(tauriWindowMock.close).not.toHaveBeenCalled();
   });
 });

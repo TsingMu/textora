@@ -6,21 +6,9 @@
 
 ## 进行中
 
-暂无进行中的任务。下一个已承诺待办为「接入应用退出请求的未保存取消保护」。
+暂无进行中的任务。下一个已承诺待办为「完成应用退出确认后的保存与不保存续行」。
 
 ## 已承诺待办
-
-### 接入应用退出请求的未保存取消保护
-
-- **状态**：待开始
-- **Feature Spec**：`docs/features/unsaved-close-protection.md`
-- **目标**：让 `⌘Q`、应用菜单 Quit 与 Dock Quit 在有未保存内容时进入同一个关闭确认，并确认取消后应用与窗口继续可用。
-- **范围**：接入应用正常退出请求；把同一次退出连带产生的窗口关闭事件归并为一个关闭意图；覆盖未修改文档直接退出、已修改文档提示一次、取消/Escape 后继续编辑、重复退出不叠加提示、忙碌或已有文件提示时安全阻止。
-- **非范围**：保存后退出、不保存后退出、完整三类退出入口真实交互验收、多标签/多窗口批量协调、进程崩溃、强制结束、断电、自动保存、备份或恢复。
-- **依赖**：「保护未保存文档的主窗口关闭」完成。
-- **拆分检查**：本任务只交付应用退出请求进入既有关闭决策的取消保护，不处理确认后的保存/不保存续行，也不承担最终集成验收。
-- **实施要点**：应用退出不得另建一套保存状态机；应用退出意图应与窗口关闭意图互斥并归并重复事件；强制终止不伪装为可保护的正常退出。
-- **完成标准**：自动化覆盖干净退出、脏文档提示、取消/Escape、重复退出、应用退出与窗口关闭事件归并、忙碌互斥；运行与本切片相关的前端检查、测试、构建，并记录真实结果。
 
 ### 完成应用退出确认后的保存与不保存续行
 
@@ -47,6 +35,16 @@
 - **完成标准**：完整前后端检查、测试和构建通过；macOS 真实交互覆盖窗口关闭按钮、`⌘W`、`⌘Q`、应用菜单 Quit 与 Dock Quit；Feature Spec 全部相关验收条件核对完成；README 与当前任务文档更新为真实完成结果。
 
 ## 最近完成
+
+### 接入应用退出请求的未保存取消保护
+
+- **状态**：已完成
+- **开始日期**：2026-07-31
+- **完成日期**：2026-07-31
+- **Feature Spec**：`docs/features/unsaved-close-protection.md`
+- **结果**：Rust 由 `.run(ctx)` 改为 `.build(ctx)?.run(...)`，在 `RunEvent::ExitRequested { code: None }`（用户发起的正常退出）时**一律** `prevent_exit` 并发射 `textora-app-exit-requested` 交前端判断；只有 `request_app_exit` 经 `AppHandle::exit` 触发的程序化退出（`code: Some`）直接放行。判定函数 `should_guard_user_exit(code) = code.is_none()`。该保守策略不依赖任何前端异步同步的保护状态，消除了「文档刚改脏、保护尚未武装」的时序窗口——此前版本用 `set_exit_guard` 维护的受管 `AtomicBool` 决定是否拦截，存在绕过未保存确认的风险，已删除该命令与状态。强制终止不触发 `ExitRequested`，因此无法被伪装为可保护的正常退出。前端在既有关闭意图状态机增加 `kind: "window" | "app-exit"`，收到 `textora-app-exit-requested` 后：未修改且空闲 → `requestAppExit`；脏文档 → 同一个保存/不保存/取消确认；忙碌或已有提示 → 安全阻止；已有意图 → 升级为 app-exit 归并，不重复提示，也不能因取消其中一个事件而由另一个绕过保护。`executeAuthorizedClose` 按 `kind` 分支：窗口走原 `window.close()` 授权，应用退出走 `request_app_exit`。能力新增最小事件权限 `core:event:allow-listen` 与 `core:event:allow-unlisten`，未授予 emit 或任何文件系统、shell、网络、窗口控制权限。
+- **范围说明**：取消保护（脏文档提示、取消/Escape、重复退出归并、退出与窗口关闭事件归并、忙碌互斥）与未修改直接退出已交付并通过自动化验证。确认后的「保存/不保存续行→退出」经 `executeAuthorizedClose` 的 app-exit 分支已贯通并经一条归并升级用例验证，但其按分支的专门验证（保存取消/失败/内容冲突/目标缺失时不退出）与 macOS `⌘Q`、应用菜单 Quit、Dock Quit 的真实交互验收按拆分留给下一任务。
+- **验证**：`cargo fmt --check`、`cargo check --all-targets`、`git diff --check` 通过；`cargo test` **102 passed / 0 failed**（含 `should_guard_user_exit`：用户发起退出默认拦截、程序化 `code: Some` 放行）；`npm run check` **72 passed / 0 failed**（含 7 个应用退出用例：未修改直接退出、脏文档提示与 Escape 取消、**脏文档收到事件即提示且不调用 `request_app_exit`、且从不调用 `set_exit_guard`**（回归保护时序窗口）、重复退出、忙碌阻止、退出意图期间窗口关闭被阻止、窗口关闭意图升级为应用退出并经 `request_app_exit` 完成）；`npm run build` 通过；`npm run tauri -- build` 通过并生成 `Textora.app`（验证运行事件回路与能力变更）。Clippy 未运行（缺组件）。macOS 三入口真实交互验收留待集成任务。
 
 ### 保护未保存文档的主窗口关闭
 
@@ -175,4 +173,4 @@
 - Rust 文档编码与安全保存核心已完成审查修复并通过 macOS 验证（fmt/check/test 68 并发+串行+跨进程/tauri build/git diff --check；Clippy 因组件缺失未运行）：`save_document` 为内部接口（未暴露为 Tauri 命令）；CP936 可表示性用「无替换编码 + 严格帧校验」判定，普通保存还要求重开后仍识别为 GBK 且内容一致，否则返回 `EncodingAmbiguous`（纯 ASCII/空因编码身份无法保持也拒绝，见 D-006）；保存先 `canonicalize` 解析符号链接到真实目标再原子替换（链接保留、目标更新）；冲突检测与只读/权限保护均为 best-effort（再次校验/权限设置与 rename 之间残留 TOCTOU，规格已如实降级）；测试临时目录 PID+纳秒+RAII。
 - `save-opened-file.md` 已完成实现、自动化验证与 macOS 真实文件交互验收：后端候选打开不会提前覆盖当前可信文档，异步 `save_document` 经 Raw body + header 接收内容并在阻塞线程复用安全保存核心，前端保留完整保存错误并使用保存专用提示；capability 未新增宽泛权限。
 - 「另存为与新建文档首次保存」已完成实现、自动化验证与 macOS 原生交互验收（cargo test 78 并发+串行+跨进程 / npm check 40 / build / tauri build / 启动验证）：Rust 侧系统保存对话框取得可信目标，`SaveTarget` 区分普通保存/另存已存在/新建（`NewTarget` 用临时文件+`hard_link` 原子不覆盖提交），源只读校验仅 `InPlace` 在核心执行；过期 id 写盘前拒绝，符号链接选择路径在会话中保留；前端含应用内格式选择 UI 与空白 Untitled Save/已有文件 Save As 入口。竞争保护从对话框返回后首次观测开始、best-effort。
-- 「保存冲突解决」已完成五个顺序任务及集成验收：完整自动化、构建、macOS 启动与交互式真实文件流程均已通过。「未保存关闭保护」规格已确认并拆为两个顺序任务：主窗口关闭已完成，应用退出与完整集成验收为下一项已承诺待办。多标签、列块编辑和 Markdown 模式仍在 Backlog。
+- 「保存冲突解决」已完成五个顺序任务及集成验收：完整自动化、构建、macOS 启动与交互式真实文件流程均已通过。「未保存关闭保护」Feature 已完成「主窗口关闭」与「应用退出请求的未保存取消保护」两个顺序任务：用户发起的应用退出（`RunEvent::ExitRequested { code: None }`）一律 `prevent_exit` 并交既有确认状态机判断，不依赖前端异步武装（消除时序窗口）；`request_app_exit` 触发的 `code: Some` 程序化退出直接放行；能力仅新增 `core:event:allow-listen`/`allow-unlisten`。下一项已承诺待办为确认后的保存/不保存续行，随后是完整集成验收（含 macOS `⌘Q`、应用菜单 Quit、Dock Quit 真实交互）。多标签、列块编辑和 Markdown 模式仍在 Backlog。

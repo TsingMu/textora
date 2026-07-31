@@ -34,6 +34,7 @@ import {
   lineEndingToChoice,
   readDocumentContent,
   reloadFromConflict,
+  requestAppExit,
   saveAs,
   saveDocument,
   selectAndOpenDocument,
@@ -46,9 +47,11 @@ import {
 const initialDocument = createNewDocument();
 type ConflictOperationStatus = "idle" | "canceling" | "reloading" | "overwriting";
 type FileMissingOperationStatus = "idle" | "keeping" | "discarding";
+type CloseKind = "window" | "app-exit";
 type CloseIntent = {
   documentId: string;
   content: string;
+  kind: CloseKind;
 };
 
 function App() {
@@ -109,6 +112,7 @@ function App() {
   useEffect(() => {
     let cancelled = false;
     let unlistenClose: (() => void) | undefined;
+    let unlistenExit: (() => void) | undefined;
     let unlistenFocus: (() => void) | undefined;
 
     const checkCurrentTarget = () => {
@@ -202,6 +206,7 @@ function App() {
             closeIntentRef.current = {
               documentId: current.id,
               content: current.content,
+              kind: "window",
             };
             closeConfirmPendingRef.current = true;
             setCloseConfirmError(null);
@@ -213,6 +218,46 @@ function App() {
           return;
         }
         unlistenClose = stopListeningClose;
+
+        const { listen } = await import("@tauri-apps/api/event");
+        if (cancelled) return;
+        const stopListeningExit = await listen(
+          "textora-app-exit-requested",
+          () => {
+            const current = sessionRef.current;
+            const existing = closeIntentRef.current;
+            if (existing !== null) {
+              // 归并：已有窗口关闭或退出意图时统一升级为应用退出，不重复提示，
+              // 也不能因取消其中一个事件而由另一个绕过保护。
+              if (existing.kind !== "app-exit") {
+                closeIntentRef.current = { ...existing, kind: "app-exit" };
+              }
+              return;
+            }
+            if (closeConfirmPendingRef.current || busyRef.current) {
+              // 忙碌或已有提示时安全阻止（Rust 已 prevent_exit），不叠加第二个提示。
+              return;
+            }
+            if (!current.isDirty) {
+              // 未修改：完成正常退出。
+              void requestAppExit();
+              return;
+            }
+            closeIntentRef.current = {
+              documentId: current.id,
+              content: current.content,
+              kind: "app-exit",
+            };
+            closeConfirmPendingRef.current = true;
+            setCloseConfirmError(null);
+            setCloseConfirmPending(true);
+          },
+        );
+        if (cancelled) {
+          stopListeningExit();
+          return;
+        }
+        unlistenExit = stopListeningExit;
 
         const stopListeningFocus = await getCurrentWindow().onFocusChanged(
           ({ payload: focused }) => {
@@ -236,6 +281,7 @@ function App() {
       targetCheckRevisionRef.current += 1;
       targetCheckInFlightRef.current = null;
       unlistenClose?.();
+      unlistenExit?.();
       unlistenFocus?.();
     };
   }, []);
@@ -245,10 +291,18 @@ function App() {
     closeAuthorizationRef.current = null;
   }
 
-  async function executeAuthorizedClose(validDocumentIds: readonly string[]) {
+  async function executeAuthorizedClose(
+    kind: CloseKind,
+    validDocumentIds: readonly string[],
+  ) {
+    closeIntentRef.current = null;
+    if (kind === "app-exit") {
+      // 应用退出不经窗口关闭授权，直接请求程序化退出；失败时 requestAppExit 自身保留运行。
+      await requestAppExit();
+      return;
+    }
     const authorization = { validDocumentIds };
     closeAuthorizationRef.current = authorization;
-    closeIntentRef.current = null;
     try {
       const { getCurrentWindow } = await import("@tauri-apps/api/window");
       await getCurrentWindow().close();
@@ -276,7 +330,7 @@ function App() {
       try {
         const descriptor = await saveDocument(intent.documentId, intent.content);
         setSession((s) => commitSavedDocument(s, descriptor));
-        await executeAuthorizedClose([intent.documentId]);
+        await executeAuthorizedClose(intent.kind, [intent.documentId]);
       } catch (err) {
         clearCloseIntent();
         const error: DocumentCommandError = isDocumentCommandError(err)
@@ -324,7 +378,7 @@ function App() {
         return;
       }
     }
-    await executeAuthorizedClose([intent.documentId]);
+    await executeAuthorizedClose(intent.kind, [intent.documentId]);
   }
 
   function handleCloseCancel() {
@@ -470,7 +524,7 @@ function App() {
       }
       setSession((current) => commitSavedAs(current, descriptor));
       if (closeIntent !== null) {
-        await executeAuthorizedClose([
+        await executeAuthorizedClose(closeIntent.kind, [
           closeIntent.documentId,
           descriptor.id,
         ]);
