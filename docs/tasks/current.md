@@ -6,35 +6,31 @@
 
 ## 进行中
 
-暂无进行中的任务。下一个已承诺待办为「完成应用退出确认后的保存与不保存续行」。
+暂无进行中的任务。「未保存关闭保护」Feature 已完成全部三个顺序任务与集成验收。下一阶段候选见 `docs/tasks/backlog.md`。
 
 ## 已承诺待办
 
-### 完成应用退出确认后的保存与不保存续行
+（暂无后续已承诺待办。）
 
-- **状态**：待开始
-- **Feature Spec**：`docs/features/unsaved-close-protection.md`
-- **目标**：在应用退出确认中选择保存或不保存后，按用户选择完成一次正常应用退出。
-- **范围**：复用主窗口关闭已建立的保存快照、普通保存、首次保存、只读另存为、不保存授权和过期授权保护；覆盖保存成功后退出、不保存后退出、保存取消/失败/内容冲突/目标缺失时不退出。
-- **非范围**：新增文件保存规则、修改冲突解决语义、完整 macOS 三入口真实交互验收、多标签/多窗口批量协调。
-- **依赖**：「接入应用退出请求的未保存取消保护」完成。
-- **拆分检查**：本任务只处理确认后的两条续行路径；重复事件归并已由前置任务建立，最终平台验收和文档收尾留给后续集成任务。
-- **实施要点**：正常退出授权只在当前请求完整成功后生效，取消或失败后必须失效；保存路径继续复用既有保存状态机，不新增独立退出保存流程。
-- **完成标准**：自动化覆盖保存成功退出、不保存退出、Untitled 首次保存退出、只读另存为退出、保存取消或失败不退出、冲突/缺失清除退出意图且不自动退出；运行与本切片相关的前端检查、测试、构建，并记录真实结果。
+## 最近完成
 
 ### 完成未保存关闭保护的集成验收与文档收尾
 
-- **状态**：待开始
+- **状态**：已完成
+- **开始日期**：2026-07-31
+- **完成日期**：2026-07-31
 - **Feature Spec**：`docs/features/unsaved-close-protection.md`
-- **目标**：验证窗口关闭与应用退出的完整组合行为，确认未保存关闭保护 Feature 达到完成状态。
-- **范围**：执行完整回归、macOS 窗口关闭按钮、`⌘W`、`⌘Q`、应用菜单 Quit 与 Dock Quit 真实交互验收；核对 Feature Spec 验收条件；修复验收中发现的小范围组合问题；更新 Feature Spec、README 和当前任务状态。
-- **非范围**：新增主要关闭/退出行为、多标签/多窗口批量协调、进程崩溃、强制结束、自动保存、备份或恢复。
-- **依赖**：「完成应用退出确认后的保存与不保存续行」完成。
-- **拆分检查**：本任务是收尾验收任务，主要承担组合验证和文档完成；若发现需要大块新行为，应拆出新的实现任务，而不是在本任务内扩大范围。
-- **实施要点**：验收应同时覆盖自动化和 macOS 真实入口；只报告实际执行过的检查，未执行项不得写为通过。
-- **完成标准**：完整前后端检查、测试和构建通过；macOS 真实交互覆盖窗口关闭按钮、`⌘W`、`⌘Q`、应用菜单 Quit 与 Dock Quit；Feature Spec 全部相关验收条件核对完成；README 与当前任务文档更新为真实完成结果。
+- **结果**：执行完整回归与构建，并在真实 macOS 上完成窗口关闭按钮、`⌘W`、`⌘Q`、应用菜单 Quit 与 Dock Quit 的交互验收。「未保存关闭保护」Feature 达到完成状态：Feature Spec 状态改为「已完成」，12 项验收条件全部核对并勾选，验证记录写入实际自动化与 macOS 交互结果；README 同步为「已完成」。
+- **验证**：`cargo fmt --check`、`cargo check --all-targets`、`cargo test`（**102 passed / 0 failed**）、`npm run check`（**80 passed / 0 failed**）、`npm run build`、`npm run tauri -- build`（生成 `Textora.app`）、`git diff --check` 均通过；macOS 真实交互于 2026-07-31 由用户确认窗口关闭按钮与 `⌘W`、`⌘Q`、应用菜单 Quit、Dock Quit 保护与取消/保存/不保存续行符合预期，确认或提示期间重复触发只维持一个提示。Clippy 未运行（缺组件）。
 
-## 最近完成
+### 完成应用退出确认后的保存与不保存续行
+
+- **状态**：已完成
+- **开始日期**：2026-07-31
+- **完成日期**：2026-07-31
+- **Feature Spec**：`docs/features/unsaved-close-protection.md`
+- **结果**：前置任务已把 `executeAuthorizedClose` 的 app-exit 分支接到 `request_app_exit`，且保存失败/冲突/缺失分支经 `clearCloseIntent` 不退出，续行实现无缺口，故本任务未修改生产代码，转为补齐确认后两条续行路径的全部自动化分支覆盖。新增 8 个 app-exit 续行用例验证：保存成功（直接发起与经窗口关闭归并升级两条路径）经 `request_app_exit` 退出且不触发 `window.close()`；明确不保存后经 `closeDocument` + `request_app_exit` 退出；Untitled 首次保存与只读另存为在格式选择与系统保存对话框成功后退出；保存失败、格式选择取消时不退出且保留未保存状态可重新提示；保存触发内容冲突或目标缺失时清除退出意图、进入既有冲突/缺失流程且不自动退出。退出授权只在当前请求完整成功后生效（成功才调 `request_app_exit`），取消或失败立即经 `clearCloseIntent` 失效。
+- **验证**：`cargo fmt --check`、`cargo check --all-targets`、`cargo test`（**102 passed / 0 failed**）、`npm run check`（**80 passed / 0 failed**，新增 8 个 app-exit 续行用例覆盖保存成功、不保存、Untitled 首次保存、只读另存为、保存失败不退出、格式选择取消不退出、冲突与缺失清除意图不退出）、`npm run build`、`git diff --check` 均通过。本任务未改生产代码（仅测试与文档），上一任务已验证的 `Textora.app` 构建仍然有效。Clippy 未运行（缺组件）。macOS 三入口真实交互验收留给集成任务。
 
 ### 接入应用退出请求的未保存取消保护
 
@@ -173,4 +169,4 @@
 - Rust 文档编码与安全保存核心已完成审查修复并通过 macOS 验证（fmt/check/test 68 并发+串行+跨进程/tauri build/git diff --check；Clippy 因组件缺失未运行）：`save_document` 为内部接口（未暴露为 Tauri 命令）；CP936 可表示性用「无替换编码 + 严格帧校验」判定，普通保存还要求重开后仍识别为 GBK 且内容一致，否则返回 `EncodingAmbiguous`（纯 ASCII/空因编码身份无法保持也拒绝，见 D-006）；保存先 `canonicalize` 解析符号链接到真实目标再原子替换（链接保留、目标更新）；冲突检测与只读/权限保护均为 best-effort（再次校验/权限设置与 rename 之间残留 TOCTOU，规格已如实降级）；测试临时目录 PID+纳秒+RAII。
 - `save-opened-file.md` 已完成实现、自动化验证与 macOS 真实文件交互验收：后端候选打开不会提前覆盖当前可信文档，异步 `save_document` 经 Raw body + header 接收内容并在阻塞线程复用安全保存核心，前端保留完整保存错误并使用保存专用提示；capability 未新增宽泛权限。
 - 「另存为与新建文档首次保存」已完成实现、自动化验证与 macOS 原生交互验收（cargo test 78 并发+串行+跨进程 / npm check 40 / build / tauri build / 启动验证）：Rust 侧系统保存对话框取得可信目标，`SaveTarget` 区分普通保存/另存已存在/新建（`NewTarget` 用临时文件+`hard_link` 原子不覆盖提交），源只读校验仅 `InPlace` 在核心执行；过期 id 写盘前拒绝，符号链接选择路径在会话中保留；前端含应用内格式选择 UI 与空白 Untitled Save/已有文件 Save As 入口。竞争保护从对话框返回后首次观测开始、best-effort。
-- 「保存冲突解决」已完成五个顺序任务及集成验收：完整自动化、构建、macOS 启动与交互式真实文件流程均已通过。「未保存关闭保护」Feature 已完成「主窗口关闭」与「应用退出请求的未保存取消保护」两个顺序任务：用户发起的应用退出（`RunEvent::ExitRequested { code: None }`）一律 `prevent_exit` 并交既有确认状态机判断，不依赖前端异步武装（消除时序窗口）；`request_app_exit` 触发的 `code: Some` 程序化退出直接放行；能力仅新增 `core:event:allow-listen`/`allow-unlisten`。下一项已承诺待办为确认后的保存/不保存续行，随后是完整集成验收（含 macOS `⌘Q`、应用菜单 Quit、Dock Quit 真实交互）。多标签、列块编辑和 Markdown 模式仍在 Backlog。
+- 「未保存关闭保护」Feature 已完成全部三个顺序任务（主窗口关闭、应用退出取消保护、确认后保存/不保存续行）与集成验收：用户发起的应用退出（`RunEvent::ExitRequested { code: None }`）一律 `prevent_exit` 并交既有确认状态机判断，不依赖前端异步武装（消除时序窗口）；`request_app_exit` 触发的 `code: Some` 程序化退出直接放行；确认后保存/不保存续行复用既有保存状态机，成功经 `request_app_exit` 退出，取消/失败/冲突/缺失清除退出意图不退出；能力仅新增 `core:event:allow-listen`/`allow-unlisten`。完整自动化（cargo test 102 / npm check 80）、构建与 macOS 真实交互（窗口按钮、`⌘W`、`⌘Q`、应用菜单 Quit、Dock Quit）均已于 2026-07-31 通过；Feature Spec 状态改为「已完成」。多标签、列块编辑和 Markdown 模式仍在 Backlog。

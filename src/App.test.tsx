@@ -1842,4 +1842,382 @@ describe("App window close protection", () => {
     ).toBe(true);
     expect(tauriWindowMock.close).not.toHaveBeenCalled();
   });
+
+  it("exits via request_app_exit after saving on a direct app-exit intent", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        return {
+          id: "doc-exit-direct",
+          path: "/tmp/exit-direct.txt",
+          displayName: "exit-direct.txt",
+          byteCount: 5,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 5, sha256: "old" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode("Hello").buffer;
+      }
+      if (cmd === "save_document") {
+        return {
+          id: "doc-exit-direct",
+          path: "/tmp/exit-direct.txt",
+          displayName: "exit-direct.txt",
+          byteCount: 12,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 12, sha256: "saved" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "request_app_exit") {
+        return undefined;
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+    await renderAndEdit();
+    await emitAppExitRequest();
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".confirm-save")?.click();
+    });
+
+    expect(
+      invokeMock.mock.calls.filter((call) => call[0] === "save_document"),
+    ).toHaveLength(1);
+    expect(
+      invokeMock.mock.calls.some((call) => call[0] === "request_app_exit"),
+    ).toBe(true);
+    expect(tauriWindowMock.close).not.toHaveBeenCalled();
+  });
+
+  it("exits via request_app_exit after explicitly discarding on an app-exit intent", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        return {
+          id: "doc-exit-discard",
+          path: "/tmp/exit-discard.txt",
+          displayName: "exit-discard.txt",
+          byteCount: 5,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 5, sha256: "old" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode("Hello").buffer;
+      }
+      if (cmd === "close_document" || cmd === "request_app_exit") {
+        return undefined;
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+    await renderAndEdit();
+    await emitAppExitRequest();
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".confirm-discard")?.click();
+    });
+
+    expect(
+      invokeMock.mock.calls.some((call) => call[0] === "close_document"),
+    ).toBe(true);
+    expect(
+      invokeMock.mock.calls.some((call) => call[0] === "request_app_exit"),
+    ).toBe(true);
+    expect(tauriWindowMock.close).not.toHaveBeenCalled();
+  });
+
+  it("completes an Untitled first save on an app-exit intent and exits", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "save_document_as") {
+        return {
+          id: "doc-exit-untitled",
+          path: "/tmp/exit-untitled.txt",
+          displayName: "exit-untitled.txt",
+          byteCount: 5,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 5, sha256: "saved" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "request_app_exit") {
+        return undefined;
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+    await renderAndEdit(false);
+    await emitAppExitRequest();
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".confirm-save")?.click();
+    });
+    expect(container.querySelector(".save-as-dialog")).not.toBeNull();
+
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(".save-as-dialog .confirm-discard")
+        ?.click();
+    });
+
+    expect(
+      invokeMock.mock.calls.filter((call) => call[0] === "save_document_as"),
+    ).toHaveLength(1);
+    expect(
+      invokeMock.mock.calls.some((call) => call[0] === "request_app_exit"),
+    ).toBe(true);
+    expect(tauriWindowMock.close).not.toHaveBeenCalled();
+  });
+
+  it("completes a read-only save-as on an app-exit intent and exits", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        return {
+          id: "doc-exit-ro",
+          path: "/tmp/exit-ro.txt",
+          displayName: "exit-ro.txt",
+          byteCount: 5,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 5, sha256: "old" },
+          readOnly: true,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode("Hello").buffer;
+      }
+      if (cmd === "save_document_as") {
+        return {
+          id: "doc-exit-ro",
+          path: "/tmp/exit-ro-new.txt",
+          displayName: "exit-ro-new.txt",
+          byteCount: 12,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 12, sha256: "saved" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "request_app_exit") {
+        return undefined;
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+    await renderAndEdit();
+    await emitAppExitRequest();
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".confirm-save")?.click();
+    });
+    expect(container.querySelector(".save-as-dialog")).not.toBeNull();
+
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(".save-as-dialog .confirm-discard")
+        ?.click();
+    });
+
+    expect(
+      invokeMock.mock.calls.filter((call) => call[0] === "save_document_as"),
+    ).toHaveLength(1);
+    expect(
+      invokeMock.mock.calls.some((call) => call[0] === "request_app_exit"),
+    ).toBe(true);
+    expect(tauriWindowMock.close).not.toHaveBeenCalled();
+  });
+
+  it("does not exit when a close-time save fails on an app-exit intent", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        return {
+          id: "doc-exit-fail",
+          path: "/tmp/exit-fail.txt",
+          displayName: "exit-fail.txt",
+          byteCount: 5,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 5, sha256: "old" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode("Hello").buffer;
+      }
+      if (cmd === "save_document") {
+        throw { code: "save-failed", message: "fail" };
+      }
+      if (cmd === "request_app_exit") {
+        return undefined;
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+    await renderAndEdit();
+    await emitAppExitRequest();
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".confirm-save")?.click();
+    });
+
+    expect(
+      invokeMock.mock.calls.some((call) => call[0] === "request_app_exit"),
+    ).toBe(false);
+    expect(container.querySelector(".notice-error")).not.toBeNull();
+    expect(container.querySelector(".statusbar")?.textContent).toContain(
+      "Modified",
+    );
+  });
+
+  it("does not exit when the format chooser is cancelled on an app-exit intent", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "save_document_as") {
+        return {
+          id: "doc-exit-cancel",
+          path: "/tmp/exit-cancel.txt",
+          displayName: "exit-cancel.txt",
+          byteCount: 5,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 5, sha256: "saved" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "request_app_exit") {
+        return undefined;
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+    await renderAndEdit(false);
+    await emitAppExitRequest();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".confirm-save")?.click();
+    });
+
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(".save-as-dialog .confirm-cancel")
+        ?.click();
+    });
+
+    expect(
+      invokeMock.mock.calls.some((call) => call[0] === "save_document_as"),
+    ).toBe(false);
+    expect(
+      invokeMock.mock.calls.some((call) => call[0] === "request_app_exit"),
+    ).toBe(false);
+    expect(container.querySelector(".statusbar")?.textContent).toContain(
+      "Modified",
+    );
+    await emitAppExitRequest();
+    expect(
+      container.querySelector('[aria-label="Save before closing?"]'),
+    ).not.toBeNull();
+  });
+
+  it("clears the app-exit intent and does not exit on a close-time content conflict", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        return {
+          id: "doc-exit-conflict",
+          path: "/tmp/exit-conflict.txt",
+          displayName: "exit-conflict.txt",
+          byteCount: 5,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 5, sha256: "old" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode("Hello").buffer;
+      }
+      if (cmd === "save_document") {
+        throw { code: "save-conflict-content-changed", message: "conflict" };
+      }
+      if (cmd === "request_app_exit") {
+        return undefined;
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+    await renderAndEdit();
+    await emitAppExitRequest();
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".confirm-save")?.click();
+    });
+
+    expect(container.querySelector(".notice-conflict")).not.toBeNull();
+    expect(
+      invokeMock.mock.calls.some((call) => call[0] === "request_app_exit"),
+    ).toBe(false);
+    expect(tauriWindowMock.close).not.toHaveBeenCalled();
+  });
+
+  it("clears the app-exit intent and does not exit on a close-time missing target", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        return {
+          id: "doc-exit-missing",
+          path: "/tmp/exit-missing.txt",
+          displayName: "exit-missing.txt",
+          byteCount: 5,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 5, sha256: "old" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode("Hello").buffer;
+      }
+      if (cmd === "save_document") {
+        throw { code: "save-conflict-target-missing", message: "missing" };
+      }
+      if (cmd === "close_document" || cmd === "request_app_exit") {
+        return undefined;
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+    await renderAndEdit();
+    await emitAppExitRequest();
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".confirm-save")?.click();
+    });
+
+    expect(
+      container.querySelector('[aria-label="File missing on disk"]'),
+    ).not.toBeNull();
+    expect(
+      invokeMock.mock.calls.some((call) => call[0] === "request_app_exit"),
+    ).toBe(false);
+    expect(tauriWindowMock.close).not.toHaveBeenCalled();
+  });
 });
