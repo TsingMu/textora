@@ -5,6 +5,7 @@
 //! Raw body 与自定义 header 接收，避免把大文本编码为 JSON 数字数组或大字符串。错误
 //! 以稳定代码返回，前端据此映射用户可理解的提示，不展示 Rust 内部调试文本。
 
+use std::collections::HashMap;
 use std::fs::File;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -226,124 +227,172 @@ struct PendingSaveDirectory {
     path: PathBuf,
 }
 
+/// 单个文档的可信状态：候选打开/重载缓冲、已提升的活动可信元数据、待解决冲突、
+/// 覆盖租约与保存目录授权。多标签会话下同一 `DocumentStore` 并发持有多个 entry，
+/// 按文档 id 索引；单文档使用时退化为唯一 entry。
+#[derive(Default)]
+struct DocumentEntry {
+    /// 候选打开/重载时暂存的解码后内容，供 `read_document_content` 按 id 取回一次。
+    pending_content: Option<Vec<u8>>,
+    /// 与 `pending_content` 同属一次候选；内容成功取回前不得提升为 `active`。
+    pending_trusted: Option<TrustedDocument>,
+    /// 重新加载候选绑定的冲突版本；普通打开候选为 `None`。
+    pending_reload_revision: Option<u64>,
+    /// 内容成功取回后提升的可信元数据，供保存按 id 解析。
+    active: Option<TrustedDocument>,
+    /// 该文档的待解决内容冲突。
+    conflict: Option<ConflictState>,
+    /// 正在执行的强制覆盖租约，绑定该文档的冲突版本。租约存在期间该文档的其他冲突
+    /// 解决操作必须拒绝；其他文档的 entry 不受影响。
+    pending_overwrite: Option<u64>,
+    /// 该文档授权的内嵌另存为保存目录。文档关闭/成功落盘后清除。
+    pending_save_directory: Option<PendingSaveDirectory>,
+    /// 当前单文档前端打开入口的过渡标记：候选内容被成功取回时替换整个后端会话，
+    /// 避免旧单文档 session 的 active/conflict/grant 留成不可达状态。
+    pending_replaces_session: bool,
+}
+
+/// 多标签会话下的后端文档状态：按文档 id 并发持有多个 `DocumentEntry`。冲突版本与
+/// 授权 id 计数为全局单调，保证跨文档唯一。
 #[derive(Default)]
 struct DocumentStoreInner {
-    /// 打开时暂存的解码后内容，供 `read_document_content` 取回一次。
-    pending_content: Option<(String, Vec<u8>)>,
-    /// 与 `pending_content` 同属一次候选打开；内容成功取回前不得替换当前可信文档。
-    pending_document: Option<(String, TrustedDocument)>,
-    /// 重新加载候选绑定的冲突版本；普通打开候选为 `None`。
-    pending_reload_revision: Option<(String, u64)>,
-    /// 当前已打开文档的可信元数据，供保存按 id 解析。
-    active: Option<(String, TrustedDocument)>,
-    /// 当前活动文档的待解决冲突状态。
-    conflict: Option<ConflictState>,
-    /// 正在执行的强制覆盖，绑定活动文档与冲突版本。租约存在期间其他冲突解决操作
-    /// 必须拒绝，避免取消或新操作使已经确认的破坏性写入失去状态归属。
-    pending_overwrite: Option<(String, u64)>,
-    /// 单调递增的内部冲突版本，只在 Rust 可信状态中使用，不暴露给前端。
+    documents: HashMap<String, DocumentEntry>,
+    /// Untitled 首次保存授权（无后端文档，因此无 entry 可挂）。多标签下与各文件标签的
+    /// 授权共存；前端切片接管 Untitled 身份后可下沉到 entry。
+    untitled_save_directory: Option<PendingSaveDirectory>,
+    /// 单调递增的内部冲突版本，跨文档唯一，只在 Rust 可信状态中使用，不暴露给前端。
     next_conflict_revision: u64,
-    /// 用户授权的内嵌另存为保存目录（绑定活动文档）。切换/关闭/成功落盘后清除。
-    pending_save_directory: Option<PendingSaveDirectory>,
-    /// 单调递增的目录授权 id 计数器，只在内嵌另存为契约内部使用。
+    /// 单调递增的目录授权 id 计数器，跨文档唯一，只在内嵌另存为契约内部使用。
     next_save_directory_id: u64,
 }
 
-/// 单标签会话下的后端文档状态：同时维护打开内容缓冲与可信保存元数据。
+/// 后端文档状态：按 id 并发维护多个文档的候选打开内容缓冲与可信保存元数据。
 #[derive(Default)]
 pub struct DocumentStore {
     inner: Mutex<DocumentStoreInner>,
 }
 
 impl DocumentStore {
+    #[allow(dead_code)]
     fn store_open(&self, id: String, content: Vec<u8>, document: TrustedDocument) {
+        self.store_open_inner(id, content, document, false);
+    }
+
+    fn store_open_replacing_session(
+        &self,
+        id: String,
+        content: Vec<u8>,
+        document: TrustedDocument,
+    ) {
+        self.store_open_inner(id, content, document, true);
+    }
+
+    fn store_open_inner(
+        &self,
+        id: String,
+        content: Vec<u8>,
+        document: TrustedDocument,
+        replaces_session: bool,
+    ) {
         let mut guard = self.inner.lock().expect("document store lock poisoned");
-        guard.pending_content = Some((id.clone(), content));
-        guard.pending_document = Some((id, document));
-        guard.pending_reload_revision = None;
-        // 新文档载入即废弃任何旧文档的保存目录授权，避免跨文档落盘。
-        guard.pending_save_directory = None;
+        let entry = guard.documents.entry(id).or_default();
+        entry.pending_content = Some(content);
+        entry.pending_trusted = Some(document);
+        entry.pending_reload_revision = None;
+        entry.pending_replaces_session = replaces_session;
+        // 候选只写入本文档 entry，不清除其他文档的授权（跨文档落盘由 grant 归属保护）。
     }
 
     fn take_content(&self, id: &str) -> Option<Vec<u8>> {
         let mut guard = self.inner.lock().expect("document store lock poisoned");
-        let content_matches = guard
-            .pending_content
-            .as_ref()
-            .is_some_and(|(stored_id, _)| stored_id == id);
-        let document_matches = guard
-            .pending_document
-            .as_ref()
-            .is_some_and(|(stored_id, _)| stored_id == id);
-        let reload_matches = match guard.pending_reload_revision.as_ref() {
-            None => true,
-            Some((reload_id, revision)) => {
-                reload_id == id
-                    && guard.conflict.as_ref().is_some_and(|conflict| {
-                        conflict.revision == *revision
-                            && conflict.kind == ConflictKind::ContentChanged
-                    })
+        let (bytes, trusted, replaces_session) = {
+            let entry = guard.documents.get_mut(id)?;
+            let has_pending = entry.pending_content.is_some() && entry.pending_trusted.is_some();
+            let reload_matches = match entry.pending_reload_revision {
+                None => true,
+                Some(revision) => entry.conflict.as_ref().is_some_and(|conflict| {
+                    conflict.revision == revision && conflict.kind == ConflictKind::ContentChanged
+                }),
+            };
+            let overwrite_allows_promotion = entry.pending_overwrite.is_none();
+            if !has_pending || !reload_matches || !overwrite_allows_promotion {
+                if has_pending {
+                    entry.pending_content = None;
+                    entry.pending_trusted = None;
+                    entry.pending_reload_revision = None;
+                    entry.pending_replaces_session = false;
+                }
+                return None;
             }
+
+            let bytes = entry
+                .pending_content
+                .take()
+                .expect("matching pending content must exist");
+            let trusted = entry
+                .pending_trusted
+                .take()
+                .expect("matching pending trusted must exist");
+            let replaces_session = entry.pending_replaces_session;
+            entry.pending_replaces_session = false;
+            (bytes, trusted, replaces_session)
         };
-        let overwrite_allows_promotion = guard.pending_overwrite.is_none();
-        if !content_matches || !document_matches || !reload_matches || !overwrite_allows_promotion {
-            if content_matches && document_matches {
-                guard.pending_content = None;
-                guard.pending_document = None;
-                guard.pending_reload_revision = None;
-            }
-            return None;
+        if replaces_session {
+            guard.documents.clear();
+            guard.untitled_save_directory = None;
+            guard.documents.insert(
+                id.to_owned(),
+                DocumentEntry {
+                    active: Some(trusted),
+                    ..DocumentEntry::default()
+                },
+            );
+            return Some(bytes);
         }
 
-        let (_, bytes) = guard
-            .pending_content
-            .take()
-            .expect("matching pending content must exist");
-        let pending = guard
-            .pending_document
-            .take()
-            .expect("matching pending document must exist");
-        guard.pending_reload_revision = None;
-        guard.active = Some(pending);
-        guard.conflict = None;
-        guard.pending_save_directory = None;
+        let entry = guard
+            .documents
+            .get_mut(id)
+            .expect("promoted document entry must still exist");
+        entry.pending_reload_revision = None;
+        entry.active = Some(trusted);
+        entry.conflict = None;
+        entry.pending_save_directory = None;
         Some(bytes)
     }
 
     fn active_for(&self, id: &str) -> Option<TrustedDocument> {
         let guard = self.inner.lock().expect("document store lock poisoned");
-        if guard.pending_overwrite.is_some() {
+        let entry = guard.documents.get(id)?;
+        if entry.pending_overwrite.is_some() {
             return None;
         }
-        guard
-            .active
-            .as_ref()
-            .filter(|(stored_id, _)| stored_id == id)
-            .map(|(_, document)| document.clone())
+        entry.active.clone()
     }
 
     fn update_active(&self, id: &str, fingerprint: FileFingerprint, byte_count: u64) {
         let mut guard = self.inner.lock().expect("document store lock poisoned");
-        if guard.pending_overwrite.is_some() {
+        let Some(entry) = guard.documents.get_mut(id) else {
+            return;
+        };
+        if entry.pending_overwrite.is_some() {
             return;
         }
-        if let Some((stored_id, document)) = guard.active.as_mut() {
-            if stored_id == id {
-                document.fingerprint = fingerprint;
-                document.byte_count = byte_count;
-                guard.conflict = None;
-            }
+        if let Some(document) = entry.active.as_mut() {
+            document.fingerprint = fingerprint;
+            document.byte_count = byte_count;
+            entry.conflict = None;
         }
     }
 
-    /// 另存为成功：把当前可信文档关联到新目标（路径/显示名/编码/换行/指纹/字节数/只读），
+    /// 另存为成功：把该文档关联到新目标（路径/显示名/编码/换行/指纹/字节数/只读），
     /// 沿用同一文档 id。id 不匹配时无操作（调用方应在已知 id 上调用）。
     fn reassociate_active(&self, id: &str, document: TrustedDocument) {
         let mut guard = self.inner.lock().expect("document store lock poisoned");
-        if let Some((stored_id, existing)) = guard.active.as_mut() {
-            if stored_id == id {
-                *existing = document;
-                guard.conflict = None;
+        if let Some(entry) = guard.documents.get_mut(id) {
+            if entry.active.is_some() {
+                entry.active = Some(document);
+                entry.conflict = None;
             }
         }
     }
@@ -352,28 +401,28 @@ impl DocumentStore {
     fn create_active(&self, document: TrustedDocument) -> String {
         let id = crate::document::next_document_id();
         let mut guard = self.inner.lock().expect("document store lock poisoned");
-        guard.active = Some((id.clone(), document));
-        guard.conflict = None;
-        guard.pending_save_directory = None;
+        let entry = guard.documents.entry(id.clone()).or_default();
+        entry.active = Some(document);
+        entry.conflict = None;
+        entry.pending_save_directory = None;
         id
     }
 
-    /// 普通保存冲突时记录待解决冲突状态。必须绑定当前活动文档 id，否则视为过期不记录。
-    /// 首次冲突不得更新可信指纹、字节数或描述信息——此处只记录状态，不修改 active。
+    /// 普通保存冲突时记录待解决冲突状态，绑定该文档。必须存在匹配 id 的活动文档，否则
+    /// 视为过期不记录。首次冲突不得更新可信指纹、字节数或描述信息——此处只记录状态。
     fn record_conflict(&self, id: &str, kind: ConflictKind, snapshot: Vec<u8>) {
         let mut guard = self.inner.lock().expect("document store lock poisoned");
-        if guard.pending_overwrite.is_some() {
+        let trusted = match guard.documents.get(id) {
+            Some(entry) if entry.pending_overwrite.is_none() => entry.active.clone(),
+            _ => None,
+        };
+        let Some(trusted) = trusted else {
             return;
-        }
-        let trusted = guard
-            .active
-            .as_ref()
-            .filter(|(stored_id, _)| stored_id == id)
-            .map(|(_, trusted)| trusted.clone());
-        if let Some(trusted) = trusted {
-            guard.next_conflict_revision = guard.next_conflict_revision.wrapping_add(1);
-            let revision = guard.next_conflict_revision;
-            guard.conflict = Some(ConflictState {
+        };
+        guard.next_conflict_revision = guard.next_conflict_revision.wrapping_add(1);
+        let revision = guard.next_conflict_revision;
+        if let Some(entry) = guard.documents.get_mut(id) {
+            entry.conflict = Some(ConflictState {
                 revision,
                 kind,
                 snapshot,
@@ -382,116 +431,96 @@ impl DocumentStore {
         }
     }
 
-    /// 测试辅助：读取但不消费当前冲突。真实解决命令必须在成功或明确取消后才清除状态，
-    /// 不能在可能失败的文件 I/O 之前把冲突标记为已解决。
+    /// 测试辅助：读取但不消费该文档当前冲突。真实解决命令必须在成功或明确取消后才清除
+    /// 状态，不能在可能失败的文件 I/O 之前把冲突标记为已解决。
     #[cfg(test)]
     fn conflict_for(&self, id: &str) -> Option<ConflictState> {
         let guard = self.inner.lock().expect("document store lock poisoned");
-        let active_matches = guard
-            .active
-            .as_ref()
-            .is_some_and(|(stored_id, _)| stored_id == id);
-        if !active_matches {
-            return None;
-        }
-        guard.conflict.clone()
+        guard
+            .documents
+            .get(id)
+            .and_then(|entry| entry.conflict.clone())
     }
 
-    /// 取得当前活动文档的内容变化冲突。返回内部快照但不消费状态；重新加载失败时
-    /// 用户仍可重试或取消。目标缺失冲突必须走独立的保留/关闭流程。
+    /// 取得该文档的内容变化冲突。返回内部快照但不消费状态；重新加载失败时用户仍可重试
+    /// 或取消。目标缺失冲突必须走独立的保留/关闭流程。
     fn content_conflict_for(&self, id: &str) -> Option<ConflictState> {
         let guard = self.inner.lock().expect("document store lock poisoned");
-        let active_matches = guard
-            .active
-            .as_ref()
-            .is_some_and(|(stored_id, _)| stored_id == id);
-        if !active_matches {
-            return None;
-        }
         guard
-            .conflict
-            .as_ref()
+            .documents
+            .get(id)
+            .and_then(|entry| entry.conflict.as_ref())
             .filter(|conflict| conflict.kind == ConflictKind::ContentChanged)
             .cloned()
     }
 
-    /// 明确取消当前活动文档的内容变化冲突。不执行文件 I/O，不影响活动文档或内容。
+    /// 明确取消该文档的内容变化冲突。不执行文件 I/O，不影响活动文档或内容。
     /// 未知、过期、已解决或其他类型的冲突返回 false。
     fn clear_content_conflict(&self, id: &str) -> bool {
         let mut guard = self.inner.lock().expect("document store lock poisoned");
-        let active_matches = guard
-            .active
+        let Some(entry) = guard.documents.get_mut(id) else {
+            return false;
+        };
+        let revision = entry
+            .conflict
             .as_ref()
-            .is_some_and(|(stored_id, _)| stored_id == id);
-        let revision = guard.conflict.as_ref().and_then(|conflict| {
-            (active_matches && conflict.kind == ConflictKind::ContentChanged)
-                .then_some(conflict.revision)
-        });
+            .filter(|conflict| conflict.kind == ConflictKind::ContentChanged)
+            .map(|conflict| conflict.revision);
         let Some(revision) = revision else {
             return false;
         };
-        if guard
+        if entry
             .pending_overwrite
-            .as_ref()
-            .is_some_and(|(pending_id, pending_revision)| {
-                pending_id == id && *pending_revision == revision
-            })
+            .is_some_and(|pending_revision| pending_revision == revision)
         {
             return false;
         }
 
-        guard.conflict = None;
-        if guard
+        entry.conflict = None;
+        if entry
             .pending_reload_revision
-            .as_ref()
-            .is_some_and(|(pending_id, pending_revision)| {
-                pending_id == id && *pending_revision == revision
-            })
+            .is_some_and(|pending_revision| pending_revision == revision)
         {
-            guard.pending_content = None;
-            guard.pending_document = None;
-            guard.pending_reload_revision = None;
+            entry.pending_content = None;
+            entry.pending_trusted = None;
+            entry.pending_reload_revision = None;
         }
         true
     }
 
-    /// 为当前内容冲突取得强制覆盖租约。快照在租约建立后返回，失败或成功提交前都不消费
-    /// 冲突；同一时刻只允许一个覆盖操作。
+    /// 为该文档的内容冲突取得强制覆盖租约。快照在租约建立后返回，失败或成功提交前都不
+    /// 消费冲突；同一时刻每个文档只允许一个覆盖操作。
     fn begin_overwrite(&self, id: &str) -> Option<ConflictState> {
         let mut guard = self.inner.lock().expect("document store lock poisoned");
-        if guard.pending_overwrite.is_some() || guard.pending_reload_revision.is_some() {
+        let entry = guard.documents.get_mut(id)?;
+        if entry.pending_overwrite.is_some() || entry.pending_reload_revision.is_some() {
             return None;
         }
-        let active_matches = guard
-            .active
-            .as_ref()
-            .is_some_and(|(stored_id, _)| stored_id == id);
-        let conflict = guard
+        let conflict = entry
             .conflict
             .as_ref()
-            .filter(|conflict| active_matches && conflict.kind == ConflictKind::ContentChanged)
-            .cloned()?;
-        guard.pending_overwrite = Some((id.to_owned(), conflict.revision));
+            .filter(|conflict| conflict.kind == ConflictKind::ContentChanged)?
+            .clone();
+        entry.pending_overwrite = Some(conflict.revision);
         Some(conflict)
     }
 
-    /// 覆盖 I/O 失败时仅释放匹配租约，保留原冲突供用户重试或取消。
+    /// 覆盖 I/O 失败时仅释放该文档的匹配租约，保留原冲突供用户重试或取消。
     fn abort_overwrite(&self, id: &str, revision: u64) -> bool {
         let mut guard = self.inner.lock().expect("document store lock poisoned");
-        let matches =
-            guard
-                .pending_overwrite
-                .as_ref()
-                .is_some_and(|(pending_id, pending_revision)| {
-                    pending_id == id && *pending_revision == revision
-                });
+        let Some(entry) = guard.documents.get_mut(id) else {
+            return false;
+        };
+        let matches = entry
+            .pending_overwrite
+            .is_some_and(|pending_revision| pending_revision == revision);
         if matches {
-            guard.pending_overwrite = None;
+            entry.pending_overwrite = None;
         }
         matches
     }
 
-    /// 覆盖成功后，在同一锁内复核活动文档、冲突版本与租约，再更新可信状态并清除冲突。
+    /// 覆盖成功后，在同一锁内复核该文档活动状态、冲突版本与租约，再更新可信状态并清除冲突。
     fn commit_overwrite(
         &self,
         id: &str,
@@ -500,38 +529,33 @@ impl DocumentStore {
         byte_count: u64,
     ) -> Option<TrustedDocument> {
         let mut guard = self.inner.lock().expect("document store lock poisoned");
-        let still_current = guard
-            .active
-            .as_ref()
-            .is_some_and(|(stored_id, _)| stored_id == id)
-            && guard.conflict.as_ref().is_some_and(|conflict| {
+        let entry = guard.documents.get_mut(id)?;
+        let still_current = entry.active.is_some()
+            && entry.conflict.as_ref().is_some_and(|conflict| {
                 conflict.revision == revision && conflict.kind == ConflictKind::ContentChanged
             })
-            && guard
+            && entry
                 .pending_overwrite
-                .as_ref()
-                .is_some_and(|(pending_id, pending_revision)| {
-                    pending_id == id && *pending_revision == revision
-                });
+                .is_some_and(|pending_revision| pending_revision == revision);
         if !still_current {
             return None;
         }
 
-        let (_, document) = guard
+        let document = entry
             .active
             .as_mut()
             .expect("matching active document must exist");
         document.fingerprint = fingerprint;
         document.byte_count = byte_count;
         let updated = document.clone();
-        guard.conflict = None;
-        guard.pending_overwrite = None;
+        entry.conflict = None;
+        entry.pending_overwrite = None;
         Some(updated)
     }
 
-    /// 重新加载成功后，把新内容和更新后的可信描述缓冲为候选，供 `read_document_content`
-    /// 取回。取回时 `take_content` 会原子提升为活动文档并清除冲突状态——因此冲突状态
-    /// 在内容被前端成功取回前不会被标记为已解决。
+    /// 重新加载成功后，把新内容和更新后的可信描述缓冲为该文档候选，供
+    /// `read_document_content` 取回。取回时 `take_content` 会原子提升为活动文档并清除
+    /// 冲突状态——因此冲突状态在内容被前端成功取回前不会被标记为已解决。
     fn prepare_reload(
         &self,
         id: &str,
@@ -540,53 +564,43 @@ impl DocumentStore {
         document: TrustedDocument,
     ) -> bool {
         let mut guard = self.inner.lock().expect("document store lock poisoned");
-        let still_current = guard
-            .active
-            .as_ref()
-            .is_some_and(|(stored_id, _)| stored_id == id)
-            && guard.conflict.as_ref().is_some_and(|conflict| {
+        let Some(entry) = guard.documents.get_mut(id) else {
+            return false;
+        };
+        let still_current = entry.active.is_some()
+            && entry.conflict.as_ref().is_some_and(|conflict| {
                 conflict.revision == revision && conflict.kind == ConflictKind::ContentChanged
             })
-            && guard.pending_overwrite.is_none();
+            && entry.pending_overwrite.is_none();
         if !still_current {
             return false;
         }
-        guard.pending_content = Some((id.to_owned(), content));
-        guard.pending_document = Some((id.to_owned(), document));
-        guard.pending_reload_revision = Some((id.to_owned(), revision));
+        entry.pending_content = Some(content);
+        entry.pending_trusted = Some(document);
+        entry.pending_reload_revision = Some(revision);
         true
     }
 
-    /// 返回活动文档的可信路径（不读取内容）。用于聚焦时检查文件是否仍存在。
+    /// 返回该文档的可信路径（不读取内容）。用于聚焦时检查文件是否仍存在。
     fn active_path_for(&self, id: &str) -> Option<PathBuf> {
         let guard = self.inner.lock().expect("document store lock poisoned");
         guard
-            .active
-            .as_ref()
-            .filter(|(stored_id, _)| stored_id == id)
-            .map(|(_, document)| document.path.clone())
+            .documents
+            .get(id)
+            .and_then(|entry| entry.active.as_ref())
+            .map(|document| document.path.clone())
     }
 
-    /// 关闭文档：清除活动文档关联与所有待解决/待提交状态。未知 id 返回 false。
+    /// 关闭文档：从 map 移除该 id 的整个 entry（候选/活动/冲突/覆盖租约/授权一并清除）。
+    /// entry 不存在返回 false。
     fn close_active(&self, id: &str) -> bool {
         let mut guard = self.inner.lock().expect("document store lock poisoned");
-        let active_matches = guard
-            .active
-            .as_ref()
-            .is_some_and(|(stored_id, _)| stored_id == id);
-        if active_matches {
-            guard.active = None;
-            guard.conflict = None;
-            guard.pending_overwrite = None;
-            guard.pending_reload_revision = None;
-            guard.pending_content = None;
-            guard.pending_document = None;
-            guard.pending_save_directory = None;
-        }
-        active_matches
+        guard.documents.remove(id).is_some()
     }
 
-    /// 发放一个新的保存目录授权（覆盖任何既有授权），返回面向前端的授权描述符。
+    /// 发放一个新的保存目录授权。有文档 id 时写入该文档 entry（覆盖其既有授权）；无 id
+    /// （Untitled）写入全局 Untitled 槽，始终允许——多标签下 Untitled 标签可与文件标签
+    /// 共存，不再要求后端没有任何活动文档。安全性来自 grant 系统：目录只能由后端发放。
     fn establish_save_grant(
         &self,
         document_id: Option<String>,
@@ -595,14 +609,11 @@ impl DocumentStore {
     ) -> Result<SaveDirectoryGrant, DocumentCommandError> {
         let mut guard = self.inner.lock().expect("document store lock poisoned");
         let context_matches = match document_id.as_deref() {
-            Some(requested_id) => {
-                guard.pending_overwrite.is_none()
-                    && guard
-                        .active
-                        .as_ref()
-                        .is_some_and(|(active_id, _)| active_id == requested_id)
-            }
-            None => guard.active.is_none(),
+            Some(requested_id) => guard
+                .documents
+                .get(requested_id)
+                .is_some_and(|entry| entry.pending_overwrite.is_none() && entry.active.is_some()),
+            None => true,
         };
         if !context_matches {
             return Err(DocumentCommandError::new(
@@ -612,38 +623,74 @@ impl DocumentStore {
         }
         let id = format!("save-dir-{}", guard.next_save_directory_id);
         guard.next_save_directory_id = guard.next_save_directory_id.saturating_add(1);
-        guard.pending_save_directory = Some(PendingSaveDirectory {
+        let requested_id = document_id.clone();
+        let pending = PendingSaveDirectory {
             grant_id: id.clone(),
             document_id,
             path,
-        });
+        };
+        match requested_id.as_deref() {
+            Some(requested_id) => {
+                if let Some(entry) = guard.documents.get_mut(requested_id) {
+                    entry.pending_save_directory = Some(pending);
+                }
+            }
+            None => guard.untitled_save_directory = Some(pending),
+        }
         Ok(SaveDirectoryGrant { id, display_name })
     }
 
-    fn clear_save_grant(&self) {
+    /// 清除指定文档上下文的保存目录授权：有 id 清该 entry，无 id（Untitled）清全局槽。
+    fn clear_save_grant(&self, document_id: Option<&str>) {
         let mut guard = self.inner.lock().expect("document store lock poisoned");
-        guard.pending_save_directory = None;
+        match document_id {
+            Some(id) => {
+                if let Some(entry) = guard.documents.get_mut(id) {
+                    entry.pending_save_directory = None;
+                }
+            }
+            None => guard.untitled_save_directory = None,
+        }
     }
 
-    /// 读取匹配 `grant_id` 的授权（克隆）。不存在或已过期返回 `None`。
+    /// 读取匹配 `grant_id` 的授权（克隆）。在所有 entry 与 Untitled 槽中查找；不存在或已过期返回 `None`。
     fn current_save_grant(&self, grant_id: &str) -> Option<PendingSaveDirectory> {
         let guard = self.inner.lock().expect("document store lock poisoned");
-        guard
-            .pending_save_directory
+        if guard
+            .untitled_save_directory
             .as_ref()
-            .filter(|g| g.grant_id == grant_id)
+            .is_some_and(|pending| pending.grant_id == grant_id)
+        {
+            return guard.untitled_save_directory.clone();
+        }
+        guard
+            .documents
+            .values()
+            .filter_map(|entry| entry.pending_save_directory.as_ref())
+            .find(|pending| pending.grant_id == grant_id)
             .cloned()
     }
 
-    /// 成功落盘后消费授权（单次使用）。id 不匹配时不做任何事。
+    /// 成功落盘后消费授权（单次使用）。按 `grant_id` 在所有 entry 与 Untitled 槽中查找并清除。
     fn take_save_grant(&self, grant_id: &str) {
         let mut guard = self.inner.lock().expect("document store lock poisoned");
         if guard
-            .pending_save_directory
+            .untitled_save_directory
             .as_ref()
-            .is_some_and(|g| g.grant_id == grant_id)
+            .is_some_and(|pending| pending.grant_id == grant_id)
         {
-            guard.pending_save_directory = None;
+            guard.untitled_save_directory = None;
+            return;
+        }
+        for entry in guard.documents.values_mut() {
+            if entry
+                .pending_save_directory
+                .as_ref()
+                .is_some_and(|pending| pending.grant_id == grant_id)
+            {
+                entry.pending_save_directory = None;
+                return;
+            }
         }
     }
 }
@@ -666,7 +713,7 @@ fn open_selected_path(
 ) -> Result<DocumentDescriptor, DocumentCommandError> {
     let opened = document::open_document(path).map_err(DocumentCommandError::from_open_core)?;
     let trusted = trusted_from_descriptor(&opened.descriptor);
-    store.store_open(
+    store.store_open_replacing_session(
         opened.descriptor.id.clone(),
         opened.content.into_bytes(),
         trusted,
@@ -1121,8 +1168,10 @@ fn conflict_error_code(kind: ConflictKind) -> DocumentErrorCode {
     }
 }
 
-/// 新内嵌面板必须与当前 Rust 可信会话一致：有活动文档时必须提交其 id，Untitled
-/// (`None`) 只在后端没有活动文档时成立。
+/// 解析内嵌另存为的可信文档上下文。有活动文档时必须提交其 id（返回其可信描述）；
+/// Untitled（`None`）始终成立并返回 `None`——多标签下 Untitled 标签可与文件标签共存，
+/// 不再要求后端没有任何活动文档。安全性来自 grant 系统：保存目录只能由后端发放，
+/// 前端无法提交任意路径。
 fn trusted_for_inline_save_as(
     store: &DocumentStore,
     id: Option<&str>,
@@ -1134,19 +1183,7 @@ fn trusted_for_inline_save_as(
                 "unknown or stale document id",
             )
         }),
-        None if store
-            .inner
-            .lock()
-            .expect("document store lock poisoned")
-            .active
-            .is_none() =>
-        {
-            Ok(None)
-        }
-        None => Err(DocumentCommandError::new(
-            DocumentErrorCode::UnknownDocument,
-            "untitled save context does not match the active document",
-        )),
+        None => Ok(None),
     }
 }
 
@@ -1317,7 +1354,7 @@ fn prepare_save_as_inner(
             Some(store.establish_save_grant(document_id, dir, display_name)?)
         }
         None => {
-            store.clear_save_grant();
+            store.clear_save_grant(document_id.as_deref());
             None
         }
     };
@@ -1681,7 +1718,7 @@ mod tests {
         let active = store.active_for("doc-1").unwrap();
         assert_eq!(active.path, PathBuf::from("/tmp/sample.txt"));
 
-        // 新候选内容取回失败时，旧文档仍可保存；只有正确 id 取回成功后才替换。
+        // 新候选写入独立 entry，不影响旧活动文档；多文档并发共存，提升只作用于请求 id。
         let next_descriptor = DocumentDescriptor {
             id: "doc-next".to_owned(),
             path: PathBuf::from("/tmp/next.txt"),
@@ -1693,12 +1730,15 @@ mod tests {
             b"next".to_vec(),
             trusted_from_descriptor(&next_descriptor),
         );
+        // 候选未取回前，doc-1 仍活动、doc-next 尚未提升。
         assert!(store.active_for("doc-1").is_some());
         assert!(store.active_for("doc-next").is_none());
+        // 错误 id 取回失败，不影响任一文档。
         assert!(store.take_content("wrong-id").is_none());
         assert!(store.active_for("doc-1").is_some());
+        // 提升 doc-next 只作用于 doc-next，doc-1 继续保持活动（多文档并发）。
         assert_eq!(store.take_content("doc-next"), Some(b"next".to_vec()));
-        assert!(store.active_for("doc-1").is_none());
+        assert!(store.active_for("doc-1").is_some());
         assert!(store.active_for("doc-next").is_some());
 
         // 未知/过期 id 被拒绝。
@@ -1941,7 +1981,7 @@ mod tests {
     }
 
     #[test]
-    fn candidate_open_invalidates_save_directory_grant_before_document_switch() {
+    fn candidate_open_does_not_invalidate_other_document_grant() {
         use crate::document::test_support::TestDir;
 
         let dir = TestDir::new();
@@ -1951,12 +1991,57 @@ mod tests {
             .establish_save_grant(Some(id), dir.path().to_path_buf(), "target".to_owned())
             .unwrap();
 
+        // 在另一个文档 id 上候选打开，不清除本文档 entry 的保存目录授权（跨文档落盘
+        // 由 grant 归属保护）。
         store.store_open(
             "candidate".to_owned(),
             b"candidate".to_vec(),
             test_trusted("/tmp/candidate.txt"),
         );
-        assert!(store.current_save_grant(&grant.id).is_none());
+        assert!(store.current_save_grant(&grant.id).is_some());
+    }
+
+    #[test]
+    fn single_document_open_replacement_clears_unreachable_old_state_on_promotion() {
+        use crate::document::test_support::TestDir;
+
+        let dir = TestDir::new();
+        let store = DocumentStore::default();
+        let old_id = store.create_active(test_trusted("/tmp/old.txt"));
+        store.record_conflict(&old_id, ConflictKind::ContentChanged, b"old edits".to_vec());
+        let old_grant = store
+            .establish_save_grant(
+                Some(old_id.clone()),
+                dir.path().to_path_buf(),
+                "old".to_owned(),
+            )
+            .unwrap();
+        let untitled_grant = store
+            .establish_save_grant(None, dir.path().to_path_buf(), "untitled".to_owned())
+            .unwrap();
+
+        store.store_open_replacing_session(
+            "new-doc".to_owned(),
+            b"new content".to_vec(),
+            test_trusted("/tmp/new.txt"),
+        );
+
+        // 候选未被前端取回前，旧单文档会话仍可继续保存/处理冲突。
+        assert!(store.active_for(&old_id).is_some());
+        assert!(store.conflict_for(&old_id).is_some());
+        assert!(store.current_save_grant(&old_grant.id).is_some());
+
+        assert_eq!(store.take_content("new-doc"), Some(b"new content".to_vec()));
+
+        // 当前单文档打开入口完成提升后，旧 id 已不可达的后端状态必须被清掉。
+        assert!(store.active_for(&old_id).is_none());
+        assert!(store.conflict_for(&old_id).is_none());
+        assert!(store.current_save_grant(&old_grant.id).is_none());
+        assert!(store.current_save_grant(&untitled_grant.id).is_none());
+        assert_eq!(
+            store.active_for("new-doc").unwrap().path,
+            PathBuf::from("/tmp/new.txt")
+        );
     }
 
     #[test]
@@ -2248,7 +2333,7 @@ mod tests {
     }
 
     #[test]
-    fn candidate_open_keeps_conflict_until_content_is_committed() {
+    fn candidate_promotion_does_not_clear_other_document_conflict() {
         let store = DocumentStore::default();
         let active_id = store.create_active(test_trusted("/tmp/active.txt"));
         store.record_conflict(&active_id, ConflictKind::ContentChanged, b"snap".to_vec());
@@ -2259,23 +2344,24 @@ mod tests {
             b"new content".to_vec(),
             test_trusted("/tmp/candidate.txt"),
         );
+        // 候选打开与提升都只作用于候选自身的 entry，不清除其他文档的冲突。
         assert!(store.conflict_for(&active_id).is_some());
 
         assert_eq!(
             store.take_content(&candidate_id),
             Some(b"new content".to_vec())
         );
-        assert!(store.conflict_for(&active_id).is_none());
+        assert!(store.conflict_for(&active_id).is_some());
     }
 
     #[test]
-    fn create_active_clears_existing_conflict() {
+    fn create_active_does_not_clear_other_document_conflict() {
         let store = DocumentStore::default();
         let id = store.create_active(test_trusted("/tmp/x.txt"));
         store.record_conflict(&id, ConflictKind::ContentChanged, b"snap".to_vec());
         let _new = store.create_active(test_trusted("/tmp/y.txt"));
-        // 会话变更（新文档打开/首次保存）清除旧冲突状态。
-        assert!(store.conflict_for(&id).is_none());
+        // 多文档并发：新建另一个文档不影响本文档的冲突状态。
+        assert!(store.conflict_for(&id).is_some());
     }
 
     #[test]
@@ -2518,5 +2604,289 @@ mod tests {
 
         assert!(store.clear_content_conflict(&id));
         assert!(store.take_content(&id).is_none());
+    }
+
+    #[test]
+    fn multiple_documents_coexist_as_active_independently() {
+        let store = DocumentStore::default();
+        let a = store.create_active(test_trusted("/tmp/a.txt"));
+        let b = store.create_active(test_trusted("/tmp/b.txt"));
+
+        // 两个文档同时为活动状态，互不驱逐。
+        let active_a = store.active_for(&a).unwrap();
+        let active_b = store.active_for(&b).unwrap();
+        assert_eq!(active_a.path, PathBuf::from("/tmp/a.txt"));
+        assert_eq!(active_b.path, PathBuf::from("/tmp/b.txt"));
+    }
+
+    #[test]
+    fn per_document_conflicts_are_independent() {
+        let store = DocumentStore::default();
+        let a = store.create_active(test_trusted("/tmp/a.txt"));
+        let b = store.create_active(test_trusted("/tmp/b.txt"));
+
+        store.record_conflict(&a, ConflictKind::ContentChanged, b"a-snap".to_vec());
+        assert!(store.conflict_for(&a).is_some());
+        assert!(store.conflict_for(&b).is_none());
+
+        store.record_conflict(&b, ConflictKind::ContentChanged, b"b-snap".to_vec());
+        assert!(store.conflict_for(&a).is_some());
+        assert!(store.conflict_for(&b).is_some());
+
+        // 取消 a 的冲突不影响 b。
+        assert!(store.clear_content_conflict(&a));
+        assert!(store.conflict_for(&a).is_none());
+        assert!(store.conflict_for(&b).is_some());
+    }
+
+    #[test]
+    fn per_document_overwrite_leases_do_not_block_other_documents() {
+        let store = DocumentStore::default();
+        let a = store.create_active(test_trusted("/tmp/a.txt"));
+        let b = store.create_active(test_trusted("/tmp/b.txt"));
+        store.record_conflict(&a, ConflictKind::ContentChanged, b"a".to_vec());
+        store.record_conflict(&b, ConflictKind::ContentChanged, b"b".to_vec());
+
+        // a 的覆盖租约只门控 a：a 的 active_for 被阻塞，b 仍可访问并可独立取得租约。
+        let lease_a = store.begin_overwrite(&a).unwrap();
+        assert!(store.active_for(&a).is_none());
+        assert!(store.active_for(&b).is_some());
+        let lease_b = store.begin_overwrite(&b).unwrap();
+        assert_eq!(lease_b.snapshot, b"b");
+
+        // 提交 a 只清 a 的冲突，不影响 b 的租约/冲突。
+        let fp = FileFingerprint::of(b"a");
+        assert!(
+            store
+                .commit_overwrite(&a, lease_a.revision, fp, 1)
+                .is_some()
+        );
+        assert!(store.conflict_for(&a).is_none());
+        assert!(store.conflict_for(&b).is_some());
+        assert!(store.abort_overwrite(&b, lease_b.revision));
+    }
+
+    #[test]
+    fn per_document_conflict_revisions_remain_unique_and_monotone() {
+        let store = DocumentStore::default();
+        let a = store.create_active(test_trusted("/tmp/a.txt"));
+        let b = store.create_active(test_trusted("/tmp/b.txt"));
+
+        store.record_conflict(&a, ConflictKind::ContentChanged, b"a1".to_vec());
+        let r1 = store.conflict_for(&a).unwrap().revision;
+        store.record_conflict(&b, ConflictKind::ContentChanged, b"b1".to_vec());
+        let r2 = store.conflict_for(&b).unwrap().revision;
+        assert!(store.clear_content_conflict(&a));
+        store.record_conflict(&a, ConflictKind::ContentChanged, b"a2".to_vec());
+        let r3 = store.conflict_for(&a).unwrap().revision;
+
+        assert!(
+            r1 < r2 && r2 < r3,
+            "revisions must be globally monotone across documents"
+        );
+    }
+
+    #[test]
+    fn per_document_save_grants_coexist_and_are_scoped() {
+        use crate::document::test_support::TestDir;
+
+        let dir = TestDir::new();
+        let store = DocumentStore::default();
+        let a = store.create_active(test_trusted("/tmp/a.txt"));
+        let b = store.create_active(test_trusted("/tmp/b.txt"));
+        let grant_a = store
+            .establish_save_grant(Some(a.clone()), dir.path().to_path_buf(), "a".to_owned())
+            .unwrap();
+        let grant_b = store
+            .establish_save_grant(Some(b.clone()), dir.path().to_path_buf(), "b".to_owned())
+            .unwrap();
+
+        // 两个授权按各自 grant id 共存且只归属自身文档。
+        let stored_a = store.current_save_grant(&grant_a.id).unwrap();
+        let stored_b = store.current_save_grant(&grant_b.id).unwrap();
+        assert!(grant_matches_document(&stored_a, Some(&a)));
+        assert!(!grant_matches_document(&stored_a, Some(&b)));
+        assert!(grant_matches_document(&stored_b, Some(&b)));
+
+        // 关闭 a 只清 a 的授权，b 的保留。
+        assert!(store.close_active(&a));
+        assert!(store.current_save_grant(&grant_a.id).is_none());
+        assert!(store.current_save_grant(&grant_b.id).is_some());
+    }
+
+    #[test]
+    fn candidate_open_on_one_document_does_not_disturb_another() {
+        let store = DocumentStore::default();
+        let a = store.create_active(test_trusted("/tmp/a.txt"));
+        store.record_conflict(&a, ConflictKind::ContentChanged, b"a".to_vec());
+
+        // 在另一个 id 上候选打开：a 的活动状态与冲突都不受影响。
+        store.store_open(
+            "candidate".to_owned(),
+            b"c".to_vec(),
+            test_trusted("/tmp/candidate.txt"),
+        );
+        assert!(store.active_for(&a).is_some());
+        assert!(store.conflict_for(&a).is_some());
+    }
+
+    #[test]
+    fn take_content_promotes_only_the_requesting_document() {
+        let store = DocumentStore::default();
+        let a = store.create_active(test_trusted("/tmp/a.txt"));
+
+        store.store_open(
+            "b".to_owned(),
+            b"b-content".to_vec(),
+            test_trusted("/tmp/b.txt"),
+        );
+        // 提升 b 不影响 a 的可信路径。
+        assert_eq!(store.take_content("b"), Some(b"b-content".to_vec()));
+        let active_a = store.active_for(&a).unwrap();
+        assert_eq!(active_a.path, PathBuf::from("/tmp/a.txt"));
+        let active_b = store.active_for("b").unwrap();
+        assert_eq!(active_b.path, PathBuf::from("/tmp/b.txt"));
+    }
+
+    #[test]
+    fn reload_candidate_on_one_document_preserves_other() {
+        let store = DocumentStore::default();
+        let a = store.create_active(test_trusted("/tmp/a.txt"));
+        let b = store.create_active(test_trusted("/tmp/b.txt"));
+        store.record_conflict(&a, ConflictKind::ContentChanged, b"a".to_vec());
+        store.record_conflict(&b, ConflictKind::ContentChanged, b"b".to_vec());
+        let rev_a = store.conflict_for(&a).unwrap().revision;
+
+        // 在 a 上准备重载候选：b 的冲突保留。
+        assert!(store.prepare_reload(
+            &a,
+            rev_a,
+            b"a-reloaded".to_vec(),
+            test_trusted("/tmp/a.txt")
+        ));
+        assert!(store.conflict_for(&b).is_some());
+
+        // 取回 a 的重载只清 a 的冲突，b 的冲突保留。
+        assert_eq!(store.take_content(&a), Some(b"a-reloaded".to_vec()));
+        assert!(store.conflict_for(&a).is_none());
+        assert!(store.conflict_for(&b).is_some());
+    }
+
+    #[test]
+    fn untitled_grant_coexists_with_file_document_grants() {
+        use crate::document::test_support::TestDir;
+
+        let dir = TestDir::new();
+        let store = DocumentStore::default();
+        // 文件文档先 active，Untitled 授权仍可发放——多标签下 Untitled 标签可与文件标签共存，
+        // 不再要求后端没有任何活动文档。二者落入不同槽位、grant id 不同。
+        let a = store.create_active(test_trusted("/tmp/a.txt"));
+        let file_grant = store
+            .establish_save_grant(Some(a), dir.path().to_path_buf(), "file".to_owned())
+            .unwrap();
+        let untitled_grant = store
+            .establish_save_grant(None, dir.path().to_path_buf(), "untitled".to_owned())
+            .unwrap();
+
+        assert_ne!(untitled_grant.id, file_grant.id);
+        assert!(store.current_save_grant(&untitled_grant.id).is_some());
+        assert!(store.current_save_grant(&file_grant.id).is_some());
+
+        // 消费其一不影响另一个。
+        store.take_save_grant(&file_grant.id);
+        assert!(store.current_save_grant(&file_grant.id).is_none());
+        assert!(store.current_save_grant(&untitled_grant.id).is_some());
+    }
+
+    #[test]
+    fn untitled_first_save_succeeds_with_active_file_document() {
+        use crate::document::test_support::TestDir;
+
+        let dir = TestDir::new();
+        let store = DocumentStore::default();
+        // 已有一个 active 文件文档。
+        let file_id = store.create_active(test_trusted("/tmp/notes.md"));
+
+        // 文件文档仍 active 时，对 Untitled 发放保存目录授权（不再因其他 entry active 而拒绝）。
+        let untitled_grant = store
+            .establish_save_grant(None, dir.path().to_path_buf(), "untitled-target".to_owned())
+            .unwrap();
+
+        // 保存目标解析按 grant.document_id == None 归属成立；路径为授权目录 + 校验过的文件名，
+        // 不会扩大为任意路径写入。
+        let (target_path, trusted_opt) =
+            resolve_save_target(&store, None, &untitled_grant.id, "saved.txt").unwrap();
+        assert_eq!(target_path, dir.path().join("saved.txt"));
+        assert!(trusted_opt.is_none());
+
+        // 预览目标不写盘。
+        assert_eq!(
+            preview_target(dir.path(), "saved.txt", None).unwrap(),
+            TargetPreview {
+                exists: false,
+                is_current_path: false,
+            }
+        );
+
+        // 首次保存成功落盘。
+        let descriptor = tauri::async_runtime::block_on(save_document_as_at_inner(
+            &store,
+            None,
+            &untitled_grant.id,
+            "saved.txt",
+            TextEncoding::Utf8 { bom: false },
+            LineEnding::Lf,
+            "untitled content".to_owned(),
+        ))
+        .unwrap();
+        assert_eq!(
+            std::fs::read(dir.join("saved.txt")).unwrap(),
+            b"untitled content"
+        );
+        assert_eq!(descriptor.display_name, "saved.txt");
+
+        // 文件文档仍 active，Untitled 首次保存建立了自己的可信关联，二者并发共存。
+        assert!(store.active_for(&file_id).is_some());
+        assert!(store.active_for(&descriptor.id).is_some());
+
+        // Untitled 授权被单次消费。
+        assert!(store.current_save_grant(&untitled_grant.id).is_none());
+    }
+
+    #[test]
+    fn single_document_degeneration_matches_current_behavior() {
+        // 单一文档 id 贯穿全流程，与重构前的单文档行为一致。
+        let store = DocumentStore::default();
+        store.store_open(
+            "doc".to_owned(),
+            b"hello".to_vec(),
+            test_trusted("/tmp/doc.txt"),
+        );
+        assert!(store.active_for("doc").is_none());
+        assert_eq!(store.take_content("doc"), Some(b"hello".to_vec()));
+        assert!(store.take_content("doc").is_none());
+        assert!(store.active_for("doc").is_some());
+
+        store.record_conflict("doc", ConflictKind::ContentChanged, b"edits".to_vec());
+        let revision = store.conflict_for("doc").unwrap().revision;
+        assert!(store.prepare_reload(
+            "doc",
+            revision,
+            b"disk".to_vec(),
+            test_trusted("/tmp/doc.txt")
+        ));
+        assert_eq!(store.take_content("doc"), Some(b"disk".to_vec()));
+        assert!(store.conflict_for("doc").is_none());
+
+        // 覆盖租约与关闭仍按单文档语义工作。
+        store.record_conflict("doc", ConflictKind::ContentChanged, b"again".to_vec());
+        let lease = store.begin_overwrite("doc").unwrap();
+        let fp = FileFingerprint::of(b"again");
+        let updated = store
+            .commit_overwrite("doc", lease.revision, fp.clone(), 5)
+            .unwrap();
+        assert_eq!(updated.fingerprint, fp);
+        assert!(store.close_active("doc"));
+        assert!(store.active_for("doc").is_none());
     }
 }

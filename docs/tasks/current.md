@@ -6,23 +6,41 @@
 
 ## 进行中
 
-暂无进行中的任务。下一个已承诺待办为「确认多标签会话规格与首批任务拆分」。
+暂无进行中的任务。下一个已承诺待办为「前端多标签会话与切换」。
 
 ## 已承诺待办
 
-### 确认多标签会话规格与首批任务拆分
+### 前端多标签会话与切换
 
 - **状态**：待开始
 - **Feature Spec**：`docs/features/multi-tab-session.md`
-- **目标**：确认单窗口多标签的首版范围，并把后端多文档可信状态、前端标签会话和关闭保护拆成可连续交付的小任务。
-- **范围**：确认多标签打开/新建/切换/关闭、每标签保存状态、后端多文档状态模型、窗口/应用退出时多未保存标签协调策略；将草案规格更新为已确认，并写入首批实现任务。
-- **非范围**：直接实现多标签；多窗口、会话恢复、拖拽排序、最近关闭标签、目录浏览、列块编辑、Markdown 或 Mermaid。
-- **依赖**：「另存为内嵌目标面板」Feature 完成（实现与集成验收），避免多标签 Save As 继续继承目标选择体验缺口。
-- **拆分检查**：本任务只负责规格与拆分；多标签实现必须继续拆成后端可信状态、前端标签会话、文件操作绑定、关闭保护集成和最终验收等小切片。
-- **实施要点**：优先保留现有单文档行为作为每个标签的垂直切片，不按技术层机械重写。
-- **完成标准**：多标签规格状态更新为已确认；`current.md` 中出现第一个多标签实现任务，且没有其他任务处于进行中。
+- **目标**：在前端建立多标签会话骨架：多个标签的新建、切换与编辑隔离，单标签关闭复用未保存关闭保护。
+- **范围**：前端由单 `DocumentSession` 改为标签数组 + 活动 id；支持新建 Untitled 标签、活动标签切换、各标签独立的内容/脏状态/格式、Untitled 数字后缀去重（如 `Untitled`、`Untitled 2`）、最后一个标签关闭后回到新的空白 Untitled；单标签关闭复用现有保存/不保存/取消确认；另存为/冲突/缺失/关闭确认等模态打开时锁定标签切换（决议 2）。异步结果按标签 id 复核，过期不覆盖。
+- **非范围**：打开文件入新标签、普通保存/另存为/冲突/缺失按活动标签绑定、同路径切换到已有标签、Save As 跨标签路径占用保护、多标签窗口/应用退出逐一协调（留给后续切片）；不改后端、IPC 命令签名或 capability。
+- **依赖**：后端多文档可信状态已完成（上一项任务）。
+- **拆分检查**：本切片只做前端标签会话骨架与 Untitled 隔离编辑；文件操作按标签绑定与关闭协调为后续独立切片。
+- **实施要点**：以现有单文档会话作为每个标签的垂直切片，复用 `documentSession` 纯函数与既有保存/关闭确认流程；活动标签切换时编辑器、状态栏与错误提示随之切换。
+- **完成标准**：`npm run check`（typecheck + vitest，含新增多标签创建/切换/编辑隔离/Untitled 去重/单标签关闭保护用例）通过；`cargo fmt --manifest-path src-tauri/Cargo.toml --check`、`cargo check --manifest-path src-tauri/Cargo.toml --all-targets`、`cargo test --manifest-path src-tauri/Cargo.toml`、`npm run build`、`git diff --check` 通过。前端切片，macOS 真实交互验收留给集成验收切片。
 
 ## 最近完成
+
+### 重构后端 DocumentStore 支持多文档并发可信状态
+
+- **状态**：已完成
+- **开始日期**：2026-08-04
+- **完成日期**：2026-08-04
+- **Feature Spec**：`docs/features/multi-tab-session.md`
+- **结果**：把 `DocumentStore` 由单活动文档状态机重构为按文档 id 并发的多文档状态。新增 `DocumentEntry`（候选内容/候选可信/重载版本/活动可信/冲突/覆盖租约/保存目录授权）与 `HashMap<String, DocumentEntry>`，Untitled 首次保存授权放全局槽；冲突版本与授权 id 计数保持全局单调（跨文档唯一）。取消「新文档替换旧文档」这一单文档不变量：`store_open`/`take_content`/`create_active` 只作用于对应 id 的 entry，其他 entry 不受影响——这是多标签共存的必要前提。覆盖租约、冲突解决、reload 候选提升与保存授权消费全部 per-doc；`active_for` 在该 entry 覆盖期间返回 `None`，不影响其他文档；`clear_save_grant` 改为按文档上下文清除，`current/take_save_grant` 在所有 entry 与 Untitled 槽中查找。修正 review 指出的回归：`trusted_for_inline_save_as(None)` 与 `establish_save_grant(None)` 不再要求后端无 active 文档，Untitled 标签首次保存可与文件标签并发（归属校验改为 `grant.document_id == None`，仍只能用后端发放的 grant，不扩大为任意路径写入）；当前 `select_and_open_document` 单文档入口使用 replacement 候选，内容成功取回并提升时清理旧 active/conflict/grant，避免前端尚未多标签化期间留下不可达旧状态，同时保留内部多文档 API 供后续切片使用。未改前端、IPC 命令签名、错误码或 capability；单文档（单一 id 贯穿）行为与重构前完全一致。
+- **验证**：`cargo fmt --manifest-path src-tauri/Cargo.toml --check`、`cargo check --manifest-path src-tauri/Cargo.toml --all-targets`、`cargo test --manifest-path src-tauri/Cargo.toml`（**124 passed / 0 failed**，含 4 个多 id 用例改为共存语义并改名、新增 12 个多文档/过渡期用例覆盖共存、独立冲突/覆盖租约/授权、全局单调版本、候选与重载不扰动他文档、Untitled 与文件授权共存、「文件文档 active 下 Untitled 发放 grant→预览→首次保存成功且文件文档仍 active、grant 单次消费」、当前单文档打开提升后清理旧不可达状态及单文档退化）、`npm run check`（typecheck + vitest **96 passed / 0 failed**，前端未改）、`git diff --check` 均通过。本切片不改前端，未做 macOS 真实交互。
+
+### 确认多标签会话规格与首批任务拆分
+
+- **状态**：已完成
+- **开始日期**：2026-08-04
+- **完成日期**：2026-08-04
+- **Feature Spec**：`docs/features/multi-tab-session.md`
+- **结果**：多标签规格从草案更新为已确认。五个开放问题决议为：多未保存标签的关闭/退出**逐一**复用现有保存/不保存/取消确认（不做汇总面板）；后台普通保存及系统文件面板关闭后的异步读取期间允许跨标签编辑与切换，系统文件/目录选择、另存为/冲突/缺失/关闭确认等模态打开时锁定切换；同一路径再次打开**切换到已有标签**（不新建重复标签、不重新读取），Save As 命中其他标签已关联路径时在写盘前安全拒绝，路径身份同时考虑规范化选择路径与符号链接真实路径；Untitled 用数字后缀去重，显示名只用于展示且不影响保存目标；标签关闭后不保留撤销/重做历史或最近关闭记录。规格补充了同路径复用已有标签、Save As 路径占用保护、模态锁定切换与逐一关闭协调的行为规则与验收条件，并把开放问题替换为决议记录；新增「实现拆分」路线图（后端多文档可信状态 → 前端标签会话与切换 → 打开/保存按标签绑定 → 多标签关闭协调 → 集成验收）。`current.md` 写入首个实现切片「重构后端 DocumentStore 支持多文档并发可信状态」。
+- **验证**：文档审查；本任务不修改生产代码，未运行构建或测试。
 
 ### 完成另存为内嵌目标面板的集成验收与文档收尾
 
