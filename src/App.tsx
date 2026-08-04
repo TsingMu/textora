@@ -26,7 +26,7 @@ import {
   describeConflictReloadError,
   describeOpenError,
   describeSaveError,
-  encodingDisplayName,
+  encodingChoiceDisplayName,
   encodingToChoice,
   forceOverwrite,
   isDocumentCommandError,
@@ -74,6 +74,18 @@ function App() {
   }>({ status: "idle", errorMessage: null });
   const [closeConfirmPending, setCloseConfirmPending] = useState(false);
   const [closeConfirmError, setCloseConfirmError] = useState<string | null>(null);
+  const [saveFormat, setSaveFormat] = useState<{
+    encoding: EncodingChoice;
+    lineEnding: LineEndingChoice;
+  }>({
+    encoding: encodingToChoice(initialDocument.encoding),
+    lineEnding: lineEndingToChoice(initialDocument.lineEnding),
+  });
+  const [formatSettingsOpen, setFormatSettingsOpen] = useState(false);
+  const [formatDraft, setFormatDraft] = useState<{
+    encoding: EncodingChoice;
+    lineEnding: LineEndingChoice;
+  }>(saveFormat);
   const sessionRef = useRef(session);
   const fileMissingPendingRef = useRef(fileMissingPending);
   const fileMissingResolvingRef = useRef(false);
@@ -107,6 +119,19 @@ function App() {
       active = false;
     };
   }, []);
+
+  // 文档载入/另存/重载/覆盖导致会话格式变化时，把右下角格式设置重置为当前文档格式；
+  // 用户在此期间的覆盖会保留到下一次文档格式变化。若弹层正打开，同时丢弃草稿并关闭弹层，
+  // 避免旧文档的草稿在切换后被提交、覆盖新文档格式。
+  useEffect(() => {
+    const documentFormat = {
+      encoding: encodingToChoice(session.encoding),
+      lineEnding: lineEndingToChoice(session.lineEnding),
+    };
+    setSaveFormat(documentFormat);
+    setFormatDraft(documentFormat);
+    setFormatSettingsOpen(false);
+  }, [session.id, session.encoding, session.lineEnding]);
 
   // 窗口关闭拦截 + 聚焦缺失检查（合并到同一 effect 以共享一次 dynamic import）。
   useEffect(() => {
@@ -599,6 +624,21 @@ function App() {
     setSaveAsDialog((current) => ({ ...current, open: false }));
   }
 
+  function openFormatSettings() {
+    setFormatDraft(saveFormat);
+    setFormatSettingsOpen(true);
+  }
+
+  function cancelFormatSettings() {
+    // 取消丢弃草稿，不改动 saveFormat；下次打开会重新以 saveFormat 起草。
+    setFormatSettingsOpen(false);
+  }
+
+  function confirmFormatSettings() {
+    setSaveFormat(formatDraft);
+    setFormatSettingsOpen(false);
+  }
+
   function handleConfirmDiscard() {
     setSession((current) => startLoading(current));
     void runOpenPipeline();
@@ -889,11 +929,94 @@ function App() {
         <footer className="statusbar">
           <div>{session.isDirty ? "Modified" : "Saved"}</div>
           <div className="statusbar-details">
-            <span>{lineEndingDisplayName(session.lineEnding)}</span>
-            <span>{encodingDisplayName(session.encoding)}</span>
+            <button
+              type="button"
+              className="format-settings-summary"
+              onClick={openFormatSettings}
+              aria-label={`Encoding ${encodingChoiceDisplayName(
+                saveFormat.encoding,
+              )}, line ending ${
+                session.lineEnding === "mixed"
+                  ? "Mixed"
+                  : lineEndingDisplayName(saveFormat.lineEnding)
+              }. Open format settings.`}
+            >
+              <span>{encodingChoiceDisplayName(saveFormat.encoding)}</span>
+              <span className="format-settings-sep" aria-hidden="true">·</span>
+              <span>
+                {session.lineEnding === "mixed"
+                  ? "Mixed"
+                  : lineEndingDisplayName(saveFormat.lineEnding)}
+              </span>
+              {session.lineEnding === "mixed" && (
+                <span className="format-settings-warning" aria-hidden="true">!</span>
+              )}
+            </button>
             {session.readOnly && <span className="readonly-badge">Read-only</span>}
           </div>
         </footer>
+        {formatSettingsOpen && (
+          <div
+            className="format-settings-popover"
+            role="dialog"
+            aria-modal="false"
+            aria-label="Format settings"
+          >
+            <label className="save-as-field">
+              <span>Encoding</span>
+              <select
+                value={formatDraft.encoding}
+                onChange={(event) =>
+                  setFormatDraft((current) => ({
+                    ...current,
+                    encoding: event.target.value as EncodingChoice,
+                  }))
+                }
+              >
+                <option value="utf8">UTF-8</option>
+                <option value="utf8-bom">UTF-8 (BOM)</option>
+                <option value="gbk">GBK / CP936</option>
+              </select>
+            </label>
+            <label className="save-as-field">
+              <span>Line ending</span>
+              <select
+                value={formatDraft.lineEnding}
+                onChange={(event) =>
+                  setFormatDraft((current) => ({
+                    ...current,
+                    lineEnding: event.target.value as LineEndingChoice,
+                  }))
+                }
+              >
+                <option value="lf">LF</option>
+                <option value="crlf">CRLF</option>
+              </select>
+            </label>
+            {session.lineEnding === "mixed" && (
+              <p className="format-settings-mixed" role="alert">
+                Content has mixed line endings. Choose LF or CRLF before saving.
+              </p>
+            )}
+            <div className="confirm-actions">
+              <button
+                type="button"
+                className="confirm-cancel"
+                onClick={cancelFormatSettings}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="confirm-save"
+                onClick={confirmFormatSettings}
+                autoFocus
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        )}
       </section>
 
       {session.openStatus === "awaiting-discard-confirm" && (

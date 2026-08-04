@@ -2226,3 +2226,215 @@ describe("App window close protection", () => {
     expect(tauriWindowMock.close).not.toHaveBeenCalled();
   });
 });
+
+describe("App bottom-right format settings", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+
+  beforeEach(() => {
+    (
+      globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
+    ).IS_REACT_ACT_ENVIRONMENT = true;
+    invokeMock.mockReset();
+    resetTauriWindowMock();
+    setupInvoke();
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  function setSelectValue(select: HTMLSelectElement, value: string) {
+    const setter = Object.getOwnPropertyDescriptor(
+      HTMLSelectElement.prototype,
+      "value",
+    )?.set;
+    setter?.call(select, value);
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
+  it("shows the default Untitled format (UTF-8 · LF) and stays collapsed", async () => {
+    await act(async () => {
+      root.render(<App />);
+    });
+    const summary = container.querySelector(".format-settings-summary");
+    expect(summary).not.toBeNull();
+    expect(summary?.textContent).toContain("UTF-8");
+    expect(summary?.textContent).toContain("LF");
+    expect(container.querySelector(".format-settings-popover")).toBeNull();
+  });
+
+  it("opens the popover with encoding and line-ending selectors, then cancels closed", async () => {
+    await act(async () => {
+      root.render(<App />);
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".format-settings-summary")?.click();
+    });
+    const popover = container.querySelector(".format-settings-popover");
+    expect(popover).not.toBeNull();
+    expect(popover?.querySelectorAll("select").length).toBe(2);
+
+    await act(async () => {
+      popover?.querySelector<HTMLButtonElement>(".confirm-cancel")?.click();
+    });
+    expect(container.querySelector(".format-settings-popover")).toBeNull();
+  });
+
+  it("applies the chosen encoding and line ending on Done", async () => {
+    await act(async () => {
+      root.render(<App />);
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".format-settings-summary")?.click();
+    });
+    const selects = container.querySelectorAll<HTMLSelectElement>(
+      ".format-settings-popover select",
+    );
+    await act(async () => {
+      setSelectValue(selects[0]!, "gbk");
+      setSelectValue(selects[1]!, "crlf");
+    });
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(".format-settings-popover .confirm-save")
+        ?.click();
+    });
+    const summary = container.querySelector(".format-settings-summary");
+    expect(summary?.textContent).toContain("GBK");
+    expect(summary?.textContent).toContain("CRLF");
+  });
+
+  it("keeps saveFormat unchanged when Cancel is clicked after editing the draft", async () => {
+    await act(async () => {
+      root.render(<App />);
+    });
+    const before = container.querySelector(".format-settings-summary")?.textContent ?? "";
+    expect(before).toContain("UTF-8");
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".format-settings-summary")?.click();
+    });
+    const selects = container.querySelectorAll<HTMLSelectElement>(
+      ".format-settings-popover select",
+    );
+    await act(async () => {
+      setSelectValue(selects[0]!, "gbk");
+      setSelectValue(selects[1]!, "crlf");
+    });
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(".format-settings-popover .confirm-cancel")
+        ?.click();
+    });
+    const after = container.querySelector(".format-settings-summary")?.textContent ?? "";
+    expect(after).toContain("UTF-8");
+    expect(after).toContain("LF");
+    expect(after).not.toContain("GBK");
+  });
+
+  it("warns about mixed line endings and marks the summary", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        return {
+          id: "doc-mixed",
+          path: "/tmp/mixed.txt",
+          displayName: "mixed.txt",
+          byteCount: 7,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "mixed",
+          fingerprint: { sizeBytes: 7, sha256: "mix" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode("a\r\nb\nc").buffer;
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await act(async () => root.render(<App />));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+
+    expect(
+      container.querySelector(".format-settings-summary")?.textContent,
+    ).toContain("Mixed");
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".format-settings-summary")?.click();
+    });
+    expect(container.querySelector(".format-settings-mixed")).not.toBeNull();
+  });
+
+  it("discards the stale draft and closes the popover when the document changes mid-edit", async () => {
+    // 文档 B 设为 UTF-8/LF，与即将编辑的旧草稿 GBK/CRLF 在两个字段上都区分开。
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        return {
+          id: "doc-b",
+          path: "/tmp/notes-b.txt",
+          displayName: "notes-b.txt",
+          byteCount: 5,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 5, sha256: "beef" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode("World").buffer;
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await act(async () => root.render(<App />));
+
+    // 在 Untitled 上打开弹层并把草稿改成 GBK/CRLF，但不点 Done。
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".format-settings-summary")?.click();
+    });
+    const draftSelects = container.querySelectorAll<HTMLSelectElement>(
+      ".format-settings-popover select",
+    );
+    await act(async () => {
+      setSelectValue(draftSelects[0]!, "gbk");
+      setSelectValue(draftSelects[1]!, "crlf");
+    });
+
+    // 未提交草稿就切换到文档 B。
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+
+    // 弹层关闭——旧草稿不再有可提交的入口，无法覆盖新文档格式。
+    expect(container.querySelector(".format-settings-popover")).toBeNull();
+    // saveFormat 反映文档 B（UTF-8/LF），旧草稿 GBK/CRLF 不残留。
+    const summary = container.querySelector(".format-settings-summary");
+    expect(summary?.textContent).toContain("UTF-8");
+    expect(summary?.textContent).toContain("LF");
+    expect(summary?.textContent).not.toContain("GBK");
+    expect(summary?.textContent).not.toContain("CRLF");
+
+    // 重新打开弹层，草稿应为文档 B 的格式（UTF-8/LF），而非旧草稿。
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".format-settings-summary")?.click();
+    });
+    const reopenedSelects = container.querySelectorAll<HTMLSelectElement>(
+      ".format-settings-popover select",
+    );
+    expect(reopenedSelects[0]?.value).toBe("utf8");
+    expect(reopenedSelects[1]?.value).toBe("lf");
+  });
+});

@@ -229,6 +229,18 @@ export function encodingDisplayName(encoding: TextEncoding): string {
   return encoding.utf8.bom ? "UTF-8 (BOM)" : "UTF-8";
 }
 
+/** 把保存格式选择映射为面向用户的编码名称（与 `encodingDisplayName` 保持一致）。 */
+export function encodingChoiceDisplayName(choice: EncodingChoice): string {
+  switch (choice) {
+    case "utf8":
+      return "UTF-8";
+    case "utf8-bom":
+      return "UTF-8 (BOM)";
+    case "gbk":
+      return "GBK";
+  }
+}
+
 export function lineEndingDisplayName(lineEnding: LineEnding): string {
   switch (lineEnding) {
     case "lf":
