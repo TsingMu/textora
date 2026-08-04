@@ -920,9 +920,16 @@ function App() {
       )}
 
       {saveAsDialog.open && (
-        <div className="confirm-overlay" role="dialog" aria-modal="true" aria-label="Choose save format">
+        <div
+          className="confirm-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Choose save format and location"
+        >
           <div className="confirm-dialog save-as-dialog">
-            <p className="confirm-message">Choose the encoding and line ending for the file.</p>
+            <p className="confirm-message">
+              Choose the file format first. Next, macOS will ask for the file name and location.
+            </p>
             <label className="save-as-field">
               <span>Encoding</span>
               <select
@@ -964,7 +971,7 @@ function App() {
                 onClick={handleSaveAsConfirm}
                 autoFocus
               >
-                Save
+                Choose Name and Location…
               </button>
             </div>
           </div>

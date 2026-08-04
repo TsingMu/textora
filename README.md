@@ -4,7 +4,7 @@ Textora 是一款 macOS 个人文本工作台，把 Windows 内网工作中常�
 
 ## 当前状态
 
-项目已建立 Tauri 2、React、TypeScript、Vite、CodeMirror 6 与 Rust 可运行工程基线。当前可新建、打开和普通保存文档，也可通过格式选择完成首次保存与另存为；文件打开、普通保存、首次保存、另存为、保存冲突解决和未保存关闭保护（窗口关闭与应用退出）均已完成自动化及 macOS 交互验收。多标签、列块编辑和 Markdown 模式仍在 Backlog。
+项目已建立 Tauri 2、React、TypeScript、Vite、CodeMirror 6 与 Rust 可运行工程基线。当前可新建、打开和普通保存文档，也可通过格式选择完成首次保存与另存为；文件打开、普通保存、首次保存、另存为、保存冲突解决、未保存关闭保护（窗口关闭与应用退出）以及另存为目标路径与文件名选择均已完成自动化及 macOS 交互验收。下一步计划把另存为改为内嵌目标面板：文件名与保存位置直接出现在当前对话框，编码与换行由应用主界面右下角的可选设置决定；之后再确认多标签会话规格。列块编辑和 Markdown 模式仍在 Backlog。
 
 ## 文档导航
 
@@ -17,8 +17,11 @@ Textora 是一款 macOS 个人文本工作台，把 Windows 内网工作中常�
 - `docs/features/safe-save-core.md`：已完成的 Rust 文档编码与安全保存核心规格
 - `docs/features/save-opened-file.md`：已完成的已打开文件普通保存规格
 - `docs/features/save-as-and-first-save.md`：已完成的另存为与新建文档首次保存规格
+- `docs/features/save-as-target-selection.md`：已确认的另存为目标路径与文件名选择规格
+- `docs/features/save-as-inline-target-panel.md`：已确认的另存为内嵌目标面板规格
 - `docs/features/resolve-save-conflict.md`：已完成的保存冲突解决规格
 - `docs/features/unsaved-close-protection.md`：已完成的未保存关闭保护规格
+- `docs/features/multi-tab-session.md`：草案中的多标签会话规格
 - `docs/tasks/current.md`：当前已承诺任务
 - `docs/tasks/TEMPLATE.md`：当前任务条目与颗粒度模板
 - `docs/tasks/backlog.md`：尚未承诺的候选事项

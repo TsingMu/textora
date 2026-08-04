@@ -497,9 +497,14 @@ describe("App save entry", () => {
       container.querySelector<HTMLButtonElement>(".save-as-button")?.click();
     });
 
-    // 格式选择对话框出现。
+    // 格式选择对话框出现，并说明下一步会进入系统保存面板选择名称和位置。
     const chooser = container.querySelector(".save-as-dialog");
     expect(chooser).not.toBeNull();
+    expect(
+      container.querySelector('[aria-label="Choose save format and location"]'),
+    ).not.toBeNull();
+    expect(chooser?.textContent).toContain("file name and location");
+    expect(chooser?.textContent).toContain("Choose Name and Location");
 
     await act(async () => {
       chooser

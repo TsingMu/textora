@@ -1005,6 +1005,19 @@ fn trusted_for_save_as(
     }
 }
 
+/// Untitled 首次保存时建议的默认文件名。无扩展名：用户可在系统面板自行添加扩展名，
+/// 不与本规格「不自动追加扩展名」冲突，且与会话显示名一致。
+const UNTITLED_DEFAULT_FILE_NAME: &str = "Untitled";
+
+/// 系统保存面板的默认文件名：已有文档沿用其显示名，Untitled 首次保存用常量 `Untitled`。
+/// 纯函数，便于确定性测试；对话框仍由 Rust 发起，前端不提交名称。
+fn default_save_file_name(trusted_opt: Option<&TrustedDocument>) -> &str {
+    match trusted_opt {
+        Some(trusted) => &trusted.display_name,
+        None => UNTITLED_DEFAULT_FILE_NAME,
+    }
+}
+
 /// 另存为 / 首次保存。系统保存对话框由 Rust 发起；前端不提交任意路径，只提交格式选择
 /// （header）与二进制 UTF-8 内容（Raw body）。文档 id header 可选：已有文档另存时携带，
 /// Untitled 首次保存时缺省。成功返回新的描述符；用户取消对话框返回 `None`。
@@ -1040,12 +1053,18 @@ pub async fn save_document_as(
     // 已有文档必须在打开对话框及任何写盘前通过可信 id 校验；只有明确省略 id 才是首次保存。
     let trusted_opt = trusted_for_save_as(state.inner(), id_opt.as_deref())?;
 
-    // 系统保存对话框（Rust 发起，前端不接触路径）。默认文件名沿用当前显示名。
-    let mut builder = app.dialog().file();
-    if let Some(trusted) = &trusted_opt {
-        builder = builder.set_file_name(&trusted.display_name);
-    }
-    let picked = builder.blocking_save_file();
+    // 系统保存对话框（Rust 发起，前端不接触路径）。默认文件名：已有文档沿用显示名，
+    // Untitled 首次保存用 `Untitled`。
+    //
+    // 不设置默认目录：rfd 0.16.0 的 macOS `build_save_file` 在同时提供 starting_directory
+    // 与 file_name 时，`set_path` 会把文件名拼到目录路径后再设为 `directoryURL`，令面板
+    // 渲染异常（缺少文件名与目录导航）。经插件栈无法独立设置两者，故按规格退回系统默认
+    // 目录；默认目录能力待 rfd/插件修复后再引入。
+    let picked = app
+        .dialog()
+        .file()
+        .set_file_name(default_save_file_name(trusted_opt.as_ref()))
+        .blocking_save_file();
     let Some(picked) = picked else {
         return Ok(None);
     };
@@ -1393,6 +1412,20 @@ mod tests {
             byte_count: 3,
             read_only: false,
         }
+    }
+
+    #[test]
+    fn default_save_file_name_is_untitled_for_first_save() {
+        assert_eq!(default_save_file_name(None), "Untitled");
+    }
+
+    #[test]
+    fn default_save_file_name_reuses_display_name_for_existing_doc() {
+        let trusted = TrustedDocument {
+            display_name: "notes.md".to_owned(),
+            ..test_trusted("/tmp/notes.md")
+        };
+        assert_eq!(default_save_file_name(Some(&trusted)), "notes.md");
     }
 
     #[test]
