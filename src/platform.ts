@@ -40,7 +40,10 @@ export type DocumentErrorCode =
   | "save-conflict-content-changed"
   | "save-conflict-target-missing"
   | "save-failed"
-  | "unknown-document";
+  | "unknown-document"
+  | "invalid-file-name"
+  | "missing-grant"
+  | "grant-mismatch";
 
 export type DocumentCommandError = {
   code: DocumentErrorCode;
@@ -87,30 +90,77 @@ export async function saveDocument(
   });
 }
 
-/** 保存格式选择（首次保存/另存为时由用户在应用内界面选择）。 */
+/** 保存格式选择（首次保存/另存为时取自主界面右下角设置）。 */
 export type EncodingChoice = "utf8" | "utf8-bom" | "gbk";
 export type LineEndingChoice = "lf" | "crlf";
 
-/**
- * 另存为 / 首次保存。系统保存对话框由 Rust 发起，前端只提交格式选择（header）与二进制
- * UTF-8 内容（Raw body）；目标路径不出现在前端。`id` 为已打开文档的后端 id，省略（null）
- * 表示 Untitled 首次保存。用户在系统对话框取消时返回 `null`，成功返回新描述符。
- */
-export async function saveAs(options: {
+export type SaveDirectoryGrant = {
+  id: string;
+  displayName: string;
+};
+
+export type SaveAsDraft = {
+  fileName: string;
+  directory: SaveDirectoryGrant | null;
+};
+
+export type TargetPreview = {
+  exists: boolean;
+  isCurrentPath: boolean;
+};
+
+/** 取得内嵌另存为面板的可信默认文件名与可选默认目录授权。 */
+export async function prepareSaveAs(
+  documentId: string | null,
+): Promise<SaveAsDraft> {
+  return invoke<SaveAsDraft>("prepare_save_as", { documentId });
+}
+
+/** 由 Rust 显示系统目录选择器；取消返回 null，前端从不接收真实路径。 */
+export async function pickSaveDirectory(
+  documentId: string | null,
+): Promise<SaveDirectoryGrant | null> {
+  return invoke<SaveDirectoryGrant | null>("pick_save_directory", {
+    documentId,
+  });
+}
+
+/** 只读预览授权目录与文件名组成的目标。 */
+export async function previewSaveTarget(options: {
   id: string | null;
+  directoryId: string;
+  fileName: string;
+}): Promise<TargetPreview> {
+  return invoke<TargetPreview>("preview_save_target", {
+    documentId: options.id,
+    directoryId: options.directoryId,
+    fileName: options.fileName,
+  });
+}
+
+/**
+ * 使用 Rust 发放的目录授权完成另存为。内容继续走 Raw body；Unicode 文件名按 UTF-8
+ * percent-encoding 放入 header，前端不能提交路径。
+ */
+export async function saveAsAt(options: {
+  id: string | null;
+  directoryId: string;
+  fileName: string;
   encoding: EncodingChoice;
   lineEnding: LineEndingChoice;
   content: string;
-}): Promise<DocumentDescriptor | null> {
+}): Promise<DocumentDescriptor> {
   const body = new TextEncoder().encode(options.content);
   const headers: Record<string, string> = {
+    "textora-directory-id": options.directoryId,
+    "textora-file-name": encodeURIComponent(options.fileName),
     "textora-encoding": options.encoding,
     "textora-line-ending": options.lineEnding,
   };
   if (options.id !== null) {
     headers["textora-document-id"] = options.id;
   }
-  return invoke<DocumentDescriptor | null>("save_document_as", body, { headers });
+  return invoke<DocumentDescriptor>("save_document_as_at", body, { headers });
 }
 
 /** 将会话当前编码映射为格式选择的默认值。 */
@@ -196,6 +246,9 @@ const COMMAND_ERROR_CODES: readonly DocumentErrorCode[] = [
   "save-conflict-target-missing",
   "save-failed",
   "unknown-document",
+  "invalid-file-name",
+  "missing-grant",
+  "grant-mismatch",
 ];
 
 /** 判定值是否为后端稳定错误信封；打开与保存共用。 */
@@ -315,6 +368,11 @@ export function describeSaveError(error: DocumentCommandError): string {
       return "The file no longer exists on disk. Saving was refused to protect the current content.";
     case "unknown-document":
       return "This document is no longer associated with an open file.";
+    case "invalid-file-name":
+      return "Enter a valid file name without path separators.";
+    case "missing-grant":
+    case "grant-mismatch":
+      return "The save location authorization expired. Choose the location again.";
     case "unsupported-encoding":
       return "The edited content could not be encoded for saving.";
     case "changed-during-read":

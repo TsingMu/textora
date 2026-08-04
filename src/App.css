@@ -305,6 +305,88 @@ textarea {
   font: inherit;
 }
 
+.save-as-field input {
+  min-width: 0;
+  flex: 1;
+  padding: 6px 9px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  background: var(--surface);
+  color: inherit;
+  font: inherit;
+}
+
+.save-as-field input:focus {
+  outline: 2px solid color-mix(in srgb, var(--accent) 32%, transparent);
+  border-color: var(--accent);
+}
+
+.save-as-location-field {
+  align-items: center;
+}
+
+.save-as-location {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: var(--text-muted);
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.save-as-location-button {
+  flex: none;
+  padding: 5px 9px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  background: var(--surface);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.save-as-location-button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.save-as-format-summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 12px 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.save-as-format-summary strong {
+  color: inherit;
+  font-weight: 600;
+}
+
+.save-as-validation,
+.save-as-replace-warning,
+.save-as-progress {
+  margin: 10px 0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.save-as-validation {
+  color: #9b2c1f;
+}
+
+.save-as-replace-warning {
+  color: #8a5a11;
+}
+
+.save-as-progress {
+  color: var(--text-muted);
+}
+
 .readonly-badge {
   color: var(--accent);
 }
@@ -450,6 +532,17 @@ textarea {
   background: #5f9a68;
   color: #fffaf3;
   border-color: #5f9a68;
+}
+
+.confirm-replace {
+  background: #c45042;
+  color: #fffaf3;
+  border-color: #c45042;
+}
+
+.confirm-actions button:disabled {
+  cursor: default;
+  opacity: 0.55;
 }
 
 @media (prefers-color-scheme: dark) {

@@ -1,4 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const invokeMock = vi.hoisted(() => vi.fn());
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: (...args: unknown[]) => invokeMock(...args),
+}));
+
 import {
   describeConflictReloadError,
   describeOpenError,
@@ -8,7 +14,15 @@ import {
   isDocumentCommandError,
   lineEndingDisplayName,
   lineEndingToChoice,
+  pickSaveDirectory,
+  prepareSaveAs,
+  previewSaveTarget,
+  saveAsAt,
 } from "./platform";
+
+beforeEach(() => {
+  invokeMock.mockReset();
+});
 
 describe("encodingDisplayName", () => {
   it("labels UTF-8 without and with BOM", () => {
@@ -102,10 +116,83 @@ describe("isDocumentCommandError", () => {
     expect(
       isDocumentCommandError({ code: "save-conflict-target-missing", message: "x" }),
     ).toBe(true);
+    expect(isDocumentCommandError({ code: "invalid-file-name", message: "x" })).toBe(
+      true,
+    );
+    expect(isDocumentCommandError({ code: "missing-grant", message: "x" })).toBe(
+      true,
+    );
+    expect(isDocumentCommandError({ code: "grant-mismatch", message: "x" })).toBe(
+      true,
+    );
     expect(isDocumentCommandError({ code: "unknown", message: "x" })).toBe(false);
     expect(isDocumentCommandError({ code: "save-failed" })).toBe(false);
     expect(isDocumentCommandError(null)).toBe(false);
     expect(isDocumentCommandError("nope")).toBe(false);
+  });
+});
+
+describe("inline save-as IPC", () => {
+  it("uses only document identity and grant metadata for target preparation", async () => {
+    invokeMock
+      .mockResolvedValueOnce({
+        fileName: "notes.txt",
+        directory: { id: "grant-1", displayName: "tmp" },
+      })
+      .mockResolvedValueOnce({ id: "grant-2", displayName: "Desktop" })
+      .mockResolvedValueOnce({ exists: true, isCurrentPath: false });
+
+    await prepareSaveAs("doc-1");
+    await pickSaveDirectory("doc-1");
+    await previewSaveTarget({
+      id: "doc-1",
+      directoryId: "grant-2",
+      fileName: "copy.txt",
+    });
+
+    expect(invokeMock.mock.calls[0]).toEqual([
+      "prepare_save_as",
+      { documentId: "doc-1" },
+    ]);
+    expect(invokeMock.mock.calls[1]).toEqual([
+      "pick_save_directory",
+      { documentId: "doc-1" },
+    ]);
+    expect(invokeMock.mock.calls[2]).toEqual([
+      "preview_save_target",
+      {
+        documentId: "doc-1",
+        directoryId: "grant-2",
+        fileName: "copy.txt",
+      },
+    ]);
+  });
+
+  it("percent-encodes a Unicode file name while keeping content binary", async () => {
+    invokeMock.mockResolvedValue({ id: "doc-1" });
+    await saveAsAt({
+      id: "doc-1",
+      directoryId: "grant-1",
+      fileName: "报告 100%.txt",
+      encoding: "utf8-bom",
+      lineEnding: "crlf",
+      content: "内容",
+    });
+
+    const [command, body, options] = invokeMock.mock.calls[0]!;
+    expect(command).toBe("save_document_as_at");
+    expect(Array.from(body as Uint8Array)).toEqual(
+      Array.from(new TextEncoder().encode("内容")),
+    );
+    expect(options).toEqual({
+      headers: {
+        "textora-directory-id": "grant-1",
+        "textora-file-name": "%E6%8A%A5%E5%91%8A%20100%25.txt",
+        "textora-encoding": "utf8-bom",
+        "textora-line-ending": "crlf",
+        "textora-document-id": "doc-1",
+      },
+    });
   });
 });
 

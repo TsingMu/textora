@@ -105,6 +105,9 @@ function setupInvoke() {
     if (cmd === "request_app_exit") {
       return undefined;
     }
+    if (cmd === "prepare_save_as") {
+      return { fileName: "Untitled", directory: null };
+    }
     throw new Error(`unexpected invoke ${cmd}`);
   });
 }
@@ -410,9 +413,9 @@ describe("App save entry", () => {
       saveButton?.click();
     });
     expect(container.querySelector(".save-as-dialog")).not.toBeNull();
-    expect(
-      invokeMock.mock.calls.some((call) => call[0] === "save_document_as"),
-    ).toBe(false);
+    expect(invokeMock.mock.calls.some((call) => call[0] === "prepare_save_as")).toBe(
+      true,
+    );
   });
 
   it("keeps save disabled right after opening a clean file", async () => {
@@ -453,7 +456,7 @@ describe("App save entry", () => {
     });
   });
 
-  it("save-as opens the format chooser and associates the session to the new target", async () => {
+  it("save-as shows the inline target, uses bottom-right format, and associates the new target", async () => {
     invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "health_check") {
         return { service: "document-core", version: "0.1.0" };
@@ -473,7 +476,16 @@ describe("App save entry", () => {
       if (cmd === "read_document_content") {
         return new TextEncoder().encode("Hello").buffer;
       }
-      if (cmd === "save_document_as") {
+      if (cmd === "prepare_save_as") {
+        return {
+          fileName: "notes.txt",
+          directory: { id: "grant-default", displayName: "tmp" },
+        };
+      }
+      if (cmd === "preview_save_target") {
+        return { exists: false, isCurrentPath: false };
+      }
+      if (cmd === "save_document_as_at") {
         return {
           id: "doc-1",
           path: "/tmp/copy.txt",
@@ -494,33 +506,396 @@ describe("App save entry", () => {
     });
 
     await act(async () => {
-      container.querySelector<HTMLButtonElement>(".save-as-button")?.click();
+      container.querySelector<HTMLButtonElement>(".format-settings-summary")?.click();
     });
-
-    // 格式选择对话框出现，并说明下一步会进入系统保存面板选择名称和位置。
-    const chooser = container.querySelector(".save-as-dialog");
-    expect(chooser).not.toBeNull();
-    expect(
-      container.querySelector('[aria-label="Choose save format and location"]'),
-    ).not.toBeNull();
-    expect(chooser?.textContent).toContain("file name and location");
-    expect(chooser?.textContent).toContain("Choose Name and Location");
-
+    const formatSelects = container.querySelectorAll<HTMLSelectElement>(
+      ".format-settings-popover select",
+    );
     await act(async () => {
-      chooser
-        ?.querySelector<HTMLButtonElement>(".confirm-discard")
+      const encodingSetter = Object.getOwnPropertyDescriptor(
+        HTMLSelectElement.prototype,
+        "value",
+      )?.set;
+      encodingSetter?.call(formatSelects[0], "utf8");
+      formatSelects[0]?.dispatchEvent(new Event("change", { bubbles: true }));
+      encodingSetter?.call(formatSelects[1], "crlf");
+      formatSelects[1]?.dispatchEvent(new Event("change", { bubbles: true }));
+      container
+        .querySelector<HTMLButtonElement>(".format-settings-popover .confirm-save")
         ?.click();
     });
 
-    // 关联到新目标，标签更新；save_document_as 被调用。
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".save-as-button")?.click();
+    });
+
+    const chooser = container.querySelector(".save-as-dialog");
+    expect(chooser).not.toBeNull();
+    expect(container.querySelector('[aria-label="Save file as"]')).not.toBeNull();
+    expect(chooser?.textContent).toContain("file name and save location");
+    expect(chooser?.textContent).toContain("tmp");
+    expect(chooser?.textContent).toContain("UTF-8");
+    expect(chooser?.textContent).toContain("CRLF");
+
+    const fileName = chooser?.querySelector<HTMLInputElement>('input[type="text"]');
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        "value",
+      )?.set;
+      setter?.call(fileName, "copy.txt");
+      fileName?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    await act(async () => {
+      chooser?.querySelector<HTMLButtonElement>(".confirm-save")?.click();
+    });
+
     expect(container.querySelector(".document-tab")?.textContent).toContain("copy.txt");
     expect(container.querySelector(".statusbar")?.textContent).toContain("UTF-8");
     expect(container.querySelector(".statusbar")?.textContent).toContain("CRLF");
     expect(
-      invokeMock.mock.calls.some((call) => call[0] === "save_document_as"),
+      invokeMock.mock.calls.some((call) => call[0] === "save_document_as_at"),
     ).toBe(true);
+    const saveCall = invokeMock.mock.calls.find(
+      (call) => call[0] === "save_document_as_at",
+    );
+    expect(saveCall?.[2]).toEqual({
+      headers: {
+        "textora-directory-id": "grant-default",
+        "textora-file-name": "copy.txt",
+        "textora-encoding": "utf8",
+        "textora-line-ending": "crlf",
+        "textora-document-id": "doc-1",
+      },
+    });
     // 对话框已关闭。
     expect(container.querySelector(".save-as-dialog")).toBeNull();
+  });
+
+  it("cancels the whole save-as when directory selection is cancelled", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "prepare_save_as") {
+        return { fileName: "Untitled", directory: null };
+      }
+      if (cmd === "pick_save_directory") return null;
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await act(async () => root.render(<App />));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".save-button")?.click();
+    });
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(".save-as-location-button")
+        ?.click();
+    });
+
+    expect(container.querySelector(".save-as-dialog")).toBeNull();
+    expect(container.querySelector(".document-tab")?.textContent).toContain(
+      "Untitled",
+    );
+    expect(
+      invokeMock.mock.calls.some((call) => call[0] === "preview_save_target"),
+    ).toBe(false);
+    expect(
+      invokeMock.mock.calls.some((call) => call[0] === "save_document_as_at"),
+    ).toBe(false);
+  });
+
+  it("treats Escape as cancelling the inline save-as", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "prepare_save_as") {
+        return { fileName: "Untitled", directory: null };
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await act(async () => root.render(<App />));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".save-button")?.click();
+    });
+    await act(async () => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+      );
+    });
+
+    expect(container.querySelector(".save-as-dialog")).toBeNull();
+    expect(
+      invokeMock.mock.calls.some((call) => call[0] === "save_document_as_at"),
+    ).toBe(false);
+  });
+
+  it("asks before replacing an existing different target", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        return {
+          id: "doc-replace",
+          path: "/tmp/notes.txt",
+          displayName: "notes.txt",
+          byteCount: 5,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 5, sha256: "old" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode("Hello").buffer;
+      }
+      if (cmd === "prepare_save_as") {
+        return {
+          fileName: "notes.txt",
+          directory: { id: "grant-replace", displayName: "tmp" },
+        };
+      }
+      if (cmd === "preview_save_target") {
+        return { exists: true, isCurrentPath: false };
+      }
+      if (cmd === "save_document_as_at") {
+        return {
+          id: "doc-replace",
+          path: "/tmp/existing.txt",
+          displayName: "existing.txt",
+          byteCount: 5,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 5, sha256: "new" },
+          readOnly: false,
+        };
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await act(async () => root.render(<App />));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".save-as-button")?.click();
+    });
+    const input = container.querySelector<HTMLInputElement>(
+      '.save-as-dialog input[type="text"]',
+    );
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        "value",
+      )?.set;
+      setter?.call(input, "existing.txt");
+      input?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(".save-as-dialog .confirm-save")
+        ?.click();
+    });
+
+    expect(container.querySelector(".save-as-replace-warning")).not.toBeNull();
+    expect(
+      invokeMock.mock.calls.some((call) => call[0] === "save_document_as_at"),
+    ).toBe(false);
+
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(".save-as-dialog .confirm-replace")
+        ?.click();
+    });
+    expect(
+      invokeMock.mock.calls.filter((call) => call[0] === "save_document_as_at"),
+    ).toHaveLength(1);
+    expect(container.querySelector(".document-tab")?.textContent).toContain(
+      "existing.txt",
+    );
+  });
+
+  it("skips replacement confirmation for the current original path", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        return {
+          id: "doc-current",
+          path: "/tmp/notes.txt",
+          displayName: "notes.txt",
+          byteCount: 5,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 5, sha256: "old" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode("Hello").buffer;
+      }
+      if (cmd === "prepare_save_as") {
+        return {
+          fileName: "notes.txt",
+          directory: { id: "grant-current", displayName: "tmp" },
+        };
+      }
+      if (cmd === "preview_save_target") {
+        return { exists: true, isCurrentPath: true };
+      }
+      if (cmd === "save_document_as_at") {
+        return {
+          id: "doc-current",
+          path: "/tmp/notes.txt",
+          displayName: "notes.txt",
+          byteCount: 5,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 5, sha256: "new" },
+          readOnly: false,
+        };
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await act(async () => root.render(<App />));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".save-as-button")?.click();
+    });
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(".save-as-dialog .confirm-save")
+        ?.click();
+    });
+
+    expect(container.querySelector(".save-as-replace-warning")).toBeNull();
+    expect(
+      invokeMock.mock.calls.filter((call) => call[0] === "save_document_as_at"),
+    ).toHaveLength(1);
+  });
+
+  it("keeps the panel retryable when the target changes after confirmation", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        return {
+          id: "doc-race",
+          path: "/tmp/race.txt",
+          displayName: "race.txt",
+          byteCount: 5,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 5, sha256: "old" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode("Hello").buffer;
+      }
+      if (cmd === "prepare_save_as") {
+        return {
+          fileName: "copy.txt",
+          directory: { id: "grant-race", displayName: "tmp" },
+        };
+      }
+      if (cmd === "preview_save_target") {
+        return { exists: false, isCurrentPath: false };
+      }
+      if (cmd === "save_document_as_at") {
+        throw { code: "save-conflict", message: "appeared" };
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await act(async () => root.render(<App />));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".save-as-button")?.click();
+    });
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(".save-as-dialog .confirm-save")
+        ?.click();
+    });
+
+    expect(container.querySelector(".save-as-dialog")).not.toBeNull();
+    expect(container.querySelector(".save-as-validation")?.textContent).toContain(
+      "changed on disk",
+    );
+    expect(
+      container.querySelector<HTMLButtonElement>(".save-as-dialog .confirm-save")
+        ?.disabled,
+    ).toBe(false);
+  });
+
+  it("routes a missing current target into the existing missing-file flow", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        return {
+          id: "doc-missing-save-as",
+          path: "/tmp/missing.txt",
+          displayName: "missing.txt",
+          byteCount: 5,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 5, sha256: "old" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode("Hello").buffer;
+      }
+      if (cmd === "prepare_save_as") {
+        return {
+          fileName: "missing.txt",
+          directory: { id: "grant-missing", displayName: "tmp" },
+        };
+      }
+      if (cmd === "preview_save_target") {
+        return { exists: true, isCurrentPath: true };
+      }
+      if (cmd === "save_document_as_at") {
+        throw {
+          code: "save-conflict-target-missing",
+          message: "missing",
+        };
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await act(async () => root.render(<App />));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".save-as-button")?.click();
+    });
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(".save-as-dialog .confirm-save")
+        ?.click();
+    });
+
+    expect(container.querySelector(".save-as-dialog")).toBeNull();
+    expect(
+      container.querySelector('[aria-label="File missing on disk"]'),
+    ).not.toBeNull();
   });
 
   it("keeps reload failure details while leaving the conflict actionable", async () => {
@@ -1550,7 +1925,16 @@ describe("App window close protection", () => {
       if (cmd === "health_check") {
         return { service: "document-core", version: "0.1.0" };
       }
-      if (cmd === "save_document_as") {
+      if (cmd === "prepare_save_as") {
+        return { fileName: "Untitled", directory: null };
+      }
+      if (cmd === "pick_save_directory") {
+        return { id: "grant-close", displayName: "tmp" };
+      }
+      if (cmd === "preview_save_target") {
+        return { exists: false, isCurrentPath: false };
+      }
+      if (cmd === "save_document_as_at") {
         return {
           id: "doc-first-save",
           path: "/tmp/draft.txt",
@@ -1574,14 +1958,17 @@ describe("App window close protection", () => {
 
     await act(async () => {
       container
-        .querySelector<HTMLButtonElement>(
-          ".save-as-dialog .confirm-discard",
-        )
+        .querySelector<HTMLButtonElement>(".save-as-dialog .save-as-location-button")
+        ?.click();
+    });
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(".save-as-dialog .confirm-save")
         ?.click();
     });
 
     expect(
-      invokeMock.mock.calls.filter((call) => call[0] === "save_document_as"),
+      invokeMock.mock.calls.filter((call) => call[0] === "save_document_as_at"),
     ).toHaveLength(1);
     expect(tauriWindowMock.close).toHaveBeenCalledOnce();
     expect(tauriWindowMock.allowedCloseCount).toBe(1);
@@ -1611,12 +1998,15 @@ describe("App window close protection", () => {
     ).not.toBeNull();
   });
 
-  it("cancels the close intent when the system save dialog is cancelled", async () => {
+  it("cancels the close intent when directory selection is cancelled", async () => {
     invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "health_check") {
         return { service: "document-core", version: "0.1.0" };
       }
-      if (cmd === "save_document_as") {
+      if (cmd === "prepare_save_as") {
+        return { fileName: "Untitled", directory: null };
+      }
+      if (cmd === "pick_save_directory") {
         return null;
       }
       throw new Error(`unexpected invoke ${cmd}`);
@@ -1628,9 +2018,7 @@ describe("App window close protection", () => {
     });
     await act(async () => {
       container
-        .querySelector<HTMLButtonElement>(
-          ".save-as-dialog .confirm-discard",
-        )
+        .querySelector<HTMLButtonElement>(".save-as-dialog .save-as-location-button")
         ?.click();
     });
 
@@ -1947,7 +2335,16 @@ describe("App window close protection", () => {
       if (cmd === "health_check") {
         return { service: "document-core", version: "0.1.0" };
       }
-      if (cmd === "save_document_as") {
+      if (cmd === "prepare_save_as") {
+        return { fileName: "Untitled", directory: null };
+      }
+      if (cmd === "pick_save_directory") {
+        return { id: "grant-exit", displayName: "tmp" };
+      }
+      if (cmd === "preview_save_target") {
+        return { exists: false, isCurrentPath: false };
+      }
+      if (cmd === "save_document_as_at") {
         return {
           id: "doc-exit-untitled",
           path: "/tmp/exit-untitled.txt",
@@ -1974,12 +2371,17 @@ describe("App window close protection", () => {
 
     await act(async () => {
       container
-        .querySelector<HTMLButtonElement>(".save-as-dialog .confirm-discard")
+        .querySelector<HTMLButtonElement>(".save-as-dialog .save-as-location-button")
+        ?.click();
+    });
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(".save-as-dialog .confirm-save")
         ?.click();
     });
 
     expect(
-      invokeMock.mock.calls.filter((call) => call[0] === "save_document_as"),
+      invokeMock.mock.calls.filter((call) => call[0] === "save_document_as_at"),
     ).toHaveLength(1);
     expect(
       invokeMock.mock.calls.some((call) => call[0] === "request_app_exit"),
@@ -2007,7 +2409,16 @@ describe("App window close protection", () => {
       if (cmd === "read_document_content") {
         return new TextEncoder().encode("Hello").buffer;
       }
-      if (cmd === "save_document_as") {
+      if (cmd === "prepare_save_as") {
+        return {
+          fileName: "exit-ro.txt",
+          directory: { id: "grant-ro", displayName: "tmp" },
+        };
+      }
+      if (cmd === "preview_save_target") {
+        return { exists: false, isCurrentPath: false };
+      }
+      if (cmd === "save_document_as_at") {
         return {
           id: "doc-exit-ro",
           path: "/tmp/exit-ro-new.txt",
@@ -2034,12 +2445,12 @@ describe("App window close protection", () => {
 
     await act(async () => {
       container
-        .querySelector<HTMLButtonElement>(".save-as-dialog .confirm-discard")
+        .querySelector<HTMLButtonElement>(".save-as-dialog .confirm-save")
         ?.click();
     });
 
     expect(
-      invokeMock.mock.calls.filter((call) => call[0] === "save_document_as"),
+      invokeMock.mock.calls.filter((call) => call[0] === "save_document_as_at"),
     ).toHaveLength(1);
     expect(
       invokeMock.mock.calls.some((call) => call[0] === "request_app_exit"),
@@ -2096,17 +2507,8 @@ describe("App window close protection", () => {
       if (cmd === "health_check") {
         return { service: "document-core", version: "0.1.0" };
       }
-      if (cmd === "save_document_as") {
-        return {
-          id: "doc-exit-cancel",
-          path: "/tmp/exit-cancel.txt",
-          displayName: "exit-cancel.txt",
-          byteCount: 5,
-          encoding: { utf8: { bom: false } },
-          lineEnding: "lf",
-          fingerprint: { sizeBytes: 5, sha256: "saved" },
-          readOnly: false,
-        };
+      if (cmd === "prepare_save_as") {
+        return { fileName: "Untitled", directory: null };
       }
       if (cmd === "request_app_exit") {
         return undefined;
@@ -2126,7 +2528,7 @@ describe("App window close protection", () => {
     });
 
     expect(
-      invokeMock.mock.calls.some((call) => call[0] === "save_document_as"),
+      invokeMock.mock.calls.some((call) => call[0] === "save_document_as_at"),
     ).toBe(false);
     expect(
       invokeMock.mock.calls.some((call) => call[0] === "request_app_exit"),
@@ -2373,6 +2775,105 @@ describe("App bottom-right format settings", () => {
       container.querySelector<HTMLButtonElement>(".format-settings-summary")?.click();
     });
     expect(container.querySelector(".format-settings-mixed")).not.toBeNull();
+  });
+
+  it("blocks mixed save-as until LF or CRLF is explicitly confirmed", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        return {
+          id: "doc-mixed-save",
+          path: "/tmp/mixed.txt",
+          displayName: "mixed.txt",
+          byteCount: 7,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "mixed",
+          fingerprint: { sizeBytes: 7, sha256: "mix" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode("a\r\nb\nc").buffer;
+      }
+      if (cmd === "prepare_save_as") {
+        return {
+          fileName: "mixed.txt",
+          directory: { id: "grant-mixed", displayName: "tmp" },
+        };
+      }
+      if (cmd === "preview_save_target") {
+        return { exists: false, isCurrentPath: false };
+      }
+      if (cmd === "save_document_as_at") {
+        return {
+          id: "doc-mixed-save",
+          path: "/tmp/mixed-normalized.txt",
+          displayName: "mixed-normalized.txt",
+          byteCount: 7,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "crlf",
+          fingerprint: { sizeBytes: 7, sha256: "saved" },
+          readOnly: false,
+        };
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await act(async () => root.render(<App />));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".save-as-button")?.click();
+    });
+    expect(container.querySelector(".save-as-validation")?.textContent).toContain(
+      "mixed line endings",
+    );
+    expect(
+      container.querySelector<HTMLButtonElement>(".save-as-dialog .confirm-save")
+        ?.disabled,
+    ).toBe(true);
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(".save-as-dialog .confirm-cancel")
+        ?.click();
+    });
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".format-settings-summary")?.click();
+    });
+    const selects = container.querySelectorAll<HTMLSelectElement>(
+      ".format-settings-popover select",
+    );
+    await act(async () => {
+      setSelectValue(selects[1]!, "crlf");
+    });
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(".format-settings-popover .confirm-save")
+        ?.click();
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".save-as-button")?.click();
+    });
+    expect(
+      container.querySelector<HTMLButtonElement>(".save-as-dialog .confirm-save")
+        ?.disabled,
+    ).toBe(false);
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(".save-as-dialog .confirm-save")
+        ?.click();
+    });
+
+    const saveCall = invokeMock.mock.calls.find(
+      (call) => call[0] === "save_document_as_at",
+    );
+    expect(saveCall?.[2]).toMatchObject({
+      headers: { "textora-line-ending": "crlf" },
+    });
   });
 
   it("discards the stale draft and closes the popover when the document changes mid-edit", async () => {

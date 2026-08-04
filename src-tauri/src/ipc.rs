@@ -40,6 +40,13 @@ pub enum DocumentErrorCode {
     SaveFailed,
     /// 前端提交的文档 id 后端未知或已过期（如新建文档、被新打开覆盖）。
     UnknownDocument,
+    // 内嵌另存为目标契约
+    /// 前端提交的文件名不合法（空、含路径分隔符或 `.`/`..`、含 NUL 等）。
+    InvalidFileName,
+    /// 目录授权 id 未知或已过期（未发放、被替换，或因文档切换/关闭/成功落盘而清除）。
+    MissingGrant,
+    /// 目录授权 id 有效但不归属当前请求的文档。
+    GrantMismatch,
 }
 
 /// 跨 IPC 的文档命令错误。`character` 与 `byteOffset` 仅在不可编码字符时填充，供
@@ -185,6 +192,40 @@ struct ConflictState {
     trusted: TrustedDocument,
 }
 
+/// 目录授权描述符：前端只持不透明 `id` 与只读 `display_name`，从不接触真实路径。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveDirectoryGrant {
+    pub id: String,
+    pub display_name: String,
+}
+
+/// 内嵌另存为面板的默认目标草稿：默认文件名 + 可选默认目录授权（已有文档用其父目录）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveAsDraft {
+    pub file_name: String,
+    pub directory: Option<SaveDirectoryGrant>,
+}
+
+/// 目标预览：`dir/file_name` 是否已存在、是否即当前活动文档原路径。用于"替换确认"。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TargetPreview {
+    pub exists: bool,
+    pub is_current_path: bool,
+}
+
+/// 用户经 `pick_save_directory` 或 `prepare_save_as`（已有文档默认父目录）授权的保存目录。
+/// 绑定单一活动文档；切换/关闭/成功落盘后清除。前端只持 `grant_id`，无法伪造路径。
+#[derive(Debug, Clone)]
+struct PendingSaveDirectory {
+    grant_id: String,
+    /// Grant 发放时绑定的活动文档 id；Untitled 首次保存为 `None`。
+    document_id: Option<String>,
+    path: PathBuf,
+}
+
 #[derive(Default)]
 struct DocumentStoreInner {
     /// 打开时暂存的解码后内容，供 `read_document_content` 取回一次。
@@ -202,6 +243,10 @@ struct DocumentStoreInner {
     pending_overwrite: Option<(String, u64)>,
     /// 单调递增的内部冲突版本，只在 Rust 可信状态中使用，不暴露给前端。
     next_conflict_revision: u64,
+    /// 用户授权的内嵌另存为保存目录（绑定活动文档）。切换/关闭/成功落盘后清除。
+    pending_save_directory: Option<PendingSaveDirectory>,
+    /// 单调递增的目录授权 id 计数器，只在内嵌另存为契约内部使用。
+    next_save_directory_id: u64,
 }
 
 /// 单标签会话下的后端文档状态：同时维护打开内容缓冲与可信保存元数据。
@@ -216,6 +261,8 @@ impl DocumentStore {
         guard.pending_content = Some((id.clone(), content));
         guard.pending_document = Some((id, document));
         guard.pending_reload_revision = None;
+        // 新文档载入即废弃任何旧文档的保存目录授权，避免跨文档落盘。
+        guard.pending_save_directory = None;
     }
 
     fn take_content(&self, id: &str) -> Option<Vec<u8>> {
@@ -259,6 +306,7 @@ impl DocumentStore {
         guard.pending_reload_revision = None;
         guard.active = Some(pending);
         guard.conflict = None;
+        guard.pending_save_directory = None;
         Some(bytes)
     }
 
@@ -306,6 +354,7 @@ impl DocumentStore {
         let mut guard = self.inner.lock().expect("document store lock poisoned");
         guard.active = Some((id.clone(), document));
         guard.conflict = None;
+        guard.pending_save_directory = None;
         id
     }
 
@@ -532,8 +581,70 @@ impl DocumentStore {
             guard.pending_reload_revision = None;
             guard.pending_content = None;
             guard.pending_document = None;
+            guard.pending_save_directory = None;
         }
         active_matches
+    }
+
+    /// 发放一个新的保存目录授权（覆盖任何既有授权），返回面向前端的授权描述符。
+    fn establish_save_grant(
+        &self,
+        document_id: Option<String>,
+        path: PathBuf,
+        display_name: String,
+    ) -> Result<SaveDirectoryGrant, DocumentCommandError> {
+        let mut guard = self.inner.lock().expect("document store lock poisoned");
+        let context_matches = match document_id.as_deref() {
+            Some(requested_id) => {
+                guard.pending_overwrite.is_none()
+                    && guard
+                        .active
+                        .as_ref()
+                        .is_some_and(|(active_id, _)| active_id == requested_id)
+            }
+            None => guard.active.is_none(),
+        };
+        if !context_matches {
+            return Err(DocumentCommandError::new(
+                DocumentErrorCode::UnknownDocument,
+                "save directory grant cannot be attached to a stale document context",
+            ));
+        }
+        let id = format!("save-dir-{}", guard.next_save_directory_id);
+        guard.next_save_directory_id = guard.next_save_directory_id.saturating_add(1);
+        guard.pending_save_directory = Some(PendingSaveDirectory {
+            grant_id: id.clone(),
+            document_id,
+            path,
+        });
+        Ok(SaveDirectoryGrant { id, display_name })
+    }
+
+    fn clear_save_grant(&self) {
+        let mut guard = self.inner.lock().expect("document store lock poisoned");
+        guard.pending_save_directory = None;
+    }
+
+    /// 读取匹配 `grant_id` 的授权（克隆）。不存在或已过期返回 `None`。
+    fn current_save_grant(&self, grant_id: &str) -> Option<PendingSaveDirectory> {
+        let guard = self.inner.lock().expect("document store lock poisoned");
+        guard
+            .pending_save_directory
+            .as_ref()
+            .filter(|g| g.grant_id == grant_id)
+            .cloned()
+    }
+
+    /// 成功落盘后消费授权（单次使用）。id 不匹配时不做任何事。
+    fn take_save_grant(&self, grant_id: &str) {
+        let mut guard = self.inner.lock().expect("document store lock poisoned");
+        if guard
+            .pending_save_directory
+            .as_ref()
+            .is_some_and(|g| g.grant_id == grant_id)
+        {
+            guard.pending_save_directory = None;
+        }
     }
 }
 
@@ -879,6 +990,9 @@ pub fn close_document(
 /// 保存格式 header 名。编码值：`utf8` / `utf8-bom` / `gbk`；换行值：`lf` / `crlf`。
 const ENCODING_HEADER: &str = "textora-encoding";
 const LINE_ENDING_HEADER: &str = "textora-line-ending";
+/// 内嵌另存为契约 header 名：目录授权 id 与文件名（前端只回传 Rust 发放的 grant id）。
+const DIRECTORY_ID_HEADER: &str = "textora-directory-id";
+const FILE_NAME_HEADER: &str = "textora-file-name";
 
 fn parse_encoding_header(
     headers: &tauri::http::HeaderMap,
@@ -934,6 +1048,17 @@ fn choose_save_target(
     path: &std::path::Path,
     trusted: Option<&TrustedDocument>,
 ) -> Result<crate::document::SaveTarget, DocumentError> {
+    // 当前原路径即使已经缺失，也必须继续按 InPlace 路由，让核心报告冲突；否则先对
+    // 目标 canonicalize 会把缺失原路径误判为可创建的新目标，绕过目标缺失保护。
+    if let Some(trusted) = trusted {
+        if path == trusted.path {
+            return Ok(crate::document::SaveTarget::InPlace {
+                source_read_only: trusted.read_only,
+                expected: trusted.fingerprint.clone(),
+            });
+        }
+    }
+
     let chosen = match std::fs::canonicalize(path) {
         Ok(resolved) => resolved,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
@@ -972,6 +1097,12 @@ fn display_name_of(path: &std::path::Path) -> String {
         .unwrap_or_else(|| "Untitled".to_owned())
 }
 
+fn directory_display_name(path: &std::path::Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string_lossy().into_owned())
+}
+
 /// 按可信路径当前是否存在分类普通保存冲突。目标存在但指纹不匹配→内容已变化；
 /// 目标不存在→目标已缺失。此分类基于后端 Rust 的 `metadata` 调用，不依赖前端猜测。
 fn classify_conflict(path: &std::path::Path) -> Result<ConflictKind, DocumentError> {
@@ -990,7 +1121,9 @@ fn conflict_error_code(kind: ConflictKind) -> DocumentErrorCode {
     }
 }
 
-fn trusted_for_save_as(
+/// 新内嵌面板必须与当前 Rust 可信会话一致：有活动文档时必须提交其 id，Untitled
+/// (`None`) 只在后端没有活动文档时成立。
+fn trusted_for_inline_save_as(
     store: &DocumentStore,
     id: Option<&str>,
 ) -> Result<Option<TrustedDocument>, DocumentCommandError> {
@@ -1001,7 +1134,19 @@ fn trusted_for_save_as(
                 "unknown or stale document id",
             )
         }),
-        None => Ok(None),
+        None if store
+            .inner
+            .lock()
+            .expect("document store lock poisoned")
+            .active
+            .is_none() =>
+        {
+            Ok(None)
+        }
+        None => Err(DocumentCommandError::new(
+            DocumentErrorCode::UnknownDocument,
+            "untitled save context does not match the active document",
+        )),
     }
 }
 
@@ -1009,29 +1154,273 @@ fn trusted_for_save_as(
 /// 不与本规格「不自动追加扩展名」冲突，且与会话显示名一致。
 const UNTITLED_DEFAULT_FILE_NAME: &str = "Untitled";
 
-/// 系统保存面板的默认文件名：已有文档沿用其显示名，Untitled 首次保存用常量 `Untitled`。
-/// 纯函数，便于确定性测试；对话框仍由 Rust 发起，前端不提交名称。
-fn default_save_file_name(trusted_opt: Option<&TrustedDocument>) -> &str {
+/// 内嵌面板的默认目标：文件名 + 可选默认目录（已有文档用其父目录，仅当父目录可用）。
+/// 纯函数（`is_dir` 触 FS，测试用 `TestDir` 提供真实目录）。
+fn build_save_as_draft(trusted_opt: Option<&TrustedDocument>) -> (String, Option<PathBuf>) {
     match trusted_opt {
-        Some(trusted) => &trusted.display_name,
-        None => UNTITLED_DEFAULT_FILE_NAME,
+        Some(trusted) => {
+            let dir = trusted
+                .path
+                .parent()
+                .filter(|p| p.is_dir())
+                .map(PathBuf::from);
+            (trusted.display_name.clone(), dir)
+        }
+        None => (UNTITLED_DEFAULT_FILE_NAME.to_owned(), None),
     }
 }
 
-/// 另存为 / 首次保存。系统保存对话框由 Rust 发起；前端不提交任意路径，只提交格式选择
-/// （header）与二进制 UTF-8 内容（Raw body）。文档 id header 可选：已有文档另存时携带，
-/// Untitled 首次保存时缺省。成功返回新的描述符；用户取消对话框返回 `None`。
+/// 校验前端提交的文件名是单个文件名分量：非空、无路径分隔符、非 `.`/`..`、不含 NUL。
+/// 拒绝非单一分量，避免前端借文件名注入路径。
+fn validate_file_name(name: &str) -> Result<(), DocumentErrorCode> {
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains('\0')
+        || std::path::Path::new(name).components().count() != 1
+    {
+        return Err(DocumentErrorCode::InvalidFileName);
+    }
+    Ok(())
+}
+
+/// Raw IPC 同时传输大文本时，文件名只能放在 header；为完整支持 Unicode 与字面 `%`，
+/// 前端须按 UTF-8 percent-encoding（`encodeURIComponent`）提交。纯 ASCII 未转义值兼容。
+fn decode_file_name_header(value: &str) -> Result<String, DocumentErrorCode> {
+    fn hex(byte: u8) -> Option<u8> {
+        match byte {
+            b'0'..=b'9' => Some(byte - b'0'),
+            b'a'..=b'f' => Some(byte - b'a' + 10),
+            b'A'..=b'F' => Some(byte - b'A' + 10),
+            _ => None,
+        }
+    }
+
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let Some((high, low)) = bytes
+                .get(index + 1)
+                .zip(bytes.get(index + 2))
+                .and_then(|(high, low)| Some((hex(*high)?, hex(*low)?)))
+            else {
+                return Err(DocumentErrorCode::InvalidFileName);
+            };
+            decoded.push((high << 4) | low);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(decoded).map_err(|_| DocumentErrorCode::InvalidFileName)
+}
+
+/// 把授权目录与已校验的文件名拼成绝对保存路径（纯函数，不做 I/O）。
+fn compose_save_path(dir: &std::path::Path, file_name: &str) -> PathBuf {
+    dir.join(file_name)
+}
+
+/// 复核授权是否归属请求的文档（首次保存 Untitled 用 `None`）。
+fn grant_matches_document(grant: &PendingSaveDirectory, requested: Option<&str>) -> bool {
+    grant.document_id.as_deref() == requested
+}
+
+/// 预览目标：判定 `dir/file_name` 是否存在、是否即当前活动文档原路径。不做写操作。
+/// 文件名不合法返回 `InvalidFileName`；canonicalize 等错误视为"无法确认识别"。
+fn preview_target(
+    dir: &std::path::Path,
+    file_name: &str,
+    current: Option<&TrustedDocument>,
+) -> Result<TargetPreview, DocumentErrorCode> {
+    validate_file_name(file_name)?;
+    let path = compose_save_path(dir, file_name);
+    let exists = match std::fs::symlink_metadata(&path) {
+        Ok(_) => true,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => false,
+        Err(_) => return Err(DocumentErrorCode::SaveFailed),
+    };
+    let is_current_path = match current {
+        Some(trusted) => match (
+            std::fs::canonicalize(&trusted.path),
+            std::fs::canonicalize(&path),
+        ) {
+            (Ok(current_canon), Ok(target_canon)) => current_canon == target_canon,
+            _ => false,
+        },
+        None => false,
+    };
+    Ok(TargetPreview {
+        exists,
+        is_current_path,
+    })
+}
+
+/// 解析授权并拼出保存路径：校验文件名 → 复核授权存在与归属 → 解析可信文档 → 拼路径。
+/// 命令体在拿到 `(path, trusted_opt)` 后复用 `choose_save_target`/`save_document`/`build_saved_descriptor`。
+fn resolve_save_target(
+    store: &DocumentStore,
+    document_id: Option<&str>,
+    directory_id: &str,
+    file_name: &str,
+) -> Result<(PathBuf, Option<TrustedDocument>), DocumentCommandError> {
+    validate_file_name(file_name)
+        .map_err(|code| DocumentCommandError::new(code, "invalid file name"))?;
+    let grant = state_grant_or_missing(store, directory_id)?;
+    if !grant_matches_document(&grant, document_id) {
+        return Err(DocumentCommandError::new(
+            DocumentErrorCode::GrantMismatch,
+            "save directory grant does not belong to the current document",
+        ));
+    }
+    let trusted_opt = trusted_for_inline_save_as(store, document_id)?;
+    let path = compose_save_path(&grant.path, file_name);
+    Ok((path, trusted_opt))
+}
+
+/// 读取授权并在缺失时返回稳定错误。
+fn state_grant_or_missing(
+    store: &DocumentStore,
+    grant_id: &str,
+) -> Result<PendingSaveDirectory, DocumentCommandError> {
+    store.current_save_grant(grant_id).ok_or_else(|| {
+        DocumentCommandError::new(
+            DocumentErrorCode::MissingGrant,
+            "save directory grant is unknown or expired",
+        )
+    })
+}
+
+/// 内嵌另存为面板打开时取得默认目标草稿：文件名 + 可选默认目录授权。已有文档默认文件名
+/// 为显示名、默认目录为其父目录（可用时发放授权）；Untitled 默认 `Untitled` 且无目录。
 #[tauri::command]
-pub async fn save_document_as(
+pub fn prepare_save_as(
+    document_id: Option<String>,
+    state: tauri::State<'_, DocumentStore>,
+) -> Result<SaveAsDraft, DocumentCommandError> {
+    prepare_save_as_inner(state.inner(), document_id)
+}
+
+fn prepare_save_as_inner(
+    store: &DocumentStore,
+    document_id: Option<String>,
+) -> Result<SaveAsDraft, DocumentCommandError> {
+    let trusted_opt = trusted_for_inline_save_as(store, document_id.as_deref())?;
+    let (file_name, directory_path) = build_save_as_draft(trusted_opt.as_ref());
+    let directory = match directory_path {
+        Some(dir) => {
+            let display_name = directory_display_name(&dir);
+            Some(store.establish_save_grant(document_id, dir, display_name)?)
+        }
+        None => {
+            store.clear_save_grant();
+            None
+        }
+    };
+    Ok(SaveAsDraft {
+        file_name,
+        directory,
+    })
+}
+
+/// 在 Rust 侧显示系统目录选择对话框并发放保存目录授权。前端不传入路径，取消返回 `None`
+/// 且不改动既有授权。所选项经 canonicalize 与目录校验后绑定当前活动文档。
+#[tauri::command]
+pub async fn pick_save_directory(
     app: tauri::AppHandle,
+    document_id: Option<String>,
+    state: tauri::State<'_, DocumentStore>,
+) -> Result<Option<SaveDirectoryGrant>, DocumentCommandError> {
+    // 对话框打开前拒绝过期调用；返回后 `establish_save_grant` 在同一锁内再次复核，
+    // 防止用户选择目录期间活动文档已经切换。
+    trusted_for_inline_save_as(state.inner(), document_id.as_deref())?;
+    let Some(folder) = app.dialog().file().blocking_pick_folder() else {
+        return Ok(None);
+    };
+    let raw = folder.into_path().map_err(|_| {
+        DocumentCommandError::new(
+            DocumentErrorCode::ReadFailed,
+            "selected directory is unavailable",
+        )
+    })?;
+    let path = std::fs::canonicalize(&raw).map_err(|_| {
+        DocumentCommandError::new(
+            DocumentErrorCode::ReadFailed,
+            "selected directory cannot be resolved",
+        )
+    })?;
+    if !path.is_dir() {
+        return Err(DocumentCommandError::new(
+            DocumentErrorCode::ReadFailed,
+            "selected path is not a directory",
+        ));
+    }
+    let display_name = directory_display_name(&path);
+    let grant = state.establish_save_grant(document_id, path, display_name)?;
+    Ok(Some(grant))
+}
+
+/// 预览 `dir/file_name`：是否已存在、是否即当前活动文档原路径。不做写操作。授权不存在或
+/// 不归属当前文档则报错；供前端写盘前决定是否提示"替换已有文件？"。
+#[tauri::command]
+pub fn preview_save_target(
+    directory_id: String,
+    file_name: String,
+    document_id: Option<String>,
+    state: tauri::State<'_, DocumentStore>,
+) -> Result<TargetPreview, DocumentCommandError> {
+    let grant = state_grant_or_missing(state.inner(), &directory_id)?;
+    if !grant_matches_document(&grant, document_id.as_deref()) {
+        return Err(DocumentCommandError::new(
+            DocumentErrorCode::GrantMismatch,
+            "save directory grant does not belong to the current document",
+        ));
+    }
+    let trusted_opt = trusted_for_inline_save_as(state.inner(), document_id.as_deref())?;
+    preview_target(&grant.path, &file_name, trusted_opt.as_ref())
+        .map_err(|code| DocumentCommandError::new(code, "invalid save target"))
+}
+
+/// 内嵌另存为保存：文件名经 UTF-8 percent-encoding 后放入 [`FILE_NAME_HEADER`]，目录授权
+/// id 经 [`DIRECTORY_ID_HEADER`]，格式与可选文档 id 经各自 header、内容经 Raw body 传入。
+/// Rust 解析授权并拼路径，复用既有 `choose_save_target`/`save_document`/
+/// `build_saved_descriptor`；成功后消费授权（单次使用）。
+#[tauri::command]
+pub async fn save_document_as_at(
     request: tauri::ipc::Request<'_>,
     state: tauri::State<'_, DocumentStore>,
-) -> Result<Option<DocumentDescriptor>, DocumentCommandError> {
+) -> Result<DocumentDescriptor, DocumentCommandError> {
     let headers = request.headers();
     let id_opt = headers
         .get(DOCUMENT_ID_HEADER)
         .and_then(|value| value.to_str().ok())
         .map(str::to_owned);
+    let directory_id = headers
+        .get(DIRECTORY_ID_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            DocumentCommandError::new(
+                DocumentErrorCode::MissingGrant,
+                "save request is missing the directory id header",
+            )
+        })?;
+    let file_name = headers
+        .get(FILE_NAME_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(decode_file_name_header)
+        .transpose()
+        .map_err(|code| DocumentCommandError::new(code, "save file name header is invalid"))?
+        .ok_or_else(|| {
+            DocumentCommandError::new(
+                DocumentErrorCode::InvalidFileName,
+                "save request is missing the file name header",
+            )
+        })?;
     let encoding = parse_encoding_header(headers)?;
     let line_ending = parse_line_ending_header(headers)?;
     let bytes = match request.body() {
@@ -1050,39 +1439,37 @@ pub async fn save_document_as(
         )
     })?;
 
-    // 已有文档必须在打开对话框及任何写盘前通过可信 id 校验；只有明确省略 id 才是首次保存。
-    let trusted_opt = trusted_for_save_as(state.inner(), id_opt.as_deref())?;
+    save_document_as_at_inner(
+        state.inner(),
+        id_opt.as_deref(),
+        &directory_id,
+        &file_name,
+        encoding,
+        line_ending,
+        content,
+    )
+    .await
+}
 
-    // 系统保存对话框（Rust 发起，前端不接触路径）。默认文件名：已有文档沿用显示名，
-    // Untitled 首次保存用 `Untitled`。
-    //
-    // 不设置默认目录：rfd 0.16.0 的 macOS `build_save_file` 在同时提供 starting_directory
-    // 与 file_name 时，`set_path` 会把文件名拼到目录路径后再设为 `directoryURL`，令面板
-    // 渲染异常（缺少文件名与目录导航）。经插件栈无法独立设置两者，故按规格退回系统默认
-    // 目录；默认目录能力待 rfd/插件修复后再引入。
-    let picked = app
-        .dialog()
-        .file()
-        .set_file_name(default_save_file_name(trusted_opt.as_ref()))
-        .blocking_save_file();
-    let Some(picked) = picked else {
-        return Ok(None);
-    };
-    let path = picked.into_path().map_err(|_| {
-        DocumentCommandError::new(
-            DocumentErrorCode::ReadFailed,
-            "selected save path is unavailable",
-        )
-    })?;
+async fn save_document_as_at_inner(
+    store: &DocumentStore,
+    document_id: Option<&str>,
+    directory_id: &str,
+    file_name: &str,
+    encoding: TextEncoding,
+    line_ending: LineEnding,
+    content: String,
+) -> Result<DocumentDescriptor, DocumentCommandError> {
+    let (path, trusted_opt) = resolve_save_target(store, document_id, directory_id, file_name)?;
     let path_for_assoc = path.clone();
-
-    // 观测目标 + 路由 + 保存（脱离命令线程）。
     let encoding_for_assoc = encoding;
     let line_ending_for_assoc = line_ending;
-    let outcome = tauri::async_runtime::spawn_blocking(move || {
+    let snapshot = content.clone();
+    let (in_place, core_result) = tauri::async_runtime::spawn_blocking(move || {
         let target = choose_save_target(&path, trusted_opt.as_ref())
             .map_err(DocumentCommandError::from_save_core)?;
-        document::save_document(
+        let in_place = matches!(target, crate::document::SaveTarget::InPlace { .. });
+        let result = document::save_document(
             &path,
             document::SaveRequest {
                 content,
@@ -1090,8 +1477,8 @@ pub async fn save_document_as(
                 line_ending,
                 target,
             },
-        )
-        .map_err(DocumentCommandError::from_save_core)
+        );
+        Ok::<_, DocumentCommandError>((in_place, result))
     })
     .await
     .map_err(|_| {
@@ -1101,16 +1488,32 @@ pub async fn save_document_as(
         )
     })??;
 
-    // 写入完整成功后才更新/建立可信关联。
+    let outcome = match core_result {
+        Ok(outcome) => outcome,
+        Err(DocumentError::SaveConflict) if in_place => {
+            let kind =
+                classify_conflict(&path_for_assoc).map_err(DocumentCommandError::from_save_core)?;
+            if let Some(id) = document_id {
+                store.record_conflict(id, kind, snapshot.into_bytes());
+            }
+            return Err(DocumentCommandError::new(
+                conflict_error_code(kind),
+                "save conflict detected",
+            ));
+        }
+        Err(other) => return Err(DocumentCommandError::from_save_core(other)),
+    };
+
     let descriptor = build_saved_descriptor(
-        &state,
-        id_opt.as_deref(),
+        store,
+        document_id,
         &path_for_assoc,
         encoding_for_assoc,
         line_ending_for_assoc,
         outcome,
     )?;
-    Ok(Some(descriptor))
+    store.take_save_grant(directory_id);
+    Ok(descriptor)
 }
 
 /// 成功保存后建立描述符并更新可信状态：首次保存生成新 id；另存到新目标沿用 id 关联；
@@ -1350,18 +1753,6 @@ mod tests {
         assert_eq!(store.active_for("doc-2").unwrap().byte_count, 5);
     }
 
-    #[test]
-    fn save_as_rejects_stale_id_before_it_can_be_treated_as_first_save() {
-        let store = DocumentStore::default();
-        let result = trusted_for_save_as(&store, Some("stale-doc"));
-        let Err(err) = result else {
-            panic!("stale id must be rejected");
-        };
-        assert!(matches!(err.code, DocumentErrorCode::UnknownDocument));
-
-        assert!(trusted_for_save_as(&store, None).unwrap().is_none());
-    }
-
     #[cfg(unix)]
     #[test]
     fn saved_descriptor_preserves_the_user_selected_symlink_path() {
@@ -1415,17 +1806,357 @@ mod tests {
     }
 
     #[test]
-    fn default_save_file_name_is_untitled_for_first_save() {
-        assert_eq!(default_save_file_name(None), "Untitled");
+    fn inline_save_draft_uses_trusted_parent_and_untitled_has_no_directory() {
+        use crate::document::test_support::TestDir;
+
+        let dir = TestDir::new();
+        let path = dir.join("notes.md");
+        let trusted = TrustedDocument {
+            path,
+            display_name: "notes.md".to_owned(),
+            ..test_trusted("/tmp/unused.txt")
+        };
+
+        assert_eq!(
+            build_save_as_draft(Some(&trusted)),
+            ("notes.md".to_owned(), Some(dir.path().to_path_buf()))
+        );
+        assert_eq!(build_save_as_draft(None), ("Untitled".to_owned(), None));
     }
 
     #[test]
-    fn default_save_file_name_reuses_display_name_for_existing_doc() {
+    fn prepare_inline_save_issues_default_grant_and_untitled_resets_old_grant() {
+        use crate::document::test_support::TestDir;
+
+        let dir = TestDir::new();
+        let path = dir.join("notes.md");
+        std::fs::write(&path, b"notes").unwrap();
         let trusted = TrustedDocument {
+            path,
             display_name: "notes.md".to_owned(),
-            ..test_trusted("/tmp/notes.md")
+            fingerprint: FileFingerprint::of(b"notes"),
+            byte_count: 5,
+            ..test_trusted("/tmp/unused.txt")
         };
-        assert_eq!(default_save_file_name(Some(&trusted)), "notes.md");
+        let store = DocumentStore::default();
+        let id = store.create_active(trusted);
+
+        let draft = prepare_save_as_inner(&store, Some(id.clone())).unwrap();
+        let directory = draft.directory.unwrap();
+        assert_eq!(draft.file_name, "notes.md");
+        assert_eq!(directory.display_name, directory_display_name(dir.path()));
+        assert!(store.current_save_grant(&directory.id).is_some());
+
+        assert!(store.close_active(&id));
+        let stale_untitled_grant = store
+            .establish_save_grant(None, dir.path().to_path_buf(), "stale".to_owned())
+            .unwrap();
+        let untitled = prepare_save_as_inner(&store, None).unwrap();
+        assert_eq!(untitled.file_name, "Untitled");
+        assert!(untitled.directory.is_none());
+        assert!(store.current_save_grant(&stale_untitled_grant.id).is_none());
+    }
+
+    #[test]
+    fn inline_save_file_name_validation_rejects_path_injection() {
+        assert!(validate_file_name("报告 2026.txt").is_ok());
+        assert!(validate_file_name(".notes").is_ok());
+        for invalid in [
+            "",
+            ".",
+            "..",
+            "nested/name.txt",
+            "nested\\name.txt",
+            "nul\0name",
+        ] {
+            assert_eq!(
+                validate_file_name(invalid),
+                Err(DocumentErrorCode::InvalidFileName)
+            );
+        }
+
+        let base = std::path::Path::new("/trusted/directory");
+        assert_eq!(
+            compose_save_path(base, "报告 2026.txt"),
+            base.join("报告 2026.txt")
+        );
+
+        assert_eq!(
+            decode_file_name_header("%E6%8A%A5%E5%91%8A%202026%25.txt").unwrap(),
+            "报告 2026%.txt"
+        );
+        assert_eq!(
+            decode_file_name_header("bad%2").unwrap_err(),
+            DocumentErrorCode::InvalidFileName
+        );
+        assert_eq!(
+            decode_file_name_header("%2Fescape.txt").unwrap(),
+            "/escape.txt"
+        );
+        assert_eq!(
+            validate_file_name(&decode_file_name_header("%2Fescape.txt").unwrap()),
+            Err(DocumentErrorCode::InvalidFileName)
+        );
+    }
+
+    #[test]
+    fn save_directory_grant_is_bound_replaced_and_cleared_with_document_context() {
+        use crate::document::test_support::TestDir;
+
+        let dir = TestDir::new();
+        let store = DocumentStore::default();
+        let id = store.create_active(test_trusted("/tmp/active.txt"));
+        let first = store
+            .establish_save_grant(
+                Some(id.clone()),
+                dir.path().to_path_buf(),
+                "first".to_owned(),
+            )
+            .unwrap();
+        let stored = store.current_save_grant(&first.id).unwrap();
+        assert!(grant_matches_document(&stored, Some(&id)));
+        assert!(!grant_matches_document(&stored, None));
+
+        let second = store
+            .establish_save_grant(
+                Some(id.clone()),
+                dir.path().to_path_buf(),
+                "second".to_owned(),
+            )
+            .unwrap();
+        assert_ne!(first.id, second.id);
+        assert!(store.current_save_grant(&first.id).is_none());
+        assert!(store.current_save_grant(&second.id).is_some());
+
+        let stale = store.establish_save_grant(
+            Some("stale".to_owned()),
+            dir.path().to_path_buf(),
+            "stale".to_owned(),
+        );
+        assert_eq!(stale.unwrap_err().code, DocumentErrorCode::UnknownDocument);
+        assert!(store.current_save_grant(&second.id).is_some());
+
+        assert!(store.close_active(&id));
+        assert!(store.current_save_grant(&second.id).is_none());
+    }
+
+    #[test]
+    fn candidate_open_invalidates_save_directory_grant_before_document_switch() {
+        use crate::document::test_support::TestDir;
+
+        let dir = TestDir::new();
+        let store = DocumentStore::default();
+        let id = store.create_active(test_trusted("/tmp/active.txt"));
+        let grant = store
+            .establish_save_grant(Some(id), dir.path().to_path_buf(), "target".to_owned())
+            .unwrap();
+
+        store.store_open(
+            "candidate".to_owned(),
+            b"candidate".to_vec(),
+            test_trusted("/tmp/candidate.txt"),
+        );
+        assert!(store.current_save_grant(&grant.id).is_none());
+    }
+
+    #[test]
+    fn preview_reports_existing_and_current_targets_without_writing() {
+        use crate::document::test_support::TestDir;
+
+        let dir = TestDir::new();
+        let current = dir.join("current.txt");
+        let other = dir.join("other.txt");
+        std::fs::write(&current, b"current").unwrap();
+        std::fs::write(&other, b"other").unwrap();
+        let trusted = TrustedDocument {
+            path: current,
+            display_name: "current.txt".to_owned(),
+            fingerprint: FileFingerprint::of(b"current"),
+            byte_count: 7,
+            ..test_trusted("/tmp/unused.txt")
+        };
+
+        assert_eq!(
+            preview_target(dir.path(), "current.txt", Some(&trusted)).unwrap(),
+            TargetPreview {
+                exists: true,
+                is_current_path: true,
+            }
+        );
+        assert_eq!(
+            preview_target(dir.path(), "other.txt", Some(&trusted)).unwrap(),
+            TargetPreview {
+                exists: true,
+                is_current_path: false,
+            }
+        );
+        assert_eq!(
+            preview_target(dir.path(), "missing.txt", Some(&trusted)).unwrap(),
+            TargetPreview {
+                exists: false,
+                is_current_path: false,
+            }
+        );
+        assert_eq!(
+            preview_target(dir.path(), "../escape.txt", Some(&trusted)),
+            Err(DocumentErrorCode::InvalidFileName)
+        );
+    }
+
+    #[test]
+    fn inline_first_save_consumes_grant_only_after_success() {
+        use crate::document::test_support::TestDir;
+
+        let dir = TestDir::new();
+        let store = DocumentStore::default();
+        let grant = store
+            .establish_save_grant(None, dir.path().to_path_buf(), "target".to_owned())
+            .unwrap();
+        let descriptor = tauri::async_runtime::block_on(save_document_as_at_inner(
+            &store,
+            None,
+            &grant.id,
+            "saved.txt",
+            TextEncoding::Utf8 { bom: false },
+            LineEnding::Lf,
+            "saved content".to_owned(),
+        ))
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read(dir.join("saved.txt")).unwrap(),
+            b"saved content"
+        );
+        assert_eq!(descriptor.display_name, "saved.txt");
+        assert!(store.current_save_grant(&grant.id).is_none());
+        assert!(store.active_for(&descriptor.id).is_some());
+    }
+
+    #[test]
+    fn inline_save_failure_keeps_grant_for_retry() {
+        use crate::document::test_support::TestDir;
+
+        let dir = TestDir::new();
+        let store = DocumentStore::default();
+        let grant = store
+            .establish_save_grant(None, dir.path().to_path_buf(), "target".to_owned())
+            .unwrap();
+        let error = tauri::async_runtime::block_on(save_document_as_at_inner(
+            &store,
+            None,
+            &grant.id,
+            "saved.txt",
+            TextEncoding::Gbk,
+            LineEnding::Lf,
+            "emoji 😀".to_owned(),
+        ))
+        .unwrap_err();
+
+        assert_eq!(error.code, DocumentErrorCode::UnencodableContent);
+        assert!(store.current_save_grant(&grant.id).is_some());
+        assert!(!dir.join("saved.txt").exists());
+    }
+
+    #[test]
+    fn inline_save_rejects_missing_and_cross_document_grants() {
+        use crate::document::test_support::TestDir;
+
+        let dir = TestDir::new();
+        let store = DocumentStore::default();
+        let missing = resolve_save_target(&store, None, "missing", "file.txt").unwrap_err();
+        assert_eq!(missing.code, DocumentErrorCode::MissingGrant);
+
+        let id = store.create_active(test_trusted("/tmp/active.txt"));
+        let grant = store
+            .establish_save_grant(Some(id), dir.path().to_path_buf(), "target".to_owned())
+            .unwrap();
+        let mismatch = resolve_save_target(&store, None, &grant.id, "file.txt").unwrap_err();
+        assert_eq!(mismatch.code, DocumentErrorCode::GrantMismatch);
+        assert!(store.current_save_grant(&grant.id).is_some());
+    }
+
+    #[test]
+    fn inline_save_to_current_path_preserves_in_place_conflict_protection() {
+        use crate::document::test_support::TestDir;
+
+        let dir = TestDir::new();
+        let path = dir.join("current.txt");
+        std::fs::write(&path, b"original").unwrap();
+        let trusted = TrustedDocument {
+            path: path.clone(),
+            display_name: "current.txt".to_owned(),
+            fingerprint: FileFingerprint::of(b"original"),
+            byte_count: 8,
+            ..test_trusted("/tmp/unused.txt")
+        };
+        let store = DocumentStore::default();
+        let id = store.create_active(trusted);
+        let grant = store
+            .establish_save_grant(
+                Some(id.clone()),
+                dir.path().to_path_buf(),
+                "target".to_owned(),
+            )
+            .unwrap();
+        std::fs::write(&path, b"external change").unwrap();
+
+        let error = tauri::async_runtime::block_on(save_document_as_at_inner(
+            &store,
+            Some(&id),
+            &grant.id,
+            "current.txt",
+            TextEncoding::Utf8 { bom: false },
+            LineEnding::Lf,
+            "my edits".to_owned(),
+        ))
+        .unwrap_err();
+
+        assert_eq!(error.code, DocumentErrorCode::SaveConflictContentChanged);
+        assert_eq!(std::fs::read(&path).unwrap(), b"external change");
+        assert!(store.current_save_grant(&grant.id).is_some());
+        assert_eq!(store.conflict_for(&id).unwrap().snapshot, b"my edits");
+    }
+
+    #[test]
+    fn inline_save_to_missing_current_path_routes_target_missing() {
+        use crate::document::test_support::TestDir;
+
+        let dir = TestDir::new();
+        let path = dir.join("current.txt");
+        std::fs::write(&path, b"original").unwrap();
+        let trusted = TrustedDocument {
+            path: path.clone(),
+            display_name: "current.txt".to_owned(),
+            fingerprint: FileFingerprint::of(b"original"),
+            byte_count: 8,
+            ..test_trusted("/tmp/unused.txt")
+        };
+        let store = DocumentStore::default();
+        let id = store.create_active(trusted);
+        let grant = store
+            .establish_save_grant(
+                Some(id.clone()),
+                dir.path().to_path_buf(),
+                "target".to_owned(),
+            )
+            .unwrap();
+        std::fs::remove_file(&path).unwrap();
+
+        let error = tauri::async_runtime::block_on(save_document_as_at_inner(
+            &store,
+            Some(&id),
+            &grant.id,
+            "current.txt",
+            TextEncoding::Utf8 { bom: false },
+            LineEnding::Lf,
+            "my edits".to_owned(),
+        ))
+        .unwrap_err();
+
+        assert_eq!(error.code, DocumentErrorCode::SaveConflictTargetMissing);
+        assert!(!path.exists());
+        assert!(store.current_save_grant(&grant.id).is_some());
+        assert_eq!(store.conflict_for(&id).unwrap().snapshot, b"my edits");
     }
 
     #[test]

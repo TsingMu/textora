@@ -6,21 +6,9 @@
 
 ## 进行中
 
-暂无进行中的任务。下一个已承诺待办为「实现另存为内嵌文件名与保存位置面板」。
+暂无进行中的任务。下一个已承诺待办为「完成另存为内嵌目标面板的集成验收与文档收尾」。
 
 ## 已承诺待办
-
-### 实现另存为内嵌文件名与保存位置面板
-
-- **状态**：待开始
-- **Feature Spec**：`docs/features/save-as-inline-target-panel.md`
-- **目标**：把 Save As/Untitled Save 的主对话框改为直接展示文件名与保存位置，并使用主界面右下角当前格式设置完成一次单文档保存。
-- **范围**：应用内目标面板默认展示文件名与保存位置；文件名可编辑；保存位置可通过受信任入口选择；确认后使用右下角当前编码/换行并复用既有安全保存流程；取消保持当前会话不变。
-- **非范围**：右下角格式设置 UI 本身、最近目录持久化、收藏目录、批量另存为、多标签、自动追加扩展名、完整集成验收与 README 收尾。
-- **依赖**：「建立主界面右下角编码与换行设置」已完成。
-- **拆分检查**：本任务只交付另存为目标面板和单文档保存闭环；完整回归、macOS 真实交互矩阵和文档收尾拆到后续集成验收任务。
-- **实施要点**：先明确 Rust 侧可信目标草稿或目录选择契约，避免前端获得宽泛文件系统能力；保持二进制 IPC、编码限制、冲突检测和只读保护不变；选择当前原路径仍走普通保存同等保护。
-- **完成标准**：前端测试覆盖默认目标展示、文件名编辑、位置选择取消、使用右下角格式保存、成功关联和取消恢复；Rust 测试覆盖目标契约与当前原路径路由；`npm run check`、`cargo test --manifest-path src-tauri/Cargo.toml`、`npm run build`、`git diff --check` 通过。
 
 ### 完成另存为内嵌目标面板的集成验收与文档收尾
 
@@ -47,6 +35,24 @@
 - **完成标准**：多标签规格状态更新为已确认；`current.md` 中出现第一个多标签实现任务，且没有其他任务处于进行中。
 
 ## 最近完成
+
+### 实现另存为内嵌文件名与位置面板（前端）并移除旧流程
+
+- **状态**：已完成
+- **开始日期**：2026-08-04
+- **完成日期**：2026-08-04
+- **Feature Spec**：`docs/features/save-as-inline-target-panel.md`
+- **结果**：Save As 与 Untitled Save 已切换为应用内目标面板：异步取得 Rust 可信默认文件名与目录 grant，直接编辑文件名、显示/更改位置并展示右下角当前格式摘要；文件名非法、位置未选或 Mixed 尚未在右下角明确确认 LF/CRLF 时阻止保存。确认前调用 `preview_save_target`；不同已存在目标显示 Replace 二次确认，当前原路径跳过该提示并继续走 `InPlace` 保护。保存通过 Raw body + grant/file-name/format headers 调用 `save_document_as_at`，Unicode 文件名使用 percent-encoding；成功关联新目标，普通取消、Escape 与目录选择取消均保持会话不变，关闭意图只在保存成功后续行。TOCTOU 冲突保留面板与 grant 供重试；当前路径内容冲突/目标缺失分别进入既有冲突与缺失流程。前端新增三个 grant 错误码识别与安全文案。Rust 侧补齐缺失当前原路径优先按 `InPlace` 路由并分类/记录冲突，移除旧 `save_document_as` 命令、旧前端 `saveAs` 和格式模态；capability 未变化。
+- **验证**：`npm run check` 通过（typecheck + vitest **95 passed / 0 failed**），新增覆盖默认目标、文件名修改、位置选择取消、Escape、右下角格式写入、Replace 与当前原路径跳过、Mixed 明确选择、Unicode Raw IPC、成功关联、关闭意图续行、TOCTOU 重试和 target-missing 路由；`cargo fmt --manifest-path src-tauri/Cargo.toml --check`、`cargo check --manifest-path src-tauri/Cargo.toml --all-targets`、`cargo test --manifest-path src-tauri/Cargo.toml`（**112 passed / 0 failed**）、`npm run build`、`git diff --check` 通过。macOS 真实交互与 README/Feature Spec 收尾按非范围留给下一项集成验收任务。
+
+### 实现另存为 Rust 目录授权与保存契约
+
+- **状态**：已完成
+- **开始日期**：2026-08-04
+- **完成日期**：2026-08-04
+- **Feature Spec**：`docs/features/save-as-inline-target-panel.md`
+- **结果**：Rust 侧新增内嵌另存为的可信目标契约。`DocumentStore` 只保存一个绑定当前活动文档（Untitled 为 `None`）的目录 grant；新授权替换旧授权，候选打开、文档切换/创建、关闭与成功保存均使其失效，保存失败则保留供重试。新增 `prepare_save_as`、`pick_save_directory`、`preview_save_target`、`save_document_as_at`：目录只能由可信文档父目录或 Rust 系统目录面板取得，前端只持 grant id、显示名和文件名；文件名按单一分量校验，经 UTF-8 percent-encoding header 支持 Unicode，再由 Rust 与授权目录拼接。保存复用 `choose_save_target`、安全保存核心和 `build_saved_descriptor`，选择当前原路径仍走 `InPlace` 冲突/只读保护；新增稳定错误码 `invalid-file-name`、`missing-grant`、`grant-mismatch`。旧 `save_document_as` 与 capability 保持不变，前端面板和旧流程移除留给下一切片。
+- **验证**：`cargo fmt --manifest-path src-tauri/Cargo.toml --check`、`cargo check --manifest-path src-tauri/Cargo.toml --all-targets`、`git diff --check` 通过；`cargo test --manifest-path src-tauri/Cargo.toml` **114 passed / 0 failed**，新增 10 项测试覆盖默认草稿、Unicode/非法文件名、授权绑定/替换/失效、候选打开清理、目标预览、成功单次消费、失败保留重试、缺失/跨文档授权拒绝和当前原路径冲突保护；`npm run check` 通过（typecheck + vitest **86 passed / 0 failed**）。
 
 ### 修复右下角格式弹层在文档切换时保留旧草稿
 

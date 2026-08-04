@@ -32,27 +32,56 @@ import {
   isDocumentCommandError,
   lineEndingDisplayName,
   lineEndingToChoice,
+  pickSaveDirectory,
+  prepareSaveAs,
+  previewSaveTarget,
   readDocumentContent,
   reloadFromConflict,
   requestAppExit,
-  saveAs,
+  saveAsAt,
   saveDocument,
   selectAndOpenDocument,
   type DocumentCommandError,
   type EncodingChoice,
   type HealthStatus,
   type LineEndingChoice,
+  type SaveDirectoryGrant,
 } from "./platform";
 
 const initialDocument = createNewDocument();
 type ConflictOperationStatus = "idle" | "canceling" | "reloading" | "overwriting";
 type FileMissingOperationStatus = "idle" | "keeping" | "discarding";
+type SaveAsPanelStatus =
+  | "preparing"
+  | "idle"
+  | "choosing-directory"
+  | "previewing"
+  | "saving";
+type SaveAsPanelState = {
+  open: boolean;
+  status: SaveAsPanelStatus;
+  fileName: string;
+  directory: SaveDirectoryGrant | null;
+  replacePending: boolean;
+  errorMessage: string | null;
+};
 type CloseKind = "window" | "app-exit";
 type CloseIntent = {
   documentId: string;
   content: string;
   kind: CloseKind;
 };
+
+function invalidSaveFileName(fileName: string): boolean {
+  return (
+    fileName.length === 0 ||
+    fileName === "." ||
+    fileName === ".." ||
+    fileName.includes("/") ||
+    fileName.includes("\\") ||
+    fileName.includes("\0")
+  );
+}
 
 function App() {
   const [session, setSession] = useState<DocumentSession>(initialDocument);
@@ -62,11 +91,14 @@ function App() {
     status: ConflictOperationStatus;
     errorMessage: string | null;
   }>({ status: "idle", errorMessage: null });
-  const [saveAsDialog, setSaveAsDialog] = useState<{
-    open: boolean;
-    encoding: EncodingChoice;
-    lineEnding: LineEndingChoice;
-  }>({ open: false, encoding: "utf8", lineEnding: "lf" });
+  const [saveAsPanel, setSaveAsPanel] = useState<SaveAsPanelState>({
+    open: false,
+    status: "idle",
+    fileName: "",
+    directory: null,
+    replacePending: false,
+    errorMessage: null,
+  });
   const [fileMissingPending, setFileMissingPending] = useState(false);
   const [fileMissingOperation, setFileMissingOperation] = useState<{
     status: FileMissingOperationStatus;
@@ -82,6 +114,7 @@ function App() {
     lineEnding: lineEndingToChoice(initialDocument.lineEnding),
   });
   const [formatSettingsOpen, setFormatSettingsOpen] = useState(false);
+  const [mixedLineEndingConfirmed, setMixedLineEndingConfirmed] = useState(true);
   const [formatDraft, setFormatDraft] = useState<{
     encoding: EncodingChoice;
     lineEnding: LineEndingChoice;
@@ -101,6 +134,8 @@ function App() {
   const closeAuthorizationRef = useRef<{
     validDocumentIds: readonly string[];
   } | null>(null);
+  const saveAsPanelRevisionRef = useRef(0);
+  const saveFileNameInputRef = useRef<HTMLInputElement>(null);
   sessionRef.current = session;
   fileMissingPendingRef.current = fileMissingPending;
 
@@ -131,6 +166,7 @@ function App() {
     setSaveFormat(documentFormat);
     setFormatDraft(documentFormat);
     setFormatSettingsOpen(false);
+    setMixedLineEndingConfirmed(session.lineEnding !== "mixed");
   }, [session.id, session.encoding, session.lineEnding]);
 
   // 窗口关闭拦截 + 聚焦缺失检查（合并到同一 effect 以共享一次 dynamic import）。
@@ -377,7 +413,7 @@ function App() {
         setSession((s) => failSave(s, error));
       }
     } else {
-      openSaveAsDialog();
+      void openSaveAsPanel();
     }
   }
 
@@ -532,22 +568,111 @@ function App() {
     }
   }
 
-  async function runSaveAsPipeline(
-    id: string | null,
-    encoding: EncodingChoice,
-    lineEnding: LineEndingChoice,
-    content: string,
-  ) {
-    const closeIntent = closeIntentRef.current;
+  async function openSaveAsPanel() {
+    const current = sessionRef.current;
+    const documentId = current.path === null ? null : current.id;
+    const revision = saveAsPanelRevisionRef.current + 1;
+    saveAsPanelRevisionRef.current = revision;
+    setSaveAsPanel({
+      open: true,
+      status: "preparing",
+      fileName: current.displayName,
+      directory: null,
+      replacePending: false,
+      errorMessage: null,
+    });
     try {
-      const descriptor = await saveAs({ id, encoding, lineEnding, content });
-      if (descriptor === null) {
-        // 用户在系统保存对话框取消；内容、关联与未保存状态保持不变。
-        clearCloseIntent();
-        setSession((current) => cancelSave(current));
+      const draft = await prepareSaveAs(documentId);
+      if (saveAsPanelRevisionRef.current !== revision) return;
+      setSaveAsPanel({
+        open: true,
+        status: "idle",
+        fileName: draft.fileName,
+        directory: draft.directory,
+        replacePending: false,
+        errorMessage: null,
+      });
+    } catch (err) {
+      if (saveAsPanelRevisionRef.current !== revision) return;
+      const error: DocumentCommandError = isDocumentCommandError(err)
+        ? err
+        : { code: "save-failed", message: "prepare save-as failed" };
+      setSaveAsPanel((panel) => ({
+        ...panel,
+        status: "idle",
+        errorMessage: describeSaveError(error),
+      }));
+    }
+  }
+
+  function cancelSaveAsPanel() {
+    if (saveAsPanel.status === "saving") return;
+    saveAsPanelRevisionRef.current += 1;
+    clearCloseIntent();
+    setSaveAsPanel((panel) => ({ ...panel, open: false }));
+  }
+
+  async function handleChooseSaveDirectory() {
+    if (saveAsPanel.status !== "idle") return;
+    const current = sessionRef.current;
+    const documentId = current.path === null ? null : current.id;
+    const revision = saveAsPanelRevisionRef.current;
+    setSaveAsPanel((panel) => ({
+      ...panel,
+      status: "choosing-directory",
+      replacePending: false,
+      errorMessage: null,
+    }));
+    try {
+      const directory = await pickSaveDirectory(documentId);
+      if (saveAsPanelRevisionRef.current !== revision) return;
+      if (directory === null) {
+        cancelSaveAsPanel();
         return;
       }
-      setSession((current) => commitSavedAs(current, descriptor));
+      setSaveAsPanel((panel) => ({
+        ...panel,
+        status: "idle",
+        directory,
+      }));
+    } catch (err) {
+      if (saveAsPanelRevisionRef.current !== revision) return;
+      const error: DocumentCommandError = isDocumentCommandError(err)
+        ? err
+        : { code: "save-failed", message: "directory selection failed" };
+      setSaveAsPanel((panel) => ({
+        ...panel,
+        status: "idle",
+        errorMessage: describeSaveError(error),
+      }));
+    }
+  }
+
+  async function performSaveAs(panel: SaveAsPanelState) {
+    const current = sessionRef.current;
+    const documentId = current.path === null ? null : current.id;
+    const closeIntent = closeIntentRef.current;
+    setSaveAsPanel((value) => ({
+      ...value,
+      status: "saving",
+      errorMessage: null,
+    }));
+    setSession((value) => ({
+      ...value,
+      saveStatus: "saving",
+      saveError: null,
+    }));
+    try {
+      const descriptor = await saveAsAt({
+        id: documentId,
+        directoryId: panel.directory!.id,
+        fileName: panel.fileName,
+        encoding: saveFormat.encoding,
+        lineEnding: saveFormat.lineEnding,
+        content: current.content,
+      });
+      setSaveAsPanel((value) => ({ ...value, open: false, status: "idle" }));
+      setSession((value) => commitSavedAs(value, descriptor));
       if (closeIntent !== null) {
         await executeAuthorizedClose(closeIntent.kind, [
           closeIntent.documentId,
@@ -559,16 +684,84 @@ function App() {
       const error: DocumentCommandError = isDocumentCommandError(err)
         ? err
         : { code: "save-failed", message: "save request failed" };
-      setSession((current) => failSave(current, error));
+      if (error.code === "save-conflict-content-changed") {
+        setSaveAsPanel((value) => ({ ...value, open: false, status: "idle" }));
+        setConflictOperation({ status: "idle", errorMessage: null });
+        setSession((value) => failSave(value, error));
+        return;
+      }
+      if (error.code === "save-conflict-target-missing") {
+        setSaveAsPanel((value) => ({ ...value, open: false, status: "idle" }));
+        targetCheckRevisionRef.current += 1;
+        targetCheckInFlightRef.current = null;
+        fileMissingPendingRef.current = true;
+        setFileMissingOperation({ status: "idle", errorMessage: null });
+        setFileMissingPending(true);
+        return;
+      }
+      setSession((value) => cancelSave(value));
+      setSaveAsPanel((value) => ({
+        ...value,
+        status: "idle",
+        replacePending: false,
+        directory:
+          error.code === "missing-grant" || error.code === "grant-mismatch"
+            ? null
+            : value.directory,
+        errorMessage: describeSaveError(error),
+      }));
     }
   }
 
-  function openSaveAsDialog() {
-    setSaveAsDialog({
-      open: true,
-      encoding: encodingToChoice(session.encoding),
-      lineEnding: lineEndingToChoice(session.lineEnding),
-    });
+  async function handleSaveAsConfirm() {
+    if (
+      saveAsPanel.status !== "idle" ||
+      saveAsPanel.directory === null ||
+      invalidSaveFileName(saveAsPanel.fileName) ||
+      (session.lineEnding === "mixed" && !mixedLineEndingConfirmed)
+    ) {
+      return;
+    }
+    if (saveAsPanel.replacePending) {
+      await performSaveAs(saveAsPanel);
+      return;
+    }
+
+    setSaveAsPanel((panel) => ({
+      ...panel,
+      status: "previewing",
+      errorMessage: null,
+    }));
+    const documentId = session.path === null ? null : session.id;
+    try {
+      const preview = await previewSaveTarget({
+        id: documentId,
+        directoryId: saveAsPanel.directory.id,
+        fileName: saveAsPanel.fileName,
+      });
+      if (preview.exists && !preview.isCurrentPath) {
+        setSaveAsPanel((panel) => ({
+          ...panel,
+          status: "idle",
+          replacePending: true,
+        }));
+        return;
+      }
+      await performSaveAs(saveAsPanel);
+    } catch (err) {
+      const error: DocumentCommandError = isDocumentCommandError(err)
+        ? err
+        : { code: "save-failed", message: "target preview failed" };
+      setSaveAsPanel((panel) => ({
+        ...panel,
+        status: "idle",
+        directory:
+          error.code === "missing-grant" || error.code === "grant-mismatch"
+            ? null
+            : panel.directory,
+        errorMessage: describeSaveError(error),
+      }));
+    }
   }
 
   function handleOpenClick() {
@@ -588,7 +781,7 @@ function App() {
       if (isBusy(session)) {
         return;
       }
-      openSaveAsDialog();
+      void openSaveAsPanel();
       return;
     }
     const next = requestSave(session);
@@ -605,23 +798,7 @@ function App() {
     if (isBusy(session)) {
       return;
     }
-    openSaveAsDialog();
-  }
-
-  function handleSaveAsConfirm() {
-    const { encoding, lineEnding } = saveAsDialog;
-    const id = session.path !== null ? session.id : null;
-    const content = session.content;
-    setSaveAsDialog((current) => ({ ...current, open: false }));
-    setSession((current) => ({ ...current, saveStatus: "saving", saveError: null }));
-    void runSaveAsPipeline(id, encoding, lineEnding, content);
-  }
-
-  function handleSaveAsCancel() {
-    if (closeIntentRef.current !== null) {
-      clearCloseIntent();
-    }
-    setSaveAsDialog((current) => ({ ...current, open: false }));
+    void openSaveAsPanel();
   }
 
   function openFormatSettings() {
@@ -636,6 +813,9 @@ function App() {
 
   function confirmFormatSettings() {
     setSaveFormat(formatDraft);
+    if (session.lineEnding === "mixed") {
+      setMixedLineEndingConfirmed(true);
+    }
     setFormatSettingsOpen(false);
   }
 
@@ -774,15 +954,42 @@ function App() {
     return () => window.removeEventListener("keydown", handleEscape);
   }, [closeConfirmPending]);
 
+  useEffect(() => {
+    if (!saveAsPanel.open || saveAsPanel.status === "saving") return;
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        cancelSaveAsPanel();
+      }
+    };
+    window.addEventListener("keydown", handleEscape);
+    return () => window.removeEventListener("keydown", handleEscape);
+  }, [saveAsPanel.open, saveAsPanel.status]);
+
+  useEffect(() => {
+    if (saveAsPanel.open && saveAsPanel.status === "idle") {
+      saveFileNameInputRef.current?.focus();
+      saveFileNameInputRef.current?.select();
+    }
+  }, [saveAsPanel.open, saveAsPanel.status]);
+
   const busy =
-    isBusy(session) || saveAsDialog.open || conflictPending || fileMissingPending || closeConfirmPending;
+    isBusy(session) ||
+    saveAsPanel.open ||
+    conflictPending ||
+    fileMissingPending ||
+    closeConfirmPending;
   busyRef.current = busy;
   const editorLocked =
     session.openStatus === "loading" ||
     session.saveStatus === "saving" ||
     conflictPending ||
     fileMissingPending ||
-    closeConfirmPending;
+    closeConfirmPending ||
+    saveAsPanel.open;
+  const saveFileNameInvalid = invalidSaveFileName(saveAsPanel.fileName);
+  const mixedSaveBlocked =
+    session.lineEnding === "mixed" && !mixedLineEndingConfirmed;
   const canSave =
     !session.readOnly && !busy && (session.path === null || session.isDirty);
   const canSaveAs = session.path !== null && !busy;
@@ -1042,59 +1249,117 @@ function App() {
         </div>
       )}
 
-      {saveAsDialog.open && (
+      {saveAsPanel.open && (
         <div
           className="confirm-overlay"
           role="dialog"
           aria-modal="true"
-          aria-label="Choose save format and location"
+          aria-label="Save file as"
         >
           <div className="confirm-dialog save-as-dialog">
             <p className="confirm-message">
-              Choose the file format first. Next, macOS will ask for the file name and location.
+              Choose the file name and save location. The current format comes
+              from the setting in the bottom-right corner.
             </p>
             <label className="save-as-field">
-              <span>Encoding</span>
-              <select
-                value={saveAsDialog.encoding}
+              <span>File name</span>
+              <input
+                ref={saveFileNameInputRef}
+                type="text"
+                value={saveAsPanel.fileName}
                 onChange={(event) =>
-                  setSaveAsDialog((current) => ({
+                  setSaveAsPanel((current) => ({
                     ...current,
-                    encoding: event.target.value as EncodingChoice,
+                    fileName: event.target.value,
+                    replacePending: false,
+                    errorMessage: null,
                   }))
                 }
-              >
-                <option value="utf8">UTF-8</option>
-                <option value="utf8-bom">UTF-8 (BOM)</option>
-                <option value="gbk">GBK / CP936</option>
-              </select>
+                disabled={saveAsPanel.status !== "idle"}
+                aria-invalid={saveFileNameInvalid}
+              />
             </label>
-            <label className="save-as-field">
-              <span>Line ending</span>
-              <select
-                value={saveAsDialog.lineEnding}
-                onChange={(event) =>
-                  setSaveAsDialog((current) => ({
-                    ...current,
-                    lineEnding: event.target.value as LineEndingChoice,
-                  }))
-                }
+            {saveFileNameInvalid && saveAsPanel.status === "idle" && (
+              <p className="save-as-validation" role="alert">
+                Enter a file name without path separators.
+              </p>
+            )}
+            <div className="save-as-field save-as-location-field">
+              <span>Location</span>
+              <span className="save-as-location">
+                {saveAsPanel.directory?.displayName ?? "No location selected"}
+              </span>
+              <button
+                type="button"
+                className="save-as-location-button"
+                onClick={handleChooseSaveDirectory}
+                disabled={saveAsPanel.status !== "idle"}
               >
-                <option value="lf">LF</option>
-                <option value="crlf">CRLF</option>
-              </select>
-            </label>
+                {saveAsPanel.status === "choosing-directory"
+                  ? "Choosing…"
+                  : "Choose location…"}
+              </button>
+            </div>
+            <div className="save-as-format-summary">
+              <span>Format</span>
+              <strong>
+                {encodingChoiceDisplayName(saveFormat.encoding)} · {" "}
+                {lineEndingDisplayName(saveFormat.lineEnding)}
+              </strong>
+            </div>
+            {mixedSaveBlocked && (
+              <p className="save-as-validation" role="alert">
+                Content has mixed line endings. Cancel this panel, then choose
+                LF or CRLF in the bottom-right format setting before saving.
+              </p>
+            )}
+            {saveAsPanel.replacePending && (
+              <p className="save-as-replace-warning" role="alert">
+                A file with this name already exists in the selected location.
+                Replace it?
+              </p>
+            )}
+            {saveAsPanel.errorMessage !== null && (
+              <p className="save-as-validation" role="alert">
+                {saveAsPanel.errorMessage}
+              </p>
+            )}
+            {saveAsPanel.status === "preparing" && (
+              <p className="save-as-progress" role="status">
+                Preparing save target…
+              </p>
+            )}
             <div className="confirm-actions">
-              <button type="button" className="confirm-cancel" onClick={handleSaveAsCancel}>
+              <button
+                type="button"
+                className="confirm-cancel"
+                onClick={cancelSaveAsPanel}
+                disabled={saveAsPanel.status === "saving"}
+              >
                 Cancel
               </button>
               <button
                 type="button"
-                className="confirm-discard"
+                className={
+                  saveAsPanel.replacePending
+                    ? "confirm-replace"
+                    : "confirm-save"
+                }
                 onClick={handleSaveAsConfirm}
-                autoFocus
+                disabled={
+                  saveAsPanel.status !== "idle" ||
+                  saveAsPanel.directory === null ||
+                  saveFileNameInvalid ||
+                  mixedSaveBlocked
+                }
               >
-                Choose Name and Location…
+                {saveAsPanel.status === "saving"
+                  ? "Saving…"
+                  : saveAsPanel.status === "previewing"
+                    ? "Checking…"
+                    : saveAsPanel.replacePending
+                      ? "Replace"
+                      : "Save"}
               </button>
             </div>
           </div>
