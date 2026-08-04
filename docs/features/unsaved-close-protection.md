@@ -69,7 +69,7 @@ Textora 已能安全地打开、保存、另存为并解决外部修改冲突，
 - [x] `⌘Q`、应用菜单 Quit 与 Dock Quit 对未保存文档执行相同保护；取消后应用和窗口继续可用，保存或明确不保存后正常退出。
 - [x] 重复窗口关闭/退出以及退出同时产生的窗口事件只形成一个决策；忙碌或已有提示时不叠加关闭确认或排队稍后关闭。
 - [x] 自动化测试覆盖关闭决策状态机、普通保存/首次保存/另存为成功、取消、失败、冲突、文件缺失、过期授权、重复事件和窗口/应用退出归并。
-- [x] macOS 13+ 自动化、构建、启动及真实交互验收通过，且前端未获得宽泛文件系统、shell、网络或窗口权限。
+- [x] macOS 13+ 自动化、构建、启动及真实交互验收通过；前端仅获得关闭事件链所需的 `close`/`destroy` 窗口生命周期权限，未获得宽泛文件系统、shell、网络或其他窗口控制权限。
 
 ## 依赖与约束
 
@@ -87,4 +87,4 @@ Textora 已能安全地打开、保存、另存为并解决外部修改冲突，
 
 - **自动化（2026-07-31）**：`cargo fmt --check`、`cargo check --all-targets`、`cargo test`（**102 passed / 0 failed**，含 `should_guard_user_exit` 判定）；`npm run check`（**80 passed / 0 failed**，覆盖主窗口关闭决策、过期授权、保存/首次保存/另存为成功、取消、失败、冲突、目标缺失、Escape、重复事件归并、忙碌互斥，以及应用退出取消保护、确认后保存/不保存续行经 `request_app_exit` 退出、续行各失败分支不退出）；`npm run build`、`npm run tauri -- build`（生成 `Textora.app`）、`git diff --check` 均通过。Clippy 未运行（stable 工具链缺组件）。
 - **macOS 真实交互（2026-07-31，用户确认）**：窗口关闭按钮与 `⌘W`、`⌘Q`、应用菜单 Quit、Dock Quit 对未保存文档的保护与取消/保存/不保存续行均符合预期；确认或文件操作提示期间重复触发关闭/退出只维持一个提示，不叠加或排队。
-- **权限**：前端 capability 仅 `core:app:default` 与最小事件监听 `core:event:allow-listen`/`allow-unlisten`，未授予宽泛文件系统、shell、网络或窗口控制权限。
+- **权限（2026-08-04 修正）**：前端 capability 包含 `core:app:default`、最小事件监听 `core:event:allow-listen`/`allow-unlisten`，以及关闭事件链必需的 `core:window:allow-close`/`allow-destroy`。`onCloseRequested` 监听器存在时 Tauri 会先阻止原生关闭，未调用 `preventDefault()` 后由 JS API 执行 `destroy()`；确认后的授权续行会调用 `close()`，因此两项生命周期权限缺一都会导致真实窗口无法关闭。未授予宽泛文件系统、shell、网络或其他窗口控制权限。

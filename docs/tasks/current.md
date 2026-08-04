@@ -6,21 +6,9 @@
 
 ## 进行中
 
-暂无进行中的任务。下一个已承诺待办为「完成另存为内嵌目标面板的集成验收与文档收尾」。
+暂无进行中的任务。下一个已承诺待办为「确认多标签会话规格与首批任务拆分」。
 
 ## 已承诺待办
-
-### 完成另存为内嵌目标面板的集成验收与文档收尾
-
-- **状态**：待开始
-- **Feature Spec**：`docs/features/save-as-inline-target-panel.md`
-- **目标**：组合验证新的另存为目标面板，完成 macOS 真实交互验收，并把规格、README 和当前任务状态收口。
-- **范围**：执行完整自动化、构建与 macOS 真实交互验收；核对文件名、位置、默认格式、主界面右下角格式覆盖、Mixed 阻断、取消恢复、当前原路径冲突保护、只读源另存为；根据真实结果更新 Feature Spec、README 和 `current.md`。
-- **非范围**：新增主要交互、最近目录、多标签、列块编辑、Markdown。
-- **依赖**：「实现另存为内嵌文件名与保存位置面板」已完成。
-- **拆分检查**：本任务只负责组合验证、真实平台确认与文档收尾，不再承担大块新行为。
-- **实施要点**：只记录实际执行过的验证；若 macOS 原生目录选择或权限模型导致体验降级，应在规格中如实记录，不静默扩大权限。
-- **完成标准**：Feature Spec 状态更新为已完成或记录真实降级；README 当前状态同步；`current.md` 记录实际验证结果。
 
 ### 确认多标签会话规格与首批任务拆分
 
@@ -35,6 +23,24 @@
 - **完成标准**：多标签规格状态更新为已确认；`current.md` 中出现第一个多标签实现任务，且没有其他任务处于进行中。
 
 ## 最近完成
+
+### 完成另存为内嵌目标面板的集成验收与文档收尾
+
+- **状态**：已完成
+- **开始日期**：2026-08-04
+- **完成日期**：2026-08-04
+- **Feature Spec**：`docs/features/save-as-inline-target-panel.md`
+- **结果**：组合验证另存为内嵌目标面板并完成文档收尾。Untitled 首次保存与 Save As 均在应用内直接展示文件名、可信位置和右下角当前格式摘要；目录由 macOS 面板授权。取消保持会话不变；UTF-8 BOM/CRLF 覆盖、保存后普通保存续写、Mixed 阻断及明确归一、当前原路径冲突保护、只读源另存为均符合规格。Feature Spec 状态改为「已完成」，全部验收条件已核对，README 同步当前状态。
+- **验证**：`npm run check` 通过（typecheck + vitest **96 passed / 0 failed**）；`cargo fmt --manifest-path src-tauri/Cargo.toml --check`、`cargo check --manifest-path src-tauri/Cargo.toml --all-targets`、`cargo test --manifest-path src-tauri/Cargo.toml`（**112 passed / 0 failed**）、`npm run build`、`npm run tauri -- build` 与 `git diff --check` 均通过并生成 `Textora.app`。2026-08-04 通过 Computer Use 在 release 应用与临时目录完成上述真实 macOS 交互；磁盘字节与权限/哈希检查符合预期。
+
+### 修复主窗口关闭权限缺失
+
+- **状态**：已完成
+- **开始日期**：2026-08-04
+- **完成日期**：2026-08-04
+- **Feature Spec**：`docs/features/unsaved-close-protection.md`
+- **结果**：为主窗口 capability 增加关闭事件链必需且范围最小的 `core:window:allow-close` 与 `core:window:allow-destroy`。`onCloseRequested` 放行后的隐式 `destroy()` 和确认后的程序化 `close()` 均可通过 Tauri ACL；未扩大到 `core:window:default`，关闭确认状态机与应用退出策略未改动。新增 capability 清单回归测试，防止前端窗口 mock 再次掩盖真实权限缺口；Feature Spec 同步更正权限记录。
+- **验证**：`npm run check` 通过（typecheck + vitest **96 passed / 0 failed**，含新增 capability 回归测试）；`cargo fmt --manifest-path src-tauri/Cargo.toml --check` 与 `cargo test --manifest-path src-tauri/Cargo.toml`（**112 passed / 0 failed**）通过；`npm run tauri -- build` 通过并生成 `Textora.app`；`git diff --check` 通过。真实窗口按钮复验需重启 dev 应用后执行。
 
 ### 实现另存为内嵌文件名与位置面板（前端）并移除旧流程
 
