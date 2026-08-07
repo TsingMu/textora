@@ -1,6 +1,20 @@
 import { basicSetup } from "codemirror";
-import { Compartment, EditorState } from "@codemirror/state";
-import { EditorView, keymap } from "@codemirror/view";
+import {
+  Compartment,
+  EditorSelection,
+  EditorState,
+  Prec,
+  type ChangeSpec,
+  type Extension,
+  type TransactionSpec,
+} from "@codemirror/state";
+import {
+  type Command,
+  crosshairCursor,
+  EditorView,
+  keymap,
+  rectangularSelection,
+} from "@codemirror/view";
 import { defaultKeymap, historyKeymap } from "@codemirror/commands";
 import { useEffect, useRef } from "react";
 
@@ -9,6 +23,95 @@ type EditorProps = {
   disabled?: boolean;
   onChange: (content: string) => void;
 };
+
+type ColumnBlockDeleteDirection = "backward" | "forward";
+
+export function columnBlockDeleteSpec(
+  state: EditorState,
+  direction: ColumnBlockDeleteDirection,
+): TransactionSpec | null {
+  const ranges = state.selection.ranges;
+  if (ranges.length < 2) {
+    return null;
+  }
+
+  const edits: { change: ChangeSpec; cursor: number }[] = [];
+  const seen = new Set<string>();
+  for (const range of ranges) {
+    let from = range.from;
+    let to = range.to;
+
+    if (range.empty) {
+      const line = state.doc.lineAt(range.from);
+      if (direction === "backward") {
+        if (range.from <= line.from) {
+          continue;
+        }
+        from = range.from - 1;
+        to = range.from;
+      } else {
+        if (range.from >= line.to) {
+          continue;
+        }
+        from = range.from;
+        to = range.from + 1;
+      }
+    }
+
+    if (from === to) {
+      continue;
+    }
+
+    const key = `${from}:${to}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    edits.push({ change: { from, to }, cursor: from });
+  }
+
+  if (edits.length === 0) {
+    return null;
+  }
+
+  const changes = edits.map((edit) => edit.change);
+  const changeSet = state.changes(changes);
+  return {
+    changes,
+    selection: EditorSelection.create(
+      edits.map((edit) =>
+        EditorSelection.cursor(changeSet.mapPos(edit.cursor, -1)),
+      ),
+    ),
+    scrollIntoView: true,
+    userEvent: direction === "backward" ? "delete.backward" : "delete.forward",
+  };
+}
+
+export function columnBlockDeleteCommand(
+  direction: ColumnBlockDeleteDirection,
+): Command {
+  return (view) => {
+    const spec = columnBlockDeleteSpec(view.state, direction);
+    if (spec === null) {
+      return false;
+    }
+    view.dispatch(spec);
+    return true;
+  };
+}
+
+export const columnBlockSelectionExtensions: Extension = [
+  EditorState.allowMultipleSelections.of(true),
+  rectangularSelection(),
+  crosshairCursor(),
+  Prec.high(
+    keymap.of([
+      { key: "Backspace", run: columnBlockDeleteCommand("backward") },
+      { key: "Delete", run: columnBlockDeleteCommand("forward") },
+    ]),
+  ),
+];
 
 export function Editor({ content, disabled = false, onChange }: EditorProps) {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -28,6 +131,7 @@ export function Editor({ content, disabled = false, onChange }: EditorProps) {
       doc: content,
       extensions: [
         basicSetup,
+        columnBlockSelectionExtensions,
         availabilityRef.current.of([
           EditorState.readOnly.of(disabled),
           EditorView.editable.of(!disabled),

@@ -10,6 +10,9 @@
   --border-subtle: #ddd8cf;
   --text-muted: #777065;
   --accent: #b95732;
+  --traffic-close: #ff6159;
+  --traffic-minimize: #ffbd2e;
+  --traffic-zoom: #28c840;
 }
 
 * {
@@ -578,23 +581,42 @@ textarea {
   font-size: 12px;
   cursor: pointer;
   border: 1px solid var(--border-subtle);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.42),
+    0 1px 2px rgba(67, 54, 39, 0.14);
+  transition:
+    filter 0.12s ease,
+    transform 0.12s ease,
+    box-shadow 0.12s ease;
+}
+
+.confirm-actions button:hover:not(:disabled) {
+  filter: saturate(1.04) brightness(1.02);
+}
+
+.confirm-actions button:active:not(:disabled) {
+  transform: translateY(1px);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.28),
+    0 1px 1px rgba(67, 54, 39, 0.1);
 }
 
 .confirm-cancel {
-  background: var(--surface-raised);
-  color: inherit;
+  background: color-mix(in srgb, var(--traffic-minimize) 84%, white);
+  color: #4d3210;
+  border-color: color-mix(in srgb, var(--traffic-minimize) 76%, #8f6b22);
 }
 
 .confirm-discard {
-  background: var(--accent);
+  background: color-mix(in srgb, var(--traffic-close) 88%, white);
   color: #fffaf3;
-  border-color: var(--accent);
+  border-color: color-mix(in srgb, var(--traffic-close) 72%, #8f2b25);
 }
 
 .confirm-save {
-  background: #5f9a68;
+  background: color-mix(in srgb, var(--traffic-zoom) 78%, white);
   color: #fffaf3;
-  border-color: #5f9a68;
+  border-color: color-mix(in srgb, var(--traffic-zoom) 70%, #1f7e36);
 }
 
 .confirm-replace {
@@ -617,6 +639,9 @@ textarea {
     --border-subtle: #403b34;
     --text-muted: #aaa197;
     --accent: #d2724d;
+    --traffic-close: #ff5f57;
+    --traffic-minimize: #febc2e;
+    --traffic-zoom: #28c840;
   }
 
   .app-shell {

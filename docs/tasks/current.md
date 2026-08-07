@@ -6,13 +6,51 @@
 
 ## 进行中
 
-暂无进行中任务。
+暂无进行中任务。下一个已承诺待办为「实现列块粘贴」。
 
 ## 已承诺待办
 
-暂无已承诺待办。
+### 实现列块粘贴
+
+- **状态**：待开始
+- **Feature Spec**：`docs/features/column-block-editing.md`
+- **目标**：对矩形多选区支持单行复制到每行、多行等量逐行粘贴，并安全拒绝不匹配输入。
+- **依赖**：实现列块删除。
+
+### 实现数字序列填充首版
+
+- **状态**：待开始
+- **Feature Spec**：`docs/features/column-block-editing.md`
+- **目标**：对矩形多选区按行写入十进制 `1..n` 序列，更新脏状态并支持撤销。
+- **依赖**：实现列块粘贴。
 
 ## 最近完成
+
+### 调整关闭确认按钮为 macOS 交通灯色系
+
+- **状态**：已完成
+- **开始日期**：2026-08-07
+- **完成日期**：2026-08-07
+- **结果**：关闭确认弹层里的三个操作按钮已参考 macOS 左上角窗口控制按钮配色调整：Cancel 使用柔和黄色，Don't Save 使用柔和红色，Save 使用柔和绿色；保留原有文案、点击行为、焦点与禁用语义，并增加轻量 hover/active 反馈。该切片只改关闭确认弹层样式，未改变未保存关闭流程，也未影响列块编辑待办。
+- **验证**：`npm run check` 通过（typecheck + vitest **112 passed / 0 failed**）；`npm run build` 通过；`git diff --check` 通过。未运行 `npm run tauri -- build`，因为本切片仅修改前端 CSS。
+
+### 实现列块删除
+
+- **状态**：已完成
+- **开始日期**：2026-08-07
+- **完成日期**：2026-08-07
+- **Feature Spec**：`docs/features/column-block-editing.md`
+- **结果**：新增显式列块删除命令并接入编辑器高优先级 keymap：当存在多个选择范围时，`Delete`/`Backspace` 会删除每个列块范围；多个零宽光标时，`Delete` 删除各光标后的行内字符，`Backspace` 删除各光标前的行内字符，位于行首/行尾的光标不会跨行合并文本。单选区继续交给 CodeMirror 默认 keymap，普通编辑行为不变。列块删除通过 CodeMirror 事务提交，保持普通撤销/重做、内容同步、脏状态与保存保护链路。
+- **验证**：`npm run check` 通过（typecheck + vitest **112 passed / 0 failed**，新增覆盖非空列块范围删除、多个光标行内删除且不合并行、删除后撤销恢复原文）；`npm run build` 通过；`git diff --check` 通过。本切片未跑 `npm run tauri -- build` 或真实 macOS 拖拽/删除验收，按范围留给列块编辑集成验收。
+
+### 接入 Option 拖拽矩形选择基础
+
+- **状态**：已完成
+- **开始日期**：2026-08-07
+- **完成日期**：2026-08-07
+- **Feature Spec**：`docs/features/column-block-editing.md`
+- **结果**：确认列块编辑 Feature Spec，并完成首个实现切片。编辑器现在启用 CodeMirror `rectangularSelection()`、`crosshairCursor()` 与 `EditorState.allowMultipleSelections`：macOS 上按住 `Option` 左键拖拽可形成矩形多选区，并有十字光标提示；普通选择、内容同步、脏状态和保存流程不变。新增最小自动化测试，防止未来编辑器配置回退为单选区。README 和 backlog 已同步为列块编辑进入当前任务，后续删除、粘贴和数字序列仍拆为独立待办。
+- **验证**：`npm run check` 通过（typecheck + vitest **109 passed / 0 failed**，新增矩形列块多选区配置测试）；`npm run build` 通过；`git diff --check` 通过。本切片未跑 `npm run tauri -- build` 或真实 macOS 拖拽验收，按范围留给列块编辑集成验收。
 
 ### 完成多标签会话集成验收与文档收尾
 
