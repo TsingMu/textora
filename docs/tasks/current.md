@@ -14,6 +14,30 @@
 
 ## 最近完成
 
+### 修复关闭主窗口后 Dock 点击无法恢复窗口
+
+- **状态**：已完成
+- **开始日期**：2026-08-07
+- **完成日期**：2026-08-07
+- **结果**：修复点击 macOS 红灯关闭主窗口后应用仍在 Dock 存活、再次点击 Dock/重新打开应用却没有窗口的问题。主窗口关闭保护现在在无脏标签或用户完成保存/不保存确认后隐藏窗口而不是销毁唯一窗口，保留现有内存标签状态；macOS `Reopen` 事件在没有可见窗口时会显示、取消最小化并聚焦主窗口，若主窗口已不存在则按配置重建。新增最小 `core:window:allow-hide` capability，未扩大文件系统、shell、网络、多窗口、会话恢复、签名/公证或安装器范围。
+- **验证**：`npm run check` 通过（typecheck + vitest **120 passed / 0 failed**，更新窗口关闭保护测试为阻止 destroy 并 hide）；`cargo fmt --manifest-path src-tauri/Cargo.toml --check`、`cargo check --manifest-path src-tauri/Cargo.toml --all-targets`、`cargo test --manifest-path src-tauri/Cargo.toml --quiet`（**126 passed / 0 failed**）通过；`npm run tauri -- build` 通过并生成 release `Textora.app`；`git diff --check` 通过。真实 macOS 验证：启动构建产物与部署后的 `/Applications/Textora.app`，红灯关闭后窗口数从 1 变 0，再通过 `open -a Textora` 重新打开后窗口数恢复为 1；部署后的 `/Applications/Textora.app` 已用 `/usr/bin/ditto` 覆盖安装、`codesign --force --deep --sign -` 本机重签名，且 `codesign --verify --deep --strict /Applications/Textora.app` 通过。
+
+### 替换标题栏品牌图标并重新部署
+
+- **状态**：已完成
+- **开始日期**：2026-08-07
+- **完成日期**：2026-08-07
+- **结果**：把标题栏内原先硬编码的 `T` 品牌方块替换为项目根目录 `icon.png` 渲染出的图片标识，并调整容器背景、圆角、裁切与轻量阴影，使界面品牌图标与 macOS bundle 图标同源。重新构建 release app，覆盖安装到 `/Applications/Textora.app`，并对安装后的 app 做本机 ad-hoc 重签名。未改 macOS bundle 图标生成规则、签名/公证/DMG、整体品牌视觉体系或运行时功能行为。
+- **验证**：`npm run check` 通过（typecheck + vitest **120 passed / 0 failed**）；`npm run tauri -- build` 通过，Vite 产物包含 `dist/assets/icon-*.png` 并生成 release `Textora.app`；`/usr/bin/ditto` 已把当前 release app 复制到 `/Applications/Textora.app`；`codesign --force --deep --sign - /Applications/Textora.app` 完成；`codesign --verify --deep --strict /Applications/Textora.app` 通过；安装后 `Info.plist` 中 `CFBundleIdentifier` 为 `com.tsingmu.textora`、`CFBundleIconFile` 为 `icon.icns`。
+
+### 替换 macOS 应用图标为项目根目录 icon.png
+
+- **状态**：已完成
+- **开始日期**：2026-08-07
+- **完成日期**：2026-08-07
+- **结果**：使用项目根目录 `icon.png` 重新生成 Tauri 图标资源，更新 `src-tauri/icons` 下 macOS release bundle 使用的 `icon.icns` 以及同源 PNG/ICO/Windows tile 图标资源。清理 Tauri 图标生成器额外产生但当前 macOS 项目未引用的 iOS/Android 未跟踪资源与 `64x64.png`，避免扩大分发范围或留下无关噪音。未改签名、公证、DMG/安装器、运行时 UI 或品牌视觉规则。
+- **验证**：`npm run tauri -- build` 通过（包含 `npm run build` 与 release bundle 生成），生成 `/Users/mouqing/codexProjects/textora/src-tauri/target/release/bundle/macos/Textora.app`；`Info.plist` 中 `CFBundleIconFile` 为 `icon.icns`；`Textora.app/Contents/Resources/icon.icns` 与 `src-tauri/icons/icon.icns` 的 SHA-256 一致；`git diff --check` 通过。
+
 ### 完成列块编辑集成验收与文档收尾
 
 - **状态**：已完成

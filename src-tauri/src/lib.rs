@@ -24,6 +24,7 @@ struct ExitGuard {
 
 const APP_QUIT_MENU_ID: &str = "textora-app-quit";
 const APP_EXIT_REQUESTED_EVENT: &str = "textora-app-exit-requested";
+const MAIN_WINDOW_LABEL: &str = "main";
 
 #[tauri::command]
 fn health_check() -> HealthStatus {
@@ -53,6 +54,31 @@ fn should_guard_user_exit(guard: &ExitGuard) -> bool {
 
 fn emit_app_exit_requested(app_handle: &tauri::AppHandle) {
     let _ = app_handle.emit(APP_EXIT_REQUESTED_EVENT, ());
+}
+
+#[cfg(target_os = "macos")]
+fn show_main_window(app_handle: &tauri::AppHandle) {
+    if let Some(window) = app_handle.get_webview_window(MAIN_WINDOW_LABEL) {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+        return;
+    }
+
+    if let Some(window_config) = app_handle
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|window| window.label == MAIN_WINDOW_LABEL)
+    {
+        if let Ok(window) = tauri::WebviewWindowBuilder::from_config(app_handle, window_config)
+            .and_then(|builder| builder.build())
+        {
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -177,14 +203,24 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|app_handle, event| {
-            if let tauri::RunEvent::ExitRequested { api, .. } = event {
+        .run(|app_handle, event| match event {
+            tauri::RunEvent::ExitRequested { api, .. } => {
                 let guard = app_handle.state::<ExitGuard>();
                 if should_guard_user_exit(&guard) {
                     api.prevent_exit();
                     emit_app_exit_requested(app_handle);
                 }
             }
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Reopen {
+                has_visible_windows,
+                ..
+            } => {
+                if !has_visible_windows {
+                    show_main_window(app_handle);
+                }
+            }
+            _ => {}
         });
 }
 

@@ -23,6 +23,7 @@ const tauriWindowMock = vi.hoisted(() => ({
     | ((event: { preventDefault: () => void }) => void | Promise<void>)
     | undefined,
   close: vi.fn(),
+  hide: vi.fn(),
   allowedCloseCount: 0,
   deferCloseEvent: false,
   pendingProgrammaticClose: undefined as
@@ -67,6 +68,9 @@ vi.mock("@tauri-apps/api/window", () => ({
       } else {
         await dispatchClose();
       }
+    },
+    hide: async () => {
+      tauriWindowMock.hide();
     },
   }),
 }));
@@ -147,6 +151,7 @@ function resetTauriWindowMock() {
   tauriWindowMock.focusHandler = undefined;
   tauriWindowMock.closeHandler = undefined;
   tauriWindowMock.close.mockReset();
+  tauriWindowMock.hide.mockReset();
   tauriWindowMock.allowedCloseCount = 0;
   tauriWindowMock.deferCloseEvent = false;
   tauriWindowMock.pendingProgrammaticClose = undefined;
@@ -2044,12 +2049,14 @@ describe("App window close protection", () => {
     expect(tabTitles()).toEqual(["Untitled", "a.txt", "b.txt"]);
   }
 
-  it("allows a clean document to close without a confirmation", async () => {
+  it("hides a clean window close without a confirmation", async () => {
     await act(async () => root.render(<App />));
 
     const preventDefault = await emitWindowClose();
 
-    expect(preventDefault).not.toHaveBeenCalled();
+    expect(preventDefault).toHaveBeenCalledOnce();
+    expect(tauriWindowMock.hide).toHaveBeenCalledOnce();
+    expect(tauriWindowMock.close).not.toHaveBeenCalled();
     expect(
       container.querySelector('[aria-label="Save before closing?"]'),
     ).toBeNull();
@@ -2184,7 +2191,7 @@ describe("App window close protection", () => {
     expect(tabTitles()).toEqual(["Untitled", "a.txt", "b.txt"]);
   });
 
-  it("authorizes exactly one close after explicitly discarding", async () => {
+  it("hides the window after explicitly discarding dirty content", async () => {
     invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "health_check") {
         return { service: "document-core", version: "0.1.0" };
@@ -2221,14 +2228,15 @@ describe("App window close protection", () => {
     expect(
       invokeMock.mock.calls.find((call) => call[0] === "close_document"),
     ).toEqual(["close_document", { id: "doc-discard" }]);
-    expect(tauriWindowMock.close).toHaveBeenCalledOnce();
-    expect(tauriWindowMock.allowedCloseCount).toBe(1);
+    expect(tauriWindowMock.hide).toHaveBeenCalledOnce();
+    expect(tauriWindowMock.close).not.toHaveBeenCalled();
+    expect(tauriWindowMock.allowedCloseCount).toBe(0);
     expect(
       container.querySelector('[aria-label="Save before closing?"]'),
     ).toBeNull();
   });
 
-  it("saves an opened document and consumes one close authorization", async () => {
+  it("saves an opened document and hides the window", async () => {
     invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "health_check") {
         return { service: "document-core", version: "0.1.0" };
@@ -2272,11 +2280,12 @@ describe("App window close protection", () => {
     expect(
       invokeMock.mock.calls.filter((call) => call[0] === "save_document"),
     ).toHaveLength(1);
-    expect(tauriWindowMock.close).toHaveBeenCalledOnce();
-    expect(tauriWindowMock.allowedCloseCount).toBe(1);
+    expect(tauriWindowMock.hide).toHaveBeenCalledOnce();
+    expect(tauriWindowMock.close).not.toHaveBeenCalled();
+    expect(tauriWindowMock.allowedCloseCount).toBe(0);
   });
 
-  it("rejects a delayed close authorization after the document changes", async () => {
+  it("does not issue a delayed close authorization after saving before hiding", async () => {
     let selectionCount = 0;
     tauriWindowMock.deferCloseEvent = true;
     invokeMock.mockImplementation(
@@ -2323,7 +2332,9 @@ describe("App window close protection", () => {
     await act(async () => {
       container.querySelector<HTMLButtonElement>(".confirm-save")?.click();
     });
-    expect(tauriWindowMock.pendingProgrammaticClose).toBeTypeOf("function");
+    expect(tauriWindowMock.pendingProgrammaticClose).toBeUndefined();
+    expect(tauriWindowMock.hide).toHaveBeenCalledOnce();
+    expect(tauriWindowMock.close).not.toHaveBeenCalled();
 
     await act(async () => {
       container.querySelector<HTMLButtonElement>(".open-button")?.click();
@@ -2435,8 +2446,9 @@ describe("App window close protection", () => {
     expect(
       invokeMock.mock.calls.filter((call) => call[0] === "save_document_as_at"),
     ).toHaveLength(1);
-    expect(tauriWindowMock.close).toHaveBeenCalledOnce();
-    expect(tauriWindowMock.allowedCloseCount).toBe(1);
+    expect(tauriWindowMock.hide).toHaveBeenCalledOnce();
+    expect(tauriWindowMock.close).not.toHaveBeenCalled();
+    expect(tauriWindowMock.allowedCloseCount).toBe(0);
   });
 
   it("cancels the close intent when the format chooser is cancelled", async () => {

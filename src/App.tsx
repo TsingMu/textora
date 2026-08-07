@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import "./App.css";
+import appIconUrl from "../icon.png";
 import type { CloseRequestedEvent } from "@tauri-apps/api/window";
 import {
   cancelOpen,
@@ -333,6 +334,8 @@ function App() {
             }
             const pending = dirtyCloseItems(tabSessionRef.current);
             if (pending.length === 0) {
+              event.preventDefault();
+              void hideCurrentWindow();
               return;
             }
             event.preventDefault();
@@ -474,15 +477,16 @@ function App() {
       await requestAppExit();
       return;
     }
-    const authorization = { validDocumentIds };
-    closeAuthorizationRef.current = authorization;
+    closeAuthorizationRef.current = null;
+    await hideCurrentWindow();
+  }
+
+  async function hideCurrentWindow() {
     try {
       const { getCurrentWindow } = await import("@tauri-apps/api/window");
-      await getCurrentWindow().close();
+      await getCurrentWindow().hide();
     } catch {
-      if (closeAuthorizationRef.current === authorization) {
-        closeAuthorizationRef.current = null;
-      }
+      // 非 Tauri 环境或窗口隐藏失败时保持应用状态不变；未保存保护仍由前置状态机负责。
     }
   }
 
@@ -1238,7 +1242,9 @@ function App() {
       <header className="titlebar" data-tauri-drag-region>
         <div className="toolbar">
           <div className="brand" data-tauri-drag-region>
-            <span className="brand-mark" aria-hidden="true">T</span>
+            <span className="brand-mark" aria-hidden="true">
+              <img src={appIconUrl} alt="" className="brand-mark-image" />
+            </span>
             <span>Textora</span>
           </div>
           <button
