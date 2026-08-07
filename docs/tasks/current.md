@@ -6,23 +6,22 @@
 
 ## 进行中
 
-暂无进行中的任务。下一个已承诺待办为「完成多标签会话集成验收与文档收尾」。
+暂无进行中任务。
 
 ## 已承诺待办
 
-### 完成多标签会话集成验收与文档收尾
-
-- **状态**：待开始
-- **Feature Spec**：`docs/features/multi-tab-session.md`
-- **目标**：组合验证多标签会话完整行为，完成 macOS 真实交互验收，并把 Feature Spec 与 README 收尾到真实完成状态。
-- **范围**：对照多标签规格验收条件完整回归；执行 macOS 真实交互检查（新建/切换/打开/重复打开、保存/另存为路径占用、单标签关闭、窗口关闭与应用退出逐一保护）；必要时修复集成验收中暴露的小问题；更新 `docs/features/multi-tab-session.md` 状态/验收记录与 README 当前状态。
-- **非范围**：新增多标签主要行为、汇总关闭面板、多窗口、恢复会话、拖拽排序、最近关闭标签、列块编辑或 Markdown 能力。
-- **依赖**：后端多文档可信状态、前端多标签会话与切换、打开/保存按活动标签绑定、多标签关闭协调均已完成。
-- **拆分检查**：本任务为 Feature 最后一项，只做组合验证、真实平台确认、必要小修和文档收尾，不再承担新的主要用户行为。
-- **实施要点**：先跑完整自动化与构建，再进行真实 macOS 交互；若发现超出“小修”的缺口，应停止并拆出新的实现任务。
-- **完成标准**：`npm run check`、`npm run build`、`cargo fmt --manifest-path src-tauri/Cargo.toml --check`、`cargo check --manifest-path src-tauri/Cargo.toml --all-targets`、`cargo test --manifest-path src-tauri/Cargo.toml`、`npm run tauri -- build`、`git diff --check` 通过；macOS 真实交互验收记录明确；Feature Spec 状态改为已完成且 README 同步。
+暂无已承诺待办。
 
 ## 最近完成
+
+### 完成多标签会话集成验收与文档收尾
+
+- **状态**：已完成
+- **开始日期**：2026-08-07
+- **完成日期**：2026-08-07
+- **Feature Spec**：`docs/features/multi-tab-session.md`
+- **结果**：完成多标签会话完整回归、release 构建和真实 macOS 交互验收，并把 `docs/features/multi-tab-session.md` 标记为已完成、同步 README 当前状态。集成验收中发现 macOS 菜单 Quit/`⌘Q` 会绕过原先仅基于 `RunEvent::ExitRequested` 的退出保护：release 应用中未保存 Untitled 收到 `⌘Q` 后直接退出。修复为自定义 macOS Quit 菜单项，点击菜单或 `⌘Q` 时发出 `textora-app-exit-requested` 交前端统一执行逐标签未保存确认；Rust 侧保留一次性 `ExitGuard` 标记，只放行前端确认完成后调用的 `request_app_exit`，避免程序化退出被再次拦截。未新增多标签主要行为，未实现汇总关闭面板、多窗口、恢复会话、拖拽排序、最近关闭标签、列块编辑或 Markdown 能力。
+- **验证**：`npm run check` 通过（typecheck + vitest **108 passed / 0 failed**）；`npm run build` 通过；`cargo fmt --manifest-path src-tauri/Cargo.toml --check`、`cargo check --manifest-path src-tauri/Cargo.toml --all-targets`、`cargo test --manifest-path src-tauri/Cargo.toml --quiet`（**126 passed / 0 failed**）通过；`npm run tauri -- build` 通过并生成 `Textora.app`；`git diff --check` 通过。2026-08-07 在 release `Textora.app` 做真实 macOS 交互验收：启动默认 Untitled，新建 `Untitled 2` 并切换；粘贴编辑内容后确认标签与状态栏为 Modified；单标签关闭显示保存/不保存/取消确认且 Cancel 保持内容；窗口关闭对多个未保存标签逐一提示，Don't Save 后进入下一标签、Cancel 中止并保留剩余标签；修复后 `⌘Q` 对未保存内容弹出保存确认，Cancel 保持运行，Don't Save 后退出。
 
 ### 多标签关闭协调
 
