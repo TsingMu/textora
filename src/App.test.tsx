@@ -193,9 +193,9 @@ describe("App open flow", () => {
     expect(callNames).toContain("read_document_content");
     expect(
       invokeMock.mock.calls.find((call) => call[0] === "select_and_open_document"),
-    ).toEqual(["select_and_open_document"]);
+    ).toEqual(["select_and_open_document", { knownDocuments: [] }]);
 
-    const tabText = container.querySelector(".document-tab")?.textContent ?? "";
+    const tabText = container.querySelector(".document-tab.is-active")?.textContent ?? "";
     expect(tabText).toContain("notes.txt");
 
     const editorText = container.querySelector(".cm-content")?.textContent ?? "";
@@ -229,7 +229,57 @@ describe("App open flow", () => {
     const callNames = invokeMock.mock.calls.map((c) => c[0]);
     expect(callNames).not.toContain("read_document_content");
 
-    expect(container.querySelector(".document-tab")?.textContent).toContain("Untitled");
+    expect(container.querySelector(".document-tab.is-active")?.textContent).toContain("Untitled");
+  });
+
+  it("switches to an existing tab when opening an already-open path", async () => {
+    let openCount = 0;
+    invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        openCount += 1;
+        if (openCount === 1) {
+          return {
+            id: "doc-1",
+            path: "/tmp/notes.txt",
+            displayName: "notes.txt",
+            byteCount: 5,
+            encoding: "gbk",
+            lineEnding: "lf",
+            fingerprint: { sizeBytes: 5, sha256: "deadbeef" },
+            readOnly: false,
+          };
+        }
+        expect(args).toEqual({
+          knownDocuments: [{ tabId: "tab-2", path: "/tmp/notes.txt" }],
+        });
+        return { kind: "existing", tabId: "tab-2" };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode("Hello").buffer;
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await act(async () => {
+      root.render(<App />);
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+
+    expect(container.querySelectorAll(".document-tab")).toHaveLength(2);
+    expect(container.querySelector(".document-tab.is-active")?.textContent).toContain(
+      "notes.txt",
+    );
+    expect(
+      invokeMock.mock.calls.filter((call) => call[0] === "read_document_content"),
+    ).toHaveLength(1);
   });
 
   it("shows a user-facing error notice when the file is too large", async () => {
@@ -256,7 +306,7 @@ describe("App open flow", () => {
     expect(notice).not.toBeNull();
     expect(notice?.textContent).toContain("50 MB");
     // Current document is untouched.
-    expect(container.querySelector(".document-tab")?.textContent).toContain("Untitled");
+    expect(container.querySelector(".document-tab.is-active")?.textContent).toContain("Untitled");
   });
 
   it.each([
@@ -283,7 +333,7 @@ describe("App open flow", () => {
     });
 
     expect(container.querySelector(".notice-error")?.textContent).toContain(message);
-    expect(container.querySelector(".document-tab")?.textContent).toContain("Untitled");
+    expect(container.querySelector(".document-tab.is-active")?.textContent).toContain("Untitled");
   });
 
   it("reports a dialog failure instead of treating it as cancellation", async () => {
@@ -308,7 +358,7 @@ describe("App open flow", () => {
     expect(container.querySelector(".notice-error")?.textContent).toContain(
       "could not be read",
     );
-    expect(container.querySelector(".document-tab")?.textContent).toContain("Untitled");
+    expect(container.querySelector(".document-tab.is-active")?.textContent).toContain("Untitled");
   });
 
   it("makes the editor read-only while the open dialog and read are pending", async () => {
@@ -348,6 +398,153 @@ describe("App open flow", () => {
     expect(
       container.querySelector<HTMLElement>(".cm-content")?.getAttribute("contenteditable"),
     ).toBe("true");
+  });
+});
+
+describe("App tab session", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+
+  beforeEach(() => {
+    (
+      globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
+    ).IS_REACT_ACT_ENVIRONMENT = true;
+    invokeMock.mockReset();
+    resetTauriWindowMock();
+    setupInvoke();
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  function tabTitles() {
+    return Array.from(container.querySelectorAll(".document-tab-title")).map(
+      (node) => node.textContent,
+    );
+  }
+
+  function editContent(content: string) {
+    const editable = container.querySelector<HTMLElement>(".cm-content");
+    if (editable === null) throw new Error("missing editor");
+    editable.textContent = content;
+    editable.dispatchEvent(
+      new InputEvent("input", {
+        bubbles: true,
+        inputType: "insertText",
+        data: content,
+      }),
+    );
+  }
+
+  it("creates numbered Untitled tabs and keeps edits isolated when switching", async () => {
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".new-tab-button")?.click();
+    });
+    expect(tabTitles()).toEqual(["Untitled", "Untitled 2"]);
+
+    await act(async () => editContent("second tab"));
+    await act(async () => {
+      container.querySelectorAll<HTMLButtonElement>(".document-tab-select")[0]?.click();
+    });
+    expect(container.querySelector(".cm-content")?.textContent ?? "").toBe("");
+
+    await act(async () => editContent("first tab"));
+    await act(async () => {
+      container.querySelectorAll<HTMLButtonElement>(".document-tab-select")[1]?.click();
+    });
+    expect(container.querySelector(".cm-content")?.textContent ?? "").toContain(
+      "second tab",
+    );
+  });
+
+  it("closes clean tabs and creates a fresh Untitled after the last tab closes", async () => {
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".new-tab-button")?.click();
+    });
+    await act(async () => {
+      container.querySelectorAll<HTMLButtonElement>(".document-tab-close")[1]?.click();
+    });
+    expect(tabTitles()).toEqual(["Untitled"]);
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".document-tab-close")?.click();
+    });
+    expect(tabTitles()).toEqual(["Untitled 3"]);
+    expect(container.querySelector(".cm-content")?.textContent ?? "").toBe("");
+  });
+
+  it("asks before closing a dirty tab and discards only that tab", async () => {
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".new-tab-button")?.click();
+    });
+    await act(async () => editContent("dirty second"));
+    await act(async () => {
+      container.querySelectorAll<HTMLButtonElement>(".document-tab-close")[1]?.click();
+    });
+    expect(container.querySelector(".confirm-dialog")?.textContent).toContain(
+      "Untitled 2",
+    );
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".confirm-cancel")?.click();
+    });
+    expect(tabTitles()).toEqual(["Untitled", "Untitled 2"]);
+
+    await act(async () => {
+      container.querySelectorAll<HTMLButtonElement>(".document-tab-close")[1]?.click();
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".confirm-discard")?.click();
+    });
+    expect(tabTitles()).toEqual(["Untitled"]);
+    expect(
+      invokeMock.mock.calls.some((call) => call[0] === "close_document"),
+    ).toBe(false);
+  });
+
+  it("locks tab switching while the Save As modal is open", async () => {
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".new-tab-button")?.click();
+    });
+    expect(tabTitles()).toEqual(["Untitled", "Untitled 2"]);
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".save-button")?.click();
+    });
+    expect(container.querySelector('[aria-label="Save file as"]')).not.toBeNull();
+    expect(container.querySelector<HTMLButtonElement>(".new-tab-button")?.disabled).toBe(
+      true,
+    );
+
+    await act(async () => {
+      container.querySelectorAll<HTMLButtonElement>(".document-tab-select")[0]?.click();
+    });
+    expect(
+      container
+        .querySelectorAll<HTMLButtonElement>(".document-tab-select")[1]
+        ?.getAttribute("aria-current"),
+    ).toBe("page");
   });
 });
 
@@ -551,7 +748,7 @@ describe("App save entry", () => {
       chooser?.querySelector<HTMLButtonElement>(".confirm-save")?.click();
     });
 
-    expect(container.querySelector(".document-tab")?.textContent).toContain("copy.txt");
+    expect(container.querySelector(".document-tab.is-active")?.textContent).toContain("copy.txt");
     expect(container.querySelector(".statusbar")?.textContent).toContain("UTF-8");
     expect(container.querySelector(".statusbar")?.textContent).toContain("CRLF");
     expect(
@@ -596,7 +793,7 @@ describe("App save entry", () => {
     });
 
     expect(container.querySelector(".save-as-dialog")).toBeNull();
-    expect(container.querySelector(".document-tab")?.textContent).toContain(
+    expect(container.querySelector(".document-tab.is-active")?.textContent).toContain(
       "Untitled",
     );
     expect(
@@ -715,9 +912,89 @@ describe("App save entry", () => {
     expect(
       invokeMock.mock.calls.filter((call) => call[0] === "save_document_as_at"),
     ).toHaveLength(1);
-    expect(container.querySelector(".document-tab")?.textContent).toContain(
+    expect(container.querySelector(".document-tab.is-active")?.textContent).toContain(
       "existing.txt",
     );
+  });
+
+  it("rejects save-as when the target is already open in another tab", async () => {
+    let openCount = 0;
+    invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        openCount += 1;
+        const isFirst = openCount === 1;
+        return {
+          id: isFirst ? "doc-notes" : "doc-other",
+          path: isFirst ? "/tmp/notes.txt" : "/tmp/other.txt",
+          displayName: isFirst ? "notes.txt" : "other.txt",
+          byteCount: 5,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 5, sha256: isFirst ? "notes" : "other" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode("Hello").buffer;
+      }
+      if (cmd === "prepare_save_as") {
+        return {
+          fileName: "other.txt",
+          directory: { id: "grant-other", displayName: "tmp" },
+        };
+      }
+      if (cmd === "preview_save_target") {
+        expect(args).toMatchObject({
+          currentTabId: "tab-3",
+          knownDocuments: [
+            { tabId: "tab-2", path: "/tmp/notes.txt" },
+            { tabId: "tab-3", path: "/tmp/other.txt" },
+          ],
+        });
+        return {
+          exists: true,
+          isCurrentPath: false,
+          occupiedTabId: "tab-2",
+        };
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await act(async () => root.render(<App />));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".save-as-button")?.click();
+    });
+
+    const chooser = container.querySelector(".save-as-dialog");
+    const fileName = chooser?.querySelector<HTMLInputElement>('input[type="text"]');
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        "value",
+      )?.set;
+      setter?.call(fileName, "notes.txt");
+      fileName?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      chooser?.querySelector<HTMLButtonElement>(".confirm-save")?.click();
+    });
+
+    expect(container.querySelector(".save-as-validation")?.textContent).toContain(
+      "already open in another tab",
+    );
+    expect(container.querySelector(".save-as-replace-warning")).toBeNull();
+    expect(
+      invokeMock.mock.calls.some((call) => call[0] === "save_document_as_at"),
+    ).toBe(false);
   });
 
   it("skips replacement confirmation for the current original path", async () => {
@@ -1371,7 +1648,7 @@ describe("App save entry", () => {
     await emitWindowFocus();
     await vi.waitFor(() => expect(checkCount).toBe(1));
     expect(container.querySelector('[aria-label="File missing on disk"]')).toBeNull();
-    expect(container.querySelector(".document-tab")?.textContent).toContain(
+    expect(container.querySelector(".document-tab.is-active")?.textContent).toContain(
       "retry.txt",
     );
 
@@ -1433,7 +1710,7 @@ describe("App save entry", () => {
     await act(async () => {
       container.querySelector<HTMLButtonElement>(".open-button")?.click();
     });
-    expect(container.querySelector(".document-tab")?.textContent).toContain(
+    expect(container.querySelector(".document-tab.is-active")?.textContent).toContain(
       "b.txt",
     );
 
@@ -1442,7 +1719,7 @@ describe("App save entry", () => {
       await Promise.resolve();
     });
     expect(container.querySelector('[aria-label="File missing on disk"]')).toBeNull();
-    expect(container.querySelector(".document-tab")?.textContent).toContain(
+    expect(container.querySelector(".document-tab.is-active")?.textContent).toContain(
       "b.txt",
     );
   });
@@ -1498,7 +1775,7 @@ describe("App save entry", () => {
       invokeMock.mock.calls.find((call) => call[0] === "close_document"),
     ).toEqual(["close_document", { id: "doc-missing" }]);
     expect(container.querySelector('[aria-label="File missing on disk"]')).toBeNull();
-    expect(container.querySelector(".document-tab")?.textContent).toContain(
+    expect(container.querySelector(".document-tab.is-active")?.textContent).toContain(
       "missing.txt",
     );
     expect(container.querySelector(".statusbar")?.textContent).toContain(
@@ -1562,7 +1839,7 @@ describe("App save entry", () => {
     expect(container.querySelector('[role="alert"]')?.textContent).toContain(
       "could not be detached",
     );
-    expect(container.querySelector(".document-tab")?.textContent).toContain(
+    expect(container.querySelector(".document-tab.is-active")?.textContent).toContain(
       "missing.txt",
     );
     expect(
@@ -1573,7 +1850,7 @@ describe("App save entry", () => {
       container.querySelector<HTMLButtonElement>(".confirm-discard")?.click();
     });
     expect(container.querySelector('[aria-label="File missing on disk"]')).toBeNull();
-    expect(container.querySelector(".document-tab")?.textContent).toContain(
+    expect(container.querySelector(".document-tab.is-active")?.textContent).toContain(
       "Untitled",
     );
   });
@@ -1863,7 +2140,7 @@ describe("App window close protection", () => {
     await act(async () => {
       container.querySelector<HTMLButtonElement>(".open-button")?.click();
     });
-    expect(container.querySelector(".document-tab")?.textContent).toContain(
+    expect(container.querySelector(".document-tab.is-active")?.textContent).toContain(
       "b.txt",
     );
 
@@ -1871,7 +2148,7 @@ describe("App window close protection", () => {
       await tauriWindowMock.pendingProgrammaticClose?.();
     });
     expect(tauriWindowMock.allowedCloseCount).toBe(0);
-    expect(container.querySelector(".document-tab")?.textContent).toContain(
+    expect(container.querySelector(".document-tab.is-active")?.textContent).toContain(
       "b.txt",
     );
   });

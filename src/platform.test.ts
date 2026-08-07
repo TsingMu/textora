@@ -148,6 +148,8 @@ describe("inline save-as IPC", () => {
       id: "doc-1",
       directoryId: "grant-2",
       fileName: "copy.txt",
+      currentTabId: "tab-1",
+      knownDocuments: [{ tabId: "tab-1", path: "/tmp/notes.txt" }],
     });
 
     expect(invokeMock.mock.calls[0]).toEqual([
@@ -164,6 +166,8 @@ describe("inline save-as IPC", () => {
         documentId: "doc-1",
         directoryId: "grant-2",
         fileName: "copy.txt",
+        currentTabId: "tab-1",
+        knownDocuments: [{ tabId: "tab-1", path: "/tmp/notes.txt" }],
       },
     ]);
   });

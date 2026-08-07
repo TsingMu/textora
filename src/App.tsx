@@ -11,13 +11,23 @@ import {
   failOpen,
   failSave,
   isBusy,
-  requestOpen,
   requestSave,
   startLoading,
   updateDocumentContent,
   type DocumentSession,
 } from "./documentSession";
 import { Editor } from "./Editor";
+import {
+  activeDocument,
+  addOpenedDocumentTab,
+  addUntitledTab,
+  closeTabCleanly,
+  createInitialTabSession,
+  switchActiveTab,
+  updateActiveDocument,
+  updateDocumentByTabId,
+  type TabSessionState,
+} from "./tabSession";
 import {
   cancelConflict,
   checkBackendHealth,
@@ -44,11 +54,12 @@ import {
   type DocumentCommandError,
   type EncodingChoice,
   type HealthStatus,
+  type KnownDocumentPath,
   type LineEndingChoice,
   type SaveDirectoryGrant,
 } from "./platform";
 
-const initialDocument = createNewDocument();
+const initialTabs = createInitialTabSession();
 type ConflictOperationStatus = "idle" | "canceling" | "reloading" | "overwriting";
 type FileMissingOperationStatus = "idle" | "keeping" | "discarding";
 type SaveAsPanelStatus =
@@ -65,8 +76,9 @@ type SaveAsPanelState = {
   replacePending: boolean;
   errorMessage: string | null;
 };
-type CloseKind = "window" | "app-exit";
+type CloseKind = "window" | "app-exit" | "tab";
 type CloseIntent = {
+  tabId: string;
   documentId: string;
   content: string;
   kind: CloseKind;
@@ -84,7 +96,8 @@ function invalidSaveFileName(fileName: string): boolean {
 }
 
 function App() {
-  const [session, setSession] = useState<DocumentSession>(initialDocument);
+  const [tabSession, setTabSession] = useState<TabSessionState>(initialTabs);
+  const session = activeDocument(tabSession);
   const [health, setHealth] = useState<HealthStatus | null>(null);
   const [backendUnavailable, setBackendUnavailable] = useState(false);
   const [conflictOperation, setConflictOperation] = useState<{
@@ -110,8 +123,8 @@ function App() {
     encoding: EncodingChoice;
     lineEnding: LineEndingChoice;
   }>({
-    encoding: encodingToChoice(initialDocument.encoding),
-    lineEnding: lineEndingToChoice(initialDocument.lineEnding),
+    encoding: encodingToChoice(session.encoding),
+    lineEnding: lineEndingToChoice(session.lineEnding),
   });
   const [formatSettingsOpen, setFormatSettingsOpen] = useState(false);
   const [mixedLineEndingConfirmed, setMixedLineEndingConfirmed] = useState(true);
@@ -120,6 +133,7 @@ function App() {
     lineEnding: LineEndingChoice;
   }>(saveFormat);
   const sessionRef = useRef(session);
+  const tabSessionRef = useRef(tabSession);
   const fileMissingPendingRef = useRef(fileMissingPending);
   const fileMissingResolvingRef = useRef(false);
   const targetCheckRevisionRef = useRef(0);
@@ -137,7 +151,38 @@ function App() {
   const saveAsPanelRevisionRef = useRef(0);
   const saveFileNameInputRef = useRef<HTMLInputElement>(null);
   sessionRef.current = session;
+  tabSessionRef.current = tabSession;
   fileMissingPendingRef.current = fileMissingPending;
+
+  function setSession(
+    update:
+      | DocumentSession
+      | ((document: DocumentSession) => DocumentSession),
+  ) {
+    setTabSession((current) =>
+      updateActiveDocument(
+        current,
+        typeof update === "function" ? update : () => update,
+      ),
+    );
+  }
+
+  function updateTabDocument(
+    tabId: string,
+    update: (document: DocumentSession) => DocumentSession,
+  ) {
+    setTabSession((current) => updateDocumentByTabId(current, tabId, update));
+  }
+
+  function knownDocumentPathsForTabs(
+    state: TabSessionState,
+  ): KnownDocumentPath[] {
+    return state.tabs.flatMap((tab) =>
+      tab.document.path === null
+        ? []
+        : [{ tabId: tab.tabId, path: tab.document.path }],
+    );
+  }
 
   useEffect(() => {
     let active = true;
@@ -265,6 +310,7 @@ function App() {
             }
             event.preventDefault();
             closeIntentRef.current = {
+              tabId: tabSessionRef.current.activeTabId,
               documentId: current.id,
               content: current.content,
               kind: "window",
@@ -305,6 +351,7 @@ function App() {
               return;
             }
             closeIntentRef.current = {
+              tabId: tabSessionRef.current.activeTabId,
               documentId: current.id,
               content: current.content,
               kind: "app-exit",
@@ -355,8 +402,20 @@ function App() {
   async function executeAuthorizedClose(
     kind: CloseKind,
     validDocumentIds: readonly string[],
+    tabId?: string,
   ) {
     closeIntentRef.current = null;
+    if (kind === "tab") {
+      for (const id of validDocumentIds) {
+        if (!id.startsWith("untitled-")) {
+          await closeDocument(id);
+        }
+      }
+      if (tabId !== undefined) {
+        setTabSession((current) => closeTabCleanly(current, tabId));
+      }
+      return;
+    }
     if (kind === "app-exit") {
       // 应用退出不经窗口关闭授权，直接请求程序化退出；失败时 requestAppExit 自身保留运行。
       await requestAppExit();
@@ -376,7 +435,11 @@ function App() {
 
   async function handleCloseSave() {
     const intent = closeIntentRef.current;
-    if (intent === null || intent.documentId !== sessionRef.current.id) {
+    if (
+      intent === null ||
+      intent.documentId !== sessionRef.current.id ||
+      intent.tabId !== tabSessionRef.current.activeTabId
+    ) {
       clearCloseIntent();
       setCloseConfirmPending(false);
       closeConfirmPendingRef.current = false;
@@ -391,7 +454,7 @@ function App() {
       try {
         const descriptor = await saveDocument(intent.documentId, intent.content);
         setSession((s) => commitSavedDocument(s, descriptor));
-        await executeAuthorizedClose(intent.kind, [intent.documentId]);
+        await executeAuthorizedClose(intent.kind, [intent.documentId], intent.tabId);
       } catch (err) {
         clearCloseIntent();
         const error: DocumentCommandError = isDocumentCommandError(err)
@@ -419,7 +482,11 @@ function App() {
 
   async function handleCloseDiscard() {
     const intent = closeIntentRef.current;
-    if (intent === null || intent.documentId !== sessionRef.current.id) {
+    if (
+      intent === null ||
+      intent.documentId !== sessionRef.current.id ||
+      intent.tabId !== tabSessionRef.current.activeTabId
+    ) {
       clearCloseIntent();
       setCloseConfirmPending(false);
       closeConfirmPendingRef.current = false;
@@ -427,7 +494,7 @@ function App() {
     }
     setCloseConfirmPending(false);
     closeConfirmPendingRef.current = false;
-    if (intent.documentId !== "untitled-1") {
+    if (!intent.documentId.startsWith("untitled-")) {
       try {
         await closeDocument(intent.documentId);
       } catch {
@@ -439,7 +506,12 @@ function App() {
         return;
       }
     }
-    await executeAuthorizedClose(intent.kind, [intent.documentId]);
+    if (intent.kind === "tab") {
+      setTabSession((current) => closeTabCleanly(current, intent.tabId));
+      clearCloseIntent();
+      return;
+    }
+    await executeAuthorizedClose(intent.kind, [intent.documentId], intent.tabId);
   }
 
   function handleCloseCancel() {
@@ -525,29 +597,52 @@ function App() {
     return () => window.removeEventListener("keydown", handleEscape);
   }, [fileMissingPending, fileMissingOperation.status, session.id]);
 
-  async function runOpenPipeline() {
-    setSession((current) => startLoading(current));
+  async function runOpenPipeline(tabId: string) {
+    const knownDocuments = knownDocumentPathsForTabs(tabSessionRef.current);
 
     try {
-      const descriptor = await selectAndOpenDocument();
-      if (descriptor === null) {
-        setSession((current) => cancelOpen(current));
+      const selection = await selectAndOpenDocument(knownDocuments);
+      if (selection === null) {
+        updateTabDocument(tabId, (current) => cancelOpen(current));
         return;
       }
+      if (selection.kind === "existing") {
+        setTabSession((current) =>
+          switchActiveTab(
+            updateDocumentByTabId(current, tabId, (document) =>
+              cancelOpen(document),
+            ),
+            selection.tabId,
+          ),
+        );
+        return;
+      }
+      const descriptor = selection.descriptor;
       const buffer = await readDocumentContent(descriptor.id);
       const content = new TextDecoder().decode(buffer);
-      setSession((current) => commitOpenedDocument(current, descriptor, content));
+      setTabSession((current) =>
+        addOpenedDocumentTab(
+          updateDocumentByTabId(current, tabId, (document) =>
+            cancelOpen(document),
+          ),
+          descriptor,
+          content,
+        ),
+      );
     } catch (err) {
       const code = isDocumentCommandError(err) ? err.code : "read-failed";
-      setSession((current) => failOpen(current, code));
+      updateTabDocument(tabId, (current) => failOpen(current, code));
     }
   }
 
-  async function runSavePipeline(id: string, content: string) {
+  async function runSavePipeline(tabId: string, id: string, content: string) {
     try {
       const descriptor = await saveDocument(id, content);
       setConflictOperation({ status: "idle", errorMessage: null });
-      setSession((current) => commitSavedDocument(current, descriptor));
+      updateTabDocument(tabId, (current) => {
+        if (current.id !== id) return current;
+        return commitSavedDocument(current, descriptor);
+      });
     } catch (err) {
       const error: DocumentCommandError = isDocumentCommandError(err)
         ? err
@@ -564,7 +659,10 @@ function App() {
         setFileMissingPending(true);
         return;
       }
-      setSession((current) => failSave(current, error));
+      updateTabDocument(tabId, (current) => {
+        if (current.id !== id) return current;
+        return failSave(current, error);
+      });
     }
   }
 
@@ -677,7 +775,7 @@ function App() {
         await executeAuthorizedClose(closeIntent.kind, [
           closeIntent.documentId,
           descriptor.id,
-        ]);
+        ], closeIntent.tabId);
       }
     } catch (err) {
       clearCloseIntent();
@@ -738,7 +836,19 @@ function App() {
         id: documentId,
         directoryId: saveAsPanel.directory.id,
         fileName: saveAsPanel.fileName,
+        currentTabId: tabSessionRef.current.activeTabId,
+        knownDocuments: knownDocumentPathsForTabs(tabSessionRef.current),
       });
+      if (preview.occupiedTabId != null) {
+        setSaveAsPanel((panel) => ({
+          ...panel,
+          status: "idle",
+          replacePending: false,
+          errorMessage:
+            "That save target is already open in another tab. Switch to that tab or choose a different name.",
+        }));
+        return;
+      }
       if (preview.exists && !preview.isCurrentPath) {
         setSaveAsPanel((panel) => ({
           ...panel,
@@ -765,14 +875,71 @@ function App() {
   }
 
   function handleOpenClick() {
-    const next = requestOpen(session);
-    if (next === session) {
+    if (isBusy(session)) {
       return;
     }
-    setSession(next);
-    if (next.openStatus === "loading") {
-      void runOpenPipeline();
+    const tabId = tabSession.activeTabId;
+    updateTabDocument(tabId, (current) => startLoading(current));
+    void runOpenPipeline(tabId);
+  }
+
+  function tabsAreLocked(): boolean {
+    return (
+      saveAsPanel.open ||
+      conflictPending ||
+      fileMissingPending ||
+      closeConfirmPending ||
+      session.openStatus === "loading" ||
+      session.openStatus === "awaiting-discard-confirm"
+    );
+  }
+
+  function handleNewTabClick() {
+    if (tabsAreLocked()) return;
+    setTabSession((current) => addUntitledTab(current));
+  }
+
+  function handleSwitchTab(tabId: string) {
+    if (tabsAreLocked()) return;
+    setTabSession((current) => switchActiveTab(current, tabId));
+  }
+
+  async function handleCloseTab(tabId: string) {
+    if (tabsAreLocked()) return;
+    const tab = tabSessionRef.current.tabs.find((item) => item.tabId === tabId);
+    if (tab === undefined) return;
+    setTabSession((current) => switchActiveTab(current, tabId));
+    if (!tab.document.isDirty) {
+      try {
+        if (tab.document.path !== null) {
+          await closeDocument(tab.document.id);
+        }
+      } catch {
+        setCloseConfirmError(
+          "The document could not be closed safely. Please try again.",
+        );
+        closeIntentRef.current = {
+          tabId,
+          documentId: tab.document.id,
+          content: tab.document.content,
+          kind: "tab",
+        };
+        closeConfirmPendingRef.current = true;
+        setCloseConfirmPending(true);
+        return;
+      }
+      setTabSession((current) => closeTabCleanly(current, tabId));
+      return;
     }
+    closeIntentRef.current = {
+      tabId,
+      documentId: tab.document.id,
+      content: tab.document.content,
+      kind: "tab",
+    };
+    closeConfirmPendingRef.current = true;
+    setCloseConfirmError(null);
+    setCloseConfirmPending(true);
   }
 
   function handleSaveClick() {
@@ -790,7 +957,7 @@ function App() {
     }
     setSession(next);
     if (next.saveStatus === "saving") {
-      void runSavePipeline(next.id, next.content);
+      void runSavePipeline(tabSession.activeTabId, next.id, next.content);
     }
   }
 
@@ -820,8 +987,9 @@ function App() {
   }
 
   function handleConfirmDiscard() {
-    setSession((current) => startLoading(current));
-    void runOpenPipeline();
+    const tabId = tabSessionRef.current.activeTabId;
+    updateTabDocument(tabId, (current) => startLoading(current));
+    void runOpenPipeline(tabId);
   }
 
   function handleConfirmCancel() {
@@ -1044,10 +1212,49 @@ function App() {
 
       <section className="workspace" aria-label="Document workspace">
         <div className="tab-strip">
-          <div className="document-tab" aria-current="page">
-            <span>{session.displayName}</span>
-            {session.isDirty && <span className="dirty-dot" aria-label="Modified" />}
-          </div>
+          {tabSession.tabs.map((tab) => (
+            <div
+              key={tab.tabId}
+              className={`document-tab ${
+                tab.tabId === tabSession.activeTabId ? "is-active" : ""
+              }`}
+            >
+              <button
+                type="button"
+                className="document-tab-select"
+                aria-current={
+                  tab.tabId === tabSession.activeTabId ? "page" : undefined
+                }
+                onClick={() => handleSwitchTab(tab.tabId)}
+                disabled={tabsAreLocked() && tab.tabId !== tabSession.activeTabId}
+              >
+                <span className="document-tab-title">{tab.document.displayName}</span>
+                {tab.document.isDirty && (
+                  <span className="dirty-dot" aria-label="Modified" />
+                )}
+              </button>
+              <button
+                type="button"
+                className="document-tab-close"
+                aria-label={`Close ${tab.document.displayName}`}
+                onClick={() => {
+                  void handleCloseTab(tab.tabId);
+                }}
+                disabled={tabsAreLocked() && tab.tabId !== tabSession.activeTabId}
+              >
+                ×
+              </button>
+            </div>
+          ))}
+          <button
+            type="button"
+            className="new-tab-button"
+            onClick={handleNewTabClick}
+            disabled={tabsAreLocked()}
+            aria-label="New tab"
+          >
+            +
+          </button>
         </div>
 
         <div className="editor-panel">

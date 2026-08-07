@@ -108,19 +108,20 @@ textarea {
 .tab-strip {
   display: flex;
   align-items: end;
+  gap: 4px;
   padding: 0 10px;
+  overflow-x: auto;
   border-bottom: 1px solid var(--border-subtle);
   background: #f4f1eb;
 }
 
 .document-tab {
   display: flex;
-  min-width: 152px;
+  min-width: 128px;
+  max-width: 220px;
   height: 32px;
   align-items: center;
-  justify-content: space-between;
-  gap: 18px;
-  padding: 0 12px;
+  overflow: hidden;
   border: 1px solid var(--border-subtle);
   border-bottom-color: var(--surface);
   border-radius: 8px 8px 0 0;
@@ -129,7 +130,69 @@ textarea {
   font-size: 12px;
 }
 
+.document-tab:not(.is-active) {
+  border-bottom-color: var(--border-subtle);
+  background: #ebe6dd;
+}
+
+.document-tab-select,
+.document-tab-close,
+.new-tab-button {
+  border: 0;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+}
+
+.document-tab-select {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  height: 100%;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px 0 12px;
+  text-align: left;
+}
+
+.document-tab-select:disabled,
+.document-tab-close:disabled,
+.new-tab-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.document-tab-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.document-tab-close,
+.new-tab-button {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  margin-right: 3px;
+  place-items: center;
+  border-radius: 6px;
+}
+
+.document-tab-close:hover:not(:disabled),
+.new-tab-button:hover:not(:disabled) {
+  background: rgba(58, 48, 38, 0.08);
+}
+
+.new-tab-button {
+  flex: 0 0 auto;
+  margin: 0 0 3px 2px;
+  border: 1px solid transparent;
+  color: #5a4d3f;
+}
+
 .dirty-dot {
+  flex: 0 0 auto;
   width: 7px;
   height: 7px;
   border-radius: 50%;
@@ -578,6 +641,19 @@ textarea {
 
   .document-tab {
     color: #e5dfd5;
+  }
+
+  .document-tab:not(.is-active) {
+    background: #2c2824;
+  }
+
+  .document-tab-close:hover:not(:disabled),
+  .new-tab-button:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.08);
+  }
+
+  .new-tab-button {
+    color: #cfc6b8;
   }
 
   .cm-editor {

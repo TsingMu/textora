@@ -7,10 +7,10 @@
 
 use std::collections::HashMap;
 use std::fs::File;
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::document::{
@@ -209,12 +209,30 @@ pub struct SaveAsDraft {
     pub directory: Option<SaveDirectoryGrant>,
 }
 
+/// 前端当前已打开的文件标签。路径只用于与系统选择器/授权目录生成的可信路径做同一性比较；
+/// 后端仍不接受它作为读取或写入目标。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnownDocumentPath {
+    pub tab_id: String,
+    pub path: PathBuf,
+}
+
+/// 打开文件选择结果：新文件返回候选描述符；已打开的同一路径返回已有标签 id，不重复读取。
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum OpenDocumentSelection {
+    Opened { descriptor: DocumentDescriptor },
+    Existing { tab_id: String },
+}
+
 /// 目标预览：`dir/file_name` 是否已存在、是否即当前活动文档原路径。用于"替换确认"。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TargetPreview {
     pub exists: bool,
     pub is_current_path: bool,
+    pub occupied_tab_id: Option<String>,
 }
 
 /// 用户经 `pick_save_directory` 或 `prepare_save_as`（已有文档默认父目录）授权的保存目录。
@@ -278,6 +296,7 @@ impl DocumentStore {
         self.store_open_inner(id, content, document, false);
     }
 
+    #[allow(dead_code)]
     fn store_open_replacing_session(
         &self,
         id: String,
@@ -707,13 +726,51 @@ fn trusted_from_descriptor(descriptor: &DocumentDescriptor) -> TrustedDocument {
     }
 }
 
+fn normalize_identity_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized
+}
+
+fn canonical_identity_path(path: &Path) -> Option<PathBuf> {
+    std::fs::canonicalize(path)
+        .ok()
+        .map(|path| normalize_identity_path(&path))
+}
+
+fn same_path_identity(left: &Path, right: &Path) -> bool {
+    normalize_identity_path(left) == normalize_identity_path(right)
+        || match (
+            canonical_identity_path(left),
+            canonical_identity_path(right),
+        ) {
+            (Some(left), Some(right)) => left == right,
+            _ => false,
+        }
+}
+
+fn known_document_for_path(path: &Path, known_documents: &[KnownDocumentPath]) -> Option<String> {
+    known_documents
+        .iter()
+        .find(|known| same_path_identity(path, &known.path))
+        .map(|known| known.tab_id.clone())
+}
+
 fn open_selected_path(
     path: &std::path::Path,
     store: &DocumentStore,
 ) -> Result<DocumentDescriptor, DocumentCommandError> {
     let opened = document::open_document(path).map_err(DocumentCommandError::from_open_core)?;
     let trusted = trusted_from_descriptor(&opened.descriptor);
-    store.store_open_replacing_session(
+    store.store_open(
         opened.descriptor.id.clone(),
         opened.content.into_bytes(),
         trusted,
@@ -725,9 +782,10 @@ fn open_selected_path(
 /// 因而该命令不能被用作任意路径读取接口。取消选择返回 `None`。
 #[tauri::command]
 pub async fn select_and_open_document(
+    known_documents: Vec<KnownDocumentPath>,
     app: tauri::AppHandle,
     state: tauri::State<'_, DocumentStore>,
-) -> Result<Option<DocumentDescriptor>, DocumentCommandError> {
+) -> Result<Option<OpenDocumentSelection>, DocumentCommandError> {
     let Some(selected) = app.dialog().file().blocking_pick_file() else {
         return Ok(None);
     };
@@ -737,7 +795,11 @@ pub async fn select_and_open_document(
             "selected file path is unavailable",
         )
     })?;
-    open_selected_path(&path, state.inner()).map(Some)
+    if let Some(tab_id) = known_document_for_path(&path, &known_documents) {
+        return Ok(Some(OpenDocumentSelection::Existing { tab_id }));
+    }
+    open_selected_path(&path, state.inner())
+        .map(|descriptor| Some(OpenDocumentSelection::Opened { descriptor }))
 }
 
 /// 以原始二进制返回最近一次打开的文档内容。文档 ID 必须与打开时一致；取出后缓冲即清空。
@@ -1273,6 +1335,8 @@ fn preview_target(
     dir: &std::path::Path,
     file_name: &str,
     current: Option<&TrustedDocument>,
+    current_tab_id: Option<&str>,
+    known_documents: &[KnownDocumentPath],
 ) -> Result<TargetPreview, DocumentErrorCode> {
     validate_file_name(file_name)?;
     let path = compose_save_path(dir, file_name);
@@ -1291,9 +1355,16 @@ fn preview_target(
         },
         None => false,
     };
+    let occupied_tab_id = known_documents
+        .iter()
+        .find(|known| {
+            Some(known.tab_id.as_str()) != current_tab_id && same_path_identity(&path, &known.path)
+        })
+        .map(|known| known.tab_id.clone());
     Ok(TargetPreview {
         exists,
         is_current_path,
+        occupied_tab_id,
     })
 }
 
@@ -1408,6 +1479,8 @@ pub fn preview_save_target(
     directory_id: String,
     file_name: String,
     document_id: Option<String>,
+    current_tab_id: String,
+    known_documents: Vec<KnownDocumentPath>,
     state: tauri::State<'_, DocumentStore>,
 ) -> Result<TargetPreview, DocumentCommandError> {
     let grant = state_grant_or_missing(state.inner(), &directory_id)?;
@@ -1418,8 +1491,14 @@ pub fn preview_save_target(
         ));
     }
     let trusted_opt = trusted_for_inline_save_as(state.inner(), document_id.as_deref())?;
-    preview_target(&grant.path, &file_name, trusted_opt.as_ref())
-        .map_err(|code| DocumentCommandError::new(code, "invalid save target"))
+    preview_target(
+        &grant.path,
+        &file_name,
+        trusted_opt.as_ref(),
+        Some(&current_tab_id),
+        &known_documents,
+    )
+    .map_err(|code| DocumentCommandError::new(code, "invalid save target"))
 }
 
 /// 内嵌另存为保存：文件名经 UTF-8 percent-encoding 后放入 [`FILE_NAME_HEADER`]，目录授权
@@ -2062,29 +2141,90 @@ mod tests {
         };
 
         assert_eq!(
-            preview_target(dir.path(), "current.txt", Some(&trusted)).unwrap(),
+            preview_target(dir.path(), "current.txt", Some(&trusted), None, &[]).unwrap(),
             TargetPreview {
                 exists: true,
                 is_current_path: true,
+                occupied_tab_id: None,
             }
         );
         assert_eq!(
-            preview_target(dir.path(), "other.txt", Some(&trusted)).unwrap(),
+            preview_target(dir.path(), "other.txt", Some(&trusted), None, &[]).unwrap(),
             TargetPreview {
                 exists: true,
                 is_current_path: false,
+                occupied_tab_id: None,
             }
         );
         assert_eq!(
-            preview_target(dir.path(), "missing.txt", Some(&trusted)).unwrap(),
+            preview_target(dir.path(), "missing.txt", Some(&trusted), None, &[]).unwrap(),
             TargetPreview {
                 exists: false,
                 is_current_path: false,
+                occupied_tab_id: None,
             }
         );
         assert_eq!(
-            preview_target(dir.path(), "../escape.txt", Some(&trusted)),
+            preview_target(dir.path(), "../escape.txt", Some(&trusted), None, &[]),
             Err(DocumentErrorCode::InvalidFileName)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_path_identity_matches_selected_symlink_to_existing_real_path() {
+        use crate::document::test_support::TestDir;
+
+        let dir = TestDir::new();
+        let real = dir.join("real.txt");
+        let link = dir.join("link.txt");
+        std::fs::write(&real, b"content").unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let known_documents = [KnownDocumentPath {
+            tab_id: "tab-real".to_owned(),
+            path: real,
+        }];
+
+        assert_eq!(
+            known_document_for_path(&link, &known_documents),
+            Some("tab-real".to_owned())
+        );
+    }
+
+    #[test]
+    fn preview_reports_target_occupied_by_another_tab() {
+        use crate::document::test_support::TestDir;
+
+        let dir = TestDir::new();
+        let occupied = dir.join("occupied.txt");
+        std::fs::write(&occupied, b"occupied").unwrap();
+
+        let known_documents = [
+            KnownDocumentPath {
+                tab_id: "tab-current".to_owned(),
+                path: dir.join("current.txt"),
+            },
+            KnownDocumentPath {
+                tab_id: "tab-other".to_owned(),
+                path: occupied,
+            },
+        ];
+
+        assert_eq!(
+            preview_target(
+                dir.path(),
+                "occupied.txt",
+                None,
+                Some("tab-current"),
+                &known_documents,
+            )
+            .unwrap(),
+            TargetPreview {
+                exists: true,
+                is_current_path: false,
+                occupied_tab_id: Some("tab-other".to_owned()),
+            }
         );
     }
 
@@ -2821,10 +2961,11 @@ mod tests {
 
         // 预览目标不写盘。
         assert_eq!(
-            preview_target(dir.path(), "saved.txt", None).unwrap(),
+            preview_target(dir.path(), "saved.txt", None, None, &[]).unwrap(),
             TargetPreview {
                 exists: false,
                 is_current_path: false,
+                occupied_tab_id: None,
             }
         );
 

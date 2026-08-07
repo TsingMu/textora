@@ -27,6 +27,15 @@ export type DocumentDescriptor = {
   readOnly: boolean;
 };
 
+export type KnownDocumentPath = {
+  tabId: string;
+  path: string;
+};
+
+export type OpenDocumentSelection =
+  | { kind: "opened"; descriptor: DocumentDescriptor }
+  | { kind: "existing"; tabId: string };
+
 export type DocumentErrorCode =
   | "file-too-large"
   | "unsupported-encoding"
@@ -63,8 +72,16 @@ export async function checkBackendHealth(): Promise<HealthStatus> {
  * 请求 Rust 显示系统文件对话框，并打开用户实际选择的单个文件。取消返回 `null`。
  * 前端不接收或提交任意路径。
  */
-export async function selectAndOpenDocument(): Promise<DocumentDescriptor | null> {
-  return invoke<DocumentDescriptor | null>("select_and_open_document");
+export async function selectAndOpenDocument(
+  knownDocuments: readonly KnownDocumentPath[] = [],
+): Promise<OpenDocumentSelection | null> {
+  const selection = await invoke<OpenDocumentSelection | DocumentDescriptor | null>("select_and_open_document", {
+    knownDocuments,
+  });
+  if (selection === null || "kind" in selection) {
+    return selection;
+  }
+  return { kind: "opened", descriptor: selection };
 }
 
 /**
@@ -107,6 +124,7 @@ export type SaveAsDraft = {
 export type TargetPreview = {
   exists: boolean;
   isCurrentPath: boolean;
+  occupiedTabId: string | null;
 };
 
 /** 取得内嵌另存为面板的可信默认文件名与可选默认目录授权。 */
@@ -130,11 +148,15 @@ export async function previewSaveTarget(options: {
   id: string | null;
   directoryId: string;
   fileName: string;
+  currentTabId: string;
+  knownDocuments: readonly KnownDocumentPath[];
 }): Promise<TargetPreview> {
   return invoke<TargetPreview>("preview_save_target", {
     documentId: options.id,
     directoryId: options.directoryId,
     fileName: options.fileName,
+    currentTabId: options.currentTabId,
+    knownDocuments: options.knownDocuments,
   });
 }
 

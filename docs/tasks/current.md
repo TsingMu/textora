@@ -6,23 +6,41 @@
 
 ## 进行中
 
-暂无进行中的任务。下一个已承诺待办为「前端多标签会话与切换」。
+暂无进行中的任务。下一个已承诺待办为「多标签关闭协调」。
 
 ## 已承诺待办
 
-### 前端多标签会话与切换
+### 多标签关闭协调
 
 - **状态**：待开始
 - **Feature Spec**：`docs/features/multi-tab-session.md`
-- **目标**：在前端建立多标签会话骨架：多个标签的新建、切换与编辑隔离，单标签关闭复用未保存关闭保护。
-- **范围**：前端由单 `DocumentSession` 改为标签数组 + 活动 id；支持新建 Untitled 标签、活动标签切换、各标签独立的内容/脏状态/格式、Untitled 数字后缀去重（如 `Untitled`、`Untitled 2`）、最后一个标签关闭后回到新的空白 Untitled；单标签关闭复用现有保存/不保存/取消确认；另存为/冲突/缺失/关闭确认等模态打开时锁定标签切换（决议 2）。异步结果按标签 id 复核，过期不覆盖。
-- **非范围**：打开文件入新标签、普通保存/另存为/冲突/缺失按活动标签绑定、同路径切换到已有标签、Save As 跨标签路径占用保护、多标签窗口/应用退出逐一协调（留给后续切片）；不改后端、IPC 命令签名或 capability。
-- **依赖**：后端多文档可信状态已完成（上一项任务）。
-- **拆分检查**：本切片只做前端标签会话骨架与 Untitled 隔离编辑；文件操作按标签绑定与关闭协调为后续独立切片。
-- **实施要点**：以现有单文档会话作为每个标签的垂直切片，复用 `documentSession` 纯函数与既有保存/关闭确认流程；活动标签切换时编辑器、状态栏与错误提示随之切换。
-- **完成标准**：`npm run check`（typecheck + vitest，含新增多标签创建/切换/编辑隔离/Untitled 去重/单标签关闭保护用例）通过；`cargo fmt --manifest-path src-tauri/Cargo.toml --check`、`cargo check --manifest-path src-tauri/Cargo.toml --all-targets`、`cargo test --manifest-path src-tauri/Cargo.toml`、`npm run build`、`git diff --check` 通过。前端切片，macOS 真实交互验收留给集成验收切片。
+- **目标**：让单标签关闭、窗口关闭和应用退出在多标签场景下逐一处理所有未保存标签，避免只保护当前标签或重复事件叠加提示。
+- **范围**：关闭单个脏标签继续复用现有保存/不保存/取消确认；窗口关闭与应用退出按稳定顺序逐一提示所有脏标签，任一取消即停止关闭/退出；保存成功或明确不保存后继续下一个待处理标签；重复关闭/退出事件不叠加队列；模态期间锁定标签切换与新建；清洁标签关闭仍释放后端文档并移除标签。
+- **非范围**：多标签最终 macOS 真实交互验收、README/Feature Spec 收尾；不新增 capability，不实现汇总面板、撤销关闭标签或最近关闭记录。
+- **依赖**：打开与保存按活动标签绑定已完成。
+- **拆分检查**：本切片只交付关闭/退出协调这一组用户行为；完整回归、真实平台确认与文档收尾留给后续集成验收切片。
+- **实施要点**：关闭意图应保存待处理标签队列与当前处理项，确认文案随当前处理标签更新；每次保存/不保存结果都必须按发起 `tabId` 和 `documentId` 校验，过期结果不能关闭其他标签；窗口关闭授权与 `request_app_exit` 只在全部待处理标签成功处理后发出。
+- **完成标准**：`npm run check`（含新增多脏标签逐一窗口关闭/应用退出、取消停止、保存失败停留、重复事件不叠加、清洁标签释放用例）、`cargo fmt --manifest-path src-tauri/Cargo.toml --check`、`cargo check --manifest-path src-tauri/Cargo.toml --all-targets`、`cargo test --manifest-path src-tauri/Cargo.toml`、`npm run build`、`git diff --check` 通过。
 
 ## 最近完成
+
+### 打开与保存按活动标签绑定
+
+- **状态**：已完成
+- **开始日期**：2026-08-04
+- **完成日期**：2026-08-04
+- **Feature Spec**：`docs/features/multi-tab-session.md`
+- **结果**：打开文件入口从替换活动标签改为成功后新建文件标签并切换过去；取消或失败只清除发起标签的 Opening 状态，不替换其内容。前端显式把当前已打开文件标签路径传给后端，后端在文件选择后先按规范化路径与可解析的 canonical 真实路径检查是否已打开：命中时返回现有 `tabId`，前端直接切换且不调用 `read_document_content`，避免重复读取和重复后端活动文档。新打开候选改用多文档 `store_open`，不再清理其他文档状态。普通保存、Save As、冲突重载/覆盖、文件缺失与关闭保存续行继续按发起 `tabId`/`documentId` 回写，过期结果不会覆盖其他标签；Save As 预览新增其他标签路径占用识别，命中时在替换确认与写盘前显示错误并拒绝继续。测试断言同步为读取活动标签而非第一个标签。
+- **验证**：`npm run check` 通过（typecheck + vitest **105 passed / 0 failed**，新增覆盖重复打开已打开路径只切换不重读、Save As 目标被其他标签占用时不进入替换确认/写盘）；`npm run build` 通过；`cargo fmt --manifest-path src-tauri/Cargo.toml --check`、`cargo check --manifest-path src-tauri/Cargo.toml --all-targets`、`cargo test --manifest-path src-tauri/Cargo.toml`（**126 passed / 0 failed**，新增覆盖符号链接选择命中已有真实路径、另存为目标被其他标签占用）、`git diff --check` 均通过。本切片未做多标签窗口/应用退出逐一协调，也未做最终 macOS 真实交互验收。
+
+### 前端多标签会话与切换
+
+- **状态**：已完成
+- **开始日期**：2026-08-04
+- **完成日期**：2026-08-04
+- **Feature Spec**：`docs/features/multi-tab-session.md`
+- **结果**：前端由单 `DocumentSession` 改为 `TabSessionState`（标签数组 + 活动标签 id），新增 `DocumentTab` 与纯函数管理新建 Untitled、活动标签切换、按标签更新文档和关闭标签。主界面标签栏支持新建多个 Untitled，显示名按 `Untitled`、`Untitled 2`、`Untitled 3` 递增；切换标签时编辑器、状态栏、错误提示和格式设置随活动标签切换，各标签内容、脏状态、格式和错误状态互不共享。单标签关闭已接入现有保存/不保存/取消确认：未修改标签直接关闭，已修改标签先切到发起标签再确认，最后一个标签关闭后创建新的空白 Untitled。另存为、冲突、文件缺失、关闭确认和打开确认等模态期间锁定标签切换与新建标签；异步打开、保存、重载和覆盖结果按发起 `tabId` 回写。当前切片未改后端、IPC 签名或 capability；打开文件仍按既有单文档入口替换活动标签，打开入新标签与保存/冲突/缺失按标签绑定留给下一切片。
+- **验证**：`npm run check` 通过（typecheck + vitest **103 passed / 0 failed**，新增 `tabSession` 纯函数用例和 App DOM 用例覆盖 Untitled 数字后缀、新建/切换/编辑隔离、清洁关闭、关闭最后标签创建新 Untitled、脏标签关闭确认/取消/不保存、Save As 模态锁定切换）；`npm run build` 通过；`cargo fmt --manifest-path src-tauri/Cargo.toml --check`、`cargo check --manifest-path src-tauri/Cargo.toml --all-targets`、`cargo test --manifest-path src-tauri/Cargo.toml`（**124 passed / 0 failed**）、`git diff --check` 均通过。本切片为前端会话骨架，未做 macOS 真实交互。
 
 ### 重构后端 DocumentStore 支持多文档并发可信状态
 
