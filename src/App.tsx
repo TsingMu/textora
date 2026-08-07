@@ -16,7 +16,7 @@ import {
   updateDocumentContent,
   type DocumentSession,
 } from "./documentSession";
-import { Editor } from "./Editor";
+import { Editor, type EditorHandle } from "./Editor";
 import {
   activeDocument,
   addOpenedDocumentTab,
@@ -150,6 +150,7 @@ function App() {
   const busyRef = useRef(false);
   const closeConfirmPendingRef = useRef(false);
   const closeIntentRef = useRef<CloseIntent | null>(null);
+  const editorRef = useRef<EditorHandle>(null);
   const closeAuthorizationRef = useRef<{
     validDocumentIds: readonly string[];
   } | null>(null);
@@ -1033,6 +1034,10 @@ function App() {
     void openSaveAsPanel();
   }
 
+  function handleColumnSequenceClick() {
+    editorRef.current?.fillColumnBlockSequence();
+  }
+
   function openFormatSettings() {
     setFormatDraft(saveFormat);
     setFormatSettingsOpen(true);
@@ -1226,6 +1231,7 @@ function App() {
   const canSave =
     !session.readOnly && !busy && (session.path === null || session.isDirty);
   const canSaveAs = session.path !== null && !busy;
+  const canEdit = !editorLocked;
 
   return (
     <main className="app-shell">
@@ -1261,6 +1267,16 @@ function App() {
             aria-label="Save the current file to a new location"
           >
             Save As…
+          </button>
+          <button
+            type="button"
+            className="column-sequence-button"
+            onClick={handleColumnSequenceClick}
+            disabled={!canEdit}
+            aria-label="Fill selected column block with a decimal sequence"
+            title="Fill column sequence (⌥⌘N)"
+          >
+            Sequence
           </button>
         </div>
         <div className="backend-state" aria-live="polite">
@@ -1324,6 +1340,7 @@ function App() {
 
         <div className="editor-panel">
           <Editor
+            ref={editorRef}
             content={session.content}
             disabled={editorLocked}
             onChange={(content) => {

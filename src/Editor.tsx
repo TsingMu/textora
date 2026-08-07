@@ -16,7 +16,7 @@ import {
   rectangularSelection,
 } from "@codemirror/view";
 import { defaultKeymap, historyKeymap } from "@codemirror/commands";
-import { useEffect, useRef } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 
 type EditorProps = {
   content: string;
@@ -24,7 +24,22 @@ type EditorProps = {
   onChange: (content: string) => void;
 };
 
+export type EditorHandle = {
+  fillColumnBlockSequence: () => boolean;
+};
+
 type ColumnBlockDeleteDirection = "backward" | "forward";
+type ColumnBlockPastePlan =
+  | { kind: "apply"; spec: TransactionSpec }
+  | { kind: "reject" };
+
+function clipboardLines(text: string): string[] {
+  const normalized = text.replace(/\r\n?/g, "\n");
+  const withoutFinalLineBreak = normalized.endsWith("\n")
+    ? normalized.slice(0, -1)
+    : normalized;
+  return withoutFinalLineBreak.split("\n");
+}
 
 export function columnBlockDeleteSpec(
   state: EditorState,
@@ -101,19 +116,129 @@ export function columnBlockDeleteCommand(
   };
 }
 
+export function columnBlockPastePlan(
+  state: EditorState,
+  text: string,
+): ColumnBlockPastePlan | null {
+  const ranges = state.selection.ranges;
+  if (ranges.length < 2 || text.length === 0) {
+    return null;
+  }
+
+  const hasLineBreak = /\r|\n/.test(text);
+  const inserts = hasLineBreak
+    ? clipboardLines(text)
+    : Array.from({ length: ranges.length }, () => text);
+  if (inserts.length !== ranges.length) {
+    return { kind: "reject" };
+  }
+
+  const changes = ranges.map((range, index) => ({
+    from: range.from,
+    to: range.to,
+    insert: inserts[index],
+  }));
+  const changeSet = state.changes(changes);
+  return {
+    kind: "apply",
+    spec: {
+      changes,
+      selection: EditorSelection.create(
+        ranges.map((range, index) =>
+          EditorSelection.cursor(
+            changeSet.mapPos(range.from, -1) + inserts[index].length,
+          ),
+        ),
+      ),
+      scrollIntoView: true,
+      userEvent: "input.paste",
+    },
+  };
+}
+
+export function columnBlockPasteCommand(view: EditorView, text: string): boolean {
+  const plan = columnBlockPastePlan(view.state, text);
+  if (plan === null) {
+    return false;
+  }
+  if (plan.kind === "reject") {
+    return true;
+  }
+  view.dispatch(plan.spec);
+  return true;
+}
+
+export function columnBlockSequenceSpec(
+  state: EditorState,
+): TransactionSpec | null {
+  const ranges = state.selection.ranges;
+  if (ranges.length < 2) {
+    return null;
+  }
+
+  const width = String(ranges.length).length;
+  const inserts = ranges.map((_range, index) =>
+    String(index + 1).padStart(width, "0"),
+  );
+  const changes = ranges.map((range, index) => ({
+    from: range.from,
+    to: range.to,
+    insert: inserts[index],
+  }));
+  const changeSet = state.changes(changes);
+  return {
+    changes,
+    selection: EditorSelection.create(
+      ranges.map((range, index) =>
+        EditorSelection.cursor(
+          changeSet.mapPos(range.from, -1) + inserts[index].length,
+        ),
+      ),
+    ),
+    scrollIntoView: true,
+    userEvent: "input.sequence",
+  };
+}
+
+export const columnBlockSequenceCommand: Command = (view) => {
+  const spec = columnBlockSequenceSpec(view.state);
+  if (spec === null) {
+    return false;
+  }
+  view.dispatch(spec);
+  return true;
+};
+
 export const columnBlockSelectionExtensions: Extension = [
   EditorState.allowMultipleSelections.of(true),
   rectangularSelection(),
   crosshairCursor(),
+  EditorView.domEventHandlers({
+    paste(event, view) {
+      const text = event.clipboardData?.getData("text/plain");
+      if (text === undefined) {
+        return false;
+      }
+      const handled = columnBlockPasteCommand(view, text);
+      if (handled) {
+        event.preventDefault();
+      }
+      return handled;
+    },
+  }),
   Prec.high(
     keymap.of([
       { key: "Backspace", run: columnBlockDeleteCommand("backward") },
       { key: "Delete", run: columnBlockDeleteCommand("forward") },
+      { key: "Mod-Alt-n", run: columnBlockSequenceCommand },
     ]),
   ),
 ];
 
-export function Editor({ content, disabled = false, onChange }: EditorProps) {
+export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(
+  { content, disabled = false, onChange },
+  ref,
+) {
   const hostRef = useRef<HTMLDivElement>(null);
   const onChangeRef = useRef(onChange);
   const viewRef = useRef<EditorView | null>(null);
@@ -121,6 +246,16 @@ export function Editor({ content, disabled = false, onChange }: EditorProps) {
   const availabilityRef = useRef(new Compartment());
 
   onChangeRef.current = onChange;
+
+  useImperativeHandle(ref, () => ({
+    fillColumnBlockSequence() {
+      const view = viewRef.current;
+      if (view === null) {
+        return false;
+      }
+      return columnBlockSequenceCommand(view);
+    },
+  }));
 
   useEffect(() => {
     if (!hostRef.current) {
@@ -208,4 +343,4 @@ export function Editor({ content, disabled = false, onChange }: EditorProps) {
   }, [content]);
 
   return <div className="editor-host" ref={hostRef} />;
-}
+});

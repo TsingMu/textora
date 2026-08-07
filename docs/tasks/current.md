@@ -6,25 +6,40 @@
 
 ## 进行中
 
-暂无进行中任务。下一个已承诺待办为「实现列块粘贴」。
+暂无进行中任务。
 
 ## 已承诺待办
 
-### 实现列块粘贴
+暂无已承诺待办。
 
-- **状态**：待开始
+## 最近完成
+
+### 完成列块编辑集成验收与文档收尾
+
+- **状态**：已完成
+- **开始日期**：2026-08-07
+- **完成日期**：2026-08-07
 - **Feature Spec**：`docs/features/column-block-editing.md`
-- **目标**：对矩形多选区支持单行复制到每行、多行等量逐行粘贴，并安全拒绝不匹配输入。
-- **依赖**：实现列块删除。
+- **结果**：完成列块编辑完整回归、release 构建和真实 macOS 交互验收，并把 `docs/features/column-block-editing.md` 标记为已完成、同步 README 当前状态。列块编辑首版支持 `Option` + 鼠标拖拽矩形选择、多选区 Delete/Backspace 删除、单行粘贴到每个选择行、多行等量逐行粘贴、行数不匹配拒绝、工具栏 `Sequence` 与 `⌥⌘N` 数字序列填充（`1..n`，按结束值宽度补零）。集成验收中发现 `⌥⌘N` 在 AppleScript 物理键事件下未稳定触发，因此补充工具栏 `Sequence` 作为可靠可发现入口；未实现自定义起始值/步长/前导零、十六进制、字母、日期序列、命令面板、键盘矩形选择、Markdown 或 Mermaid 能力。
+- **验证**：`npm run check` 通过（typecheck + vitest **120 passed / 0 failed**）；`npm run build` 通过；`cargo fmt --manifest-path src-tauri/Cargo.toml --check`、`cargo check --manifest-path src-tauri/Cargo.toml --all-targets`、`cargo test --manifest-path src-tauri/Cargo.toml --quiet`（**126 passed / 0 failed**）通过；`npm run tauri -- build` 通过并生成 `Textora.app`；`git diff --check` 通过。2026-08-07 在 release `Textora.app` 做真实 macOS 交互验收：粘贴四行测试文本；`Option` 拖拽形成跨四行列块；`Delete` 删除同列内容；单行剪贴板粘贴到每个选择行；四行剪贴板逐行写入；两行剪贴板粘到四行列块时被拒绝且文档不变；点击工具栏 `Sequence` 写入 `1, 2, 3, 4`；聚焦编辑器后 `⌘Z` 撤销序列填充；列块编辑后的 `⌘Q` 触发未保存关闭确认。
 
 ### 实现数字序列填充首版
 
-- **状态**：待开始
+- **状态**：已完成
+- **开始日期**：2026-08-07
+- **完成日期**：2026-08-07
 - **Feature Spec**：`docs/features/column-block-editing.md`
-- **目标**：对矩形多选区按行写入十进制 `1..n` 序列，更新脏状态并支持撤销。
-- **依赖**：实现列块粘贴。
+- **结果**：新增数字序列填充命令，并接入编辑器快捷键 `⌥⌘N`（CodeMirror `Mod-Alt-n`）。当存在多个选择范围时，命令按选择范围顺序插入或替换十进制 `1..n`；宽度按结束值自动补零，例如 10 行生成 `01..10`。单选区不接管该快捷键，普通编辑行为不变。序列填充通过普通 CodeMirror 事务提交，保持撤销/重做、内容同步、脏状态和保存保护链路；未实现自定义起始值、步长、前导零、十六进制、字母或日期序列。
+- **验证**：`npm run check` 通过（typecheck + vitest **120 passed / 0 failed**，新增覆盖多光标插入序列、范围替换序列、10 行自动补零和撤销恢复原文）；`npm run build` 通过；`git diff --check` 通过。本切片未跑 `npm run tauri -- build` 或真实 macOS 快捷键验收，按范围留给列块编辑集成验收。
 
-## 最近完成
+### 实现列块粘贴
+
+- **状态**：已完成
+- **开始日期**：2026-08-07
+- **完成日期**：2026-08-07
+- **Feature Spec**：`docs/features/column-block-editing.md`
+- **结果**：新增列块粘贴计划与命令，并在多选区下接管 `paste` DOM 事件。剪贴板为单行文本时，文本会插入或替换到每个选择范围；剪贴板为多行文本时，去掉一个末尾换行后要求行数与选择范围数一致，并逐行插入或替换；行数不匹配时阻止默认粘贴且不改变文档，避免普通粘贴把多行内容误塞进第一个选区。单选区、空剪贴板或无法读取纯文本时仍交给 CodeMirror 默认粘贴。列块粘贴通过普通 CodeMirror 事务提交，保持撤销/重做、内容同步、脏状态和保存保护链路。
+- **验证**：`npm run check` 通过（typecheck + vitest **116 passed / 0 failed**，新增覆盖单行复制到每个选择行、多行等量逐行粘贴、末尾换行处理、行数不匹配拒绝且不改文档、粘贴后撤销恢复原文）；`npm run build` 通过；`git diff --check` 通过。本切片未跑 `npm run tauri -- build` 或真实 macOS 粘贴验收，按范围留给列块编辑集成验收。
 
 ### 调整关闭确认按钮为 macOS 交通灯色系
 

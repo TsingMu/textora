@@ -328,7 +328,8 @@ textarea {
   cursor: not-allowed;
 }
 
-.save-as-button {
+.save-as-button,
+.column-sequence-button {
   padding: 4px 12px;
   border: 1px solid var(--border-subtle);
   border-radius: 7px;
@@ -339,13 +340,19 @@ textarea {
   transition: border-color 0.12s ease;
 }
 
-.save-as-button:hover:not(:disabled) {
+.save-as-button:hover:not(:disabled),
+.column-sequence-button:hover:not(:disabled) {
   border-color: var(--accent);
 }
 
-.save-as-button:disabled {
+.save-as-button:disabled,
+.column-sequence-button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.column-sequence-button {
+  color: var(--accent);
 }
 
 .save-as-dialog {
