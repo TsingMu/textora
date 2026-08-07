@@ -6,23 +6,32 @@
 
 ## 进行中
 
-暂无进行中的任务。下一个已承诺待办为「多标签关闭协调」。
+暂无进行中的任务。下一个已承诺待办为「完成多标签会话集成验收与文档收尾」。
 
 ## 已承诺待办
 
-### 多标签关闭协调
+### 完成多标签会话集成验收与文档收尾
 
 - **状态**：待开始
 - **Feature Spec**：`docs/features/multi-tab-session.md`
-- **目标**：让单标签关闭、窗口关闭和应用退出在多标签场景下逐一处理所有未保存标签，避免只保护当前标签或重复事件叠加提示。
-- **范围**：关闭单个脏标签继续复用现有保存/不保存/取消确认；窗口关闭与应用退出按稳定顺序逐一提示所有脏标签，任一取消即停止关闭/退出；保存成功或明确不保存后继续下一个待处理标签；重复关闭/退出事件不叠加队列；模态期间锁定标签切换与新建；清洁标签关闭仍释放后端文档并移除标签。
-- **非范围**：多标签最终 macOS 真实交互验收、README/Feature Spec 收尾；不新增 capability，不实现汇总面板、撤销关闭标签或最近关闭记录。
-- **依赖**：打开与保存按活动标签绑定已完成。
-- **拆分检查**：本切片只交付关闭/退出协调这一组用户行为；完整回归、真实平台确认与文档收尾留给后续集成验收切片。
-- **实施要点**：关闭意图应保存待处理标签队列与当前处理项，确认文案随当前处理标签更新；每次保存/不保存结果都必须按发起 `tabId` 和 `documentId` 校验，过期结果不能关闭其他标签；窗口关闭授权与 `request_app_exit` 只在全部待处理标签成功处理后发出。
-- **完成标准**：`npm run check`（含新增多脏标签逐一窗口关闭/应用退出、取消停止、保存失败停留、重复事件不叠加、清洁标签释放用例）、`cargo fmt --manifest-path src-tauri/Cargo.toml --check`、`cargo check --manifest-path src-tauri/Cargo.toml --all-targets`、`cargo test --manifest-path src-tauri/Cargo.toml`、`npm run build`、`git diff --check` 通过。
+- **目标**：组合验证多标签会话完整行为，完成 macOS 真实交互验收，并把 Feature Spec 与 README 收尾到真实完成状态。
+- **范围**：对照多标签规格验收条件完整回归；执行 macOS 真实交互检查（新建/切换/打开/重复打开、保存/另存为路径占用、单标签关闭、窗口关闭与应用退出逐一保护）；必要时修复集成验收中暴露的小问题；更新 `docs/features/multi-tab-session.md` 状态/验收记录与 README 当前状态。
+- **非范围**：新增多标签主要行为、汇总关闭面板、多窗口、恢复会话、拖拽排序、最近关闭标签、列块编辑或 Markdown 能力。
+- **依赖**：后端多文档可信状态、前端多标签会话与切换、打开/保存按活动标签绑定、多标签关闭协调均已完成。
+- **拆分检查**：本任务为 Feature 最后一项，只做组合验证、真实平台确认、必要小修和文档收尾，不再承担新的主要用户行为。
+- **实施要点**：先跑完整自动化与构建，再进行真实 macOS 交互；若发现超出“小修”的缺口，应停止并拆出新的实现任务。
+- **完成标准**：`npm run check`、`npm run build`、`cargo fmt --manifest-path src-tauri/Cargo.toml --check`、`cargo check --manifest-path src-tauri/Cargo.toml --all-targets`、`cargo test --manifest-path src-tauri/Cargo.toml`、`npm run tauri -- build`、`git diff --check` 通过；macOS 真实交互验收记录明确；Feature Spec 状态改为已完成且 README 同步。
 
 ## 最近完成
+
+### 多标签关闭协调
+
+- **状态**：已完成
+- **开始日期**：2026-08-07
+- **完成日期**：2026-08-07
+- **Feature Spec**：`docs/features/multi-tab-session.md`
+- **结果**：把关闭状态机从单一 `closeIntent` 升级为关闭队列：窗口关闭与应用退出会按标签顺序收集所有脏标签，逐一切到对应标签并复用现有保存/不保存/取消确认；保存成功后继续下一项，不保存会释放后端文档并关闭该标签，任一取消或保存失败/冲突/缺失都会停止剩余队列并保持应用运行。重复窗口关闭或 app-exit 请求只维持一个确认，不叠加队列；全部待处理标签成功处理后才发出一次窗口关闭授权或 `request_app_exit`。单标签关闭继续保留既有体验，最后一个标签关闭仍创建新的空白 Untitled。未新增 capability，未实现汇总面板或最近关闭标签。
+- **验证**：`npm run check` 通过（typecheck + vitest **108 passed / 0 failed**，新增覆盖窗口关闭逐一处理多个脏 Untitled、重复关闭不叠加、取消停止剩余队列且已不保存标签生效、多标签 app-exit 保存/不保存全部完成后才退出、保存失败停止队列且不退出）；`npm run build` 通过；`cargo fmt --manifest-path src-tauri/Cargo.toml --check`、`cargo check --manifest-path src-tauri/Cargo.toml --all-targets`、`cargo test --manifest-path src-tauri/Cargo.toml`（**126 passed / 0 failed**）、`git diff --check` 均通过。本切片未做最终 macOS 真实交互验收或 Feature Spec/README 收尾。
 
 ### 打开与保存按活动标签绑定
 

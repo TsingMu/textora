@@ -1954,6 +1954,96 @@ describe("App window close protection", () => {
     );
   }
 
+  function editActiveContent(content: string) {
+    const editable = container.querySelector<HTMLElement>(".cm-content");
+    if (editable === null) throw new Error("missing editor");
+    editable.textContent = content;
+    editable.dispatchEvent(
+      new InputEvent("input", {
+        bubbles: true,
+        inputType: "insertText",
+        data: content,
+      }),
+    );
+  }
+
+  function activeTabTitle() {
+    return (
+      container.querySelector(".document-tab.is-active")?.textContent ?? ""
+    );
+  }
+
+  function tabTitles() {
+    return Array.from(container.querySelectorAll(".document-tab-title")).map(
+      (node) => node.textContent,
+    );
+  }
+
+  async function renderTwoDirtyUntitledTabs() {
+    await act(async () => root.render(<App />));
+    await act(async () => editActiveContent("first dirty"));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".new-tab-button")?.click();
+    });
+    await act(async () => editActiveContent("second dirty"));
+    expect(tabTitles()).toEqual(["Untitled", "Untitled 2"]);
+  }
+
+  async function renderTwoDirtyOpenedTabs() {
+    let selectionCount = 0;
+    invokeMock.mockImplementation(async (cmd: string, args?: { id?: string }) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        selectionCount += 1;
+        const suffix = selectionCount === 1 ? "a" : "b";
+        return {
+          id: `doc-${suffix}`,
+          path: `/tmp/${suffix}.txt`,
+          displayName: `${suffix}.txt`,
+          byteCount: 5,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 5, sha256: suffix },
+          readOnly: false,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder()
+          .encode(args?.id === "doc-b" ? "Second" : "First")
+          .buffer;
+      }
+      if (cmd === "save_document") {
+        return {
+          id: args?.id ?? "doc-a",
+          path: `/tmp/${args?.id === "doc-b" ? "b" : "a"}.txt`,
+          displayName: `${args?.id === "doc-b" ? "b" : "a"}.txt`,
+          byteCount: 12,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 12, sha256: "saved" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "close_document" || cmd === "request_app_exit") {
+        return undefined;
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await act(async () => root.render(<App />));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    await act(async () => editActiveContent("first edited"));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    await act(async () => editActiveContent("second edited"));
+    expect(tabTitles()).toEqual(["Untitled", "a.txt", "b.txt"]);
+  }
+
   it("allows a clean document to close without a confirmation", async () => {
     await act(async () => root.render(<App />));
 
@@ -1994,6 +2084,104 @@ describe("App window close protection", () => {
     expect(
       container.querySelector('[aria-label="Save before closing?"]'),
     ).not.toBeNull();
+  });
+
+  it("walks dirty tabs one by one on window close and cancel stops the remaining queue", async () => {
+    await renderTwoDirtyUntitledTabs();
+
+    const firstClose = await emitWindowClose();
+    const secondClose = await emitWindowClose();
+
+    expect(firstClose).toHaveBeenCalledOnce();
+    expect(secondClose).toHaveBeenCalledOnce();
+    expect(activeTabTitle()).toContain("Untitled");
+    expect(
+      container.querySelector('[aria-label="Save before closing?"]')?.textContent,
+    ).toContain("Untitled");
+    expect(
+      container.querySelectorAll('[aria-label="Save before closing?"]'),
+    ).toHaveLength(1);
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".confirm-discard")?.click();
+    });
+
+    expect(tabTitles()).toEqual(["Untitled 2"]);
+    expect(activeTabTitle()).toContain("Untitled 2");
+    expect(
+      container.querySelector('[aria-label="Save before closing?"]')?.textContent,
+    ).toContain("Untitled 2");
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".confirm-cancel")?.click();
+    });
+
+    expect(
+      container.querySelector('[aria-label="Save before closing?"]'),
+    ).toBeNull();
+    expect(tabTitles()).toEqual(["Untitled 2"]);
+    expect(container.querySelector(".statusbar")?.textContent).toContain(
+      "Modified",
+    );
+    expect(tauriWindowMock.close).not.toHaveBeenCalled();
+  });
+
+  it("finishes an app-exit queue only after every dirty tab is handled", async () => {
+    await renderTwoDirtyOpenedTabs();
+
+    await emitAppExitRequest();
+    expect(activeTabTitle()).toContain("a.txt");
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".confirm-save")?.click();
+    });
+    expect(activeTabTitle()).toContain("b.txt");
+    expect(
+      invokeMock.mock.calls.some((call) => call[0] === "request_app_exit"),
+    ).toBe(false);
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".confirm-discard")?.click();
+    });
+
+    expect(
+      invokeMock.mock.calls.filter((call) => call[0] === "save_document"),
+    ).toHaveLength(1);
+    expect(
+      invokeMock.mock.calls.find((call) => call[0] === "close_document"),
+    ).toEqual(["close_document", { id: "doc-b" }]);
+    expect(
+      invokeMock.mock.calls.some((call) => call[0] === "request_app_exit"),
+    ).toBe(true);
+    expect(tauriWindowMock.close).not.toHaveBeenCalled();
+  });
+
+  it("stops a multi-tab app-exit queue when saving one tab fails", async () => {
+    await renderTwoDirtyOpenedTabs();
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "save_document") {
+        throw { code: "save-failed", message: "failed" };
+      }
+      if (cmd === "request_app_exit") {
+        return undefined;
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await emitAppExitRequest();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".confirm-save")?.click();
+    });
+
+    expect(container.querySelector(".notice-error")).not.toBeNull();
+    expect(activeTabTitle()).toContain("a.txt");
+    expect(
+      invokeMock.mock.calls.some((call) => call[0] === "request_app_exit"),
+    ).toBe(false);
+    expect(tabTitles()).toEqual(["Untitled", "a.txt", "b.txt"]);
   });
 
   it("authorizes exactly one close after explicitly discarding", async () => {

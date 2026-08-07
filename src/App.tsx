@@ -77,11 +77,16 @@ type SaveAsPanelState = {
   errorMessage: string | null;
 };
 type CloseKind = "window" | "app-exit" | "tab";
-type CloseIntent = {
+type CloseIntentItem = {
   tabId: string;
   documentId: string;
   content: string;
+};
+type CloseIntent = {
   kind: CloseKind;
+  active: CloseIntentItem;
+  pending: CloseIntentItem[];
+  completedDocumentIds: string[];
 };
 
 function invalidSaveFileName(fileName: string): boolean {
@@ -174,6 +179,16 @@ function App() {
     setTabSession((current) => updateDocumentByTabId(current, tabId, update));
   }
 
+  function updateTabSession(
+    update: (state: TabSessionState) => TabSessionState,
+  ) {
+    setTabSession((current) => {
+      const next = update(current);
+      tabSessionRef.current = next;
+      return next;
+    });
+  }
+
   function knownDocumentPathsForTabs(
     state: TabSessionState,
   ): KnownDocumentPath[] {
@@ -182,6 +197,16 @@ function App() {
         ? []
         : [{ tabId: tab.tabId, path: tab.document.path }],
     );
+  }
+
+  function dirtyCloseItems(state: TabSessionState): CloseIntentItem[] {
+    return state.tabs
+      .filter((tab) => tab.document.isDirty)
+      .map((tab) => ({
+        tabId: tab.tabId,
+        documentId: tab.document.id,
+        content: tab.document.content,
+      }));
   }
 
   useEffect(() => {
@@ -287,11 +312,11 @@ function App() {
 
         const stopListeningClose = await getCurrentWindow().onCloseRequested(
           (event: CloseRequestedEvent) => {
-            const current = sessionRef.current;
             const authorization = closeAuthorizationRef.current;
             if (authorization !== null) {
               closeAuthorizationRef.current = null;
-              if (authorization.validDocumentIds.includes(current.id)) {
+              const active = activeDocument(tabSessionRef.current);
+              if (authorization.validDocumentIds.includes(active.id)) {
                 return;
               }
               event.preventDefault();
@@ -305,19 +330,12 @@ function App() {
               event.preventDefault();
               return;
             }
-            if (!current.isDirty) {
+            const pending = dirtyCloseItems(tabSessionRef.current);
+            if (pending.length === 0) {
               return;
             }
             event.preventDefault();
-            closeIntentRef.current = {
-              tabId: tabSessionRef.current.activeTabId,
-              documentId: current.id,
-              content: current.content,
-              kind: "window",
-            };
-            closeConfirmPendingRef.current = true;
-            setCloseConfirmError(null);
-            setCloseConfirmPending(true);
+            startCloseIntent("window", pending);
           },
         );
         if (cancelled) {
@@ -331,7 +349,6 @@ function App() {
         const stopListeningExit = await listen(
           "textora-app-exit-requested",
           () => {
-            const current = sessionRef.current;
             const existing = closeIntentRef.current;
             if (existing !== null) {
               // 归并：已有窗口关闭或退出意图时统一升级为应用退出，不重复提示，
@@ -345,20 +362,13 @@ function App() {
               // 忙碌或已有提示时安全阻止（Rust 已 prevent_exit），不叠加第二个提示。
               return;
             }
-            if (!current.isDirty) {
+            const pending = dirtyCloseItems(tabSessionRef.current);
+            if (pending.length === 0) {
               // 未修改：完成正常退出。
               void requestAppExit();
               return;
             }
-            closeIntentRef.current = {
-              tabId: tabSessionRef.current.activeTabId,
-              documentId: current.id,
-              content: current.content,
-              kind: "app-exit",
-            };
-            closeConfirmPendingRef.current = true;
-            setCloseConfirmError(null);
-            setCloseConfirmPending(true);
+            startCloseIntent("app-exit", pending);
           },
         );
         if (cancelled) {
@@ -399,6 +409,48 @@ function App() {
     closeAuthorizationRef.current = null;
   }
 
+  function startCloseIntent(kind: CloseKind, items: CloseIntentItem[]) {
+    const [active, ...pending] = items;
+    if (active === undefined) return;
+    closeIntentRef.current = {
+      kind,
+      active,
+      pending,
+      completedDocumentIds: [],
+    };
+    updateTabSession((current) => switchActiveTab(current, active.tabId));
+    closeConfirmPendingRef.current = true;
+    setCloseConfirmError(null);
+    setCloseConfirmPending(true);
+  }
+
+  async function finishCloseIntent(
+    intent: CloseIntent,
+    completedDocumentIds: readonly string[],
+  ) {
+    const allCompleted = [
+      ...intent.completedDocumentIds,
+      ...completedDocumentIds,
+    ];
+    const [next, ...remaining] = intent.pending;
+    if (next !== undefined) {
+      closeIntentRef.current = {
+        ...intent,
+        active: next,
+        pending: remaining,
+        completedDocumentIds: allCompleted,
+      };
+      updateTabSession((current) => switchActiveTab(current, next.tabId));
+      closeConfirmPendingRef.current = true;
+      setCloseConfirmError(null);
+      setCloseConfirmPending(true);
+      return;
+    }
+
+    const active = activeDocument(tabSessionRef.current);
+    await executeAuthorizedClose(intent.kind, [...allCompleted, active.id], intent.active.tabId);
+  }
+
   async function executeAuthorizedClose(
     kind: CloseKind,
     validDocumentIds: readonly string[],
@@ -406,7 +458,7 @@ function App() {
   ) {
     closeIntentRef.current = null;
     if (kind === "tab") {
-      for (const id of validDocumentIds) {
+      for (const id of new Set(validDocumentIds)) {
         if (!id.startsWith("untitled-")) {
           await closeDocument(id);
         }
@@ -435,10 +487,12 @@ function App() {
 
   async function handleCloseSave() {
     const intent = closeIntentRef.current;
+    const activeIntent = intent?.active;
     if (
       intent === null ||
-      intent.documentId !== sessionRef.current.id ||
-      intent.tabId !== tabSessionRef.current.activeTabId
+      activeIntent === undefined ||
+      activeIntent.documentId !== sessionRef.current.id ||
+      activeIntent.tabId !== tabSessionRef.current.activeTabId
     ) {
       clearCloseIntent();
       setCloseConfirmPending(false);
@@ -452,9 +506,9 @@ function App() {
     if (current.path !== null && !current.readOnly) {
       setSession((s) => ({ ...s, saveStatus: "saving", saveError: null }));
       try {
-        const descriptor = await saveDocument(intent.documentId, intent.content);
+        const descriptor = await saveDocument(activeIntent.documentId, activeIntent.content);
         setSession((s) => commitSavedDocument(s, descriptor));
-        await executeAuthorizedClose(intent.kind, [intent.documentId], intent.tabId);
+        await finishCloseIntent(intent, [activeIntent.documentId]);
       } catch (err) {
         clearCloseIntent();
         const error: DocumentCommandError = isDocumentCommandError(err)
@@ -482,10 +536,12 @@ function App() {
 
   async function handleCloseDiscard() {
     const intent = closeIntentRef.current;
+    const activeIntent = intent?.active;
     if (
       intent === null ||
-      intent.documentId !== sessionRef.current.id ||
-      intent.tabId !== tabSessionRef.current.activeTabId
+      activeIntent === undefined ||
+      activeIntent.documentId !== sessionRef.current.id ||
+      activeIntent.tabId !== tabSessionRef.current.activeTabId
     ) {
       clearCloseIntent();
       setCloseConfirmPending(false);
@@ -494,9 +550,9 @@ function App() {
     }
     setCloseConfirmPending(false);
     closeConfirmPendingRef.current = false;
-    if (!intent.documentId.startsWith("untitled-")) {
+    if (!activeIntent.documentId.startsWith("untitled-")) {
       try {
-        await closeDocument(intent.documentId);
+        await closeDocument(activeIntent.documentId);
       } catch {
         setCloseConfirmError(
           "The document could not be closed safely. Please try again.",
@@ -507,11 +563,12 @@ function App() {
       }
     }
     if (intent.kind === "tab") {
-      setTabSession((current) => closeTabCleanly(current, intent.tabId));
+      updateTabSession((current) => closeTabCleanly(current, activeIntent.tabId));
       clearCloseIntent();
       return;
     }
-    await executeAuthorizedClose(intent.kind, [intent.documentId], intent.tabId);
+    updateTabSession((current) => closeTabCleanly(current, activeIntent.tabId));
+    await finishCloseIntent(intent, [activeIntent.documentId]);
   }
 
   function handleCloseCancel() {
@@ -772,10 +829,10 @@ function App() {
       setSaveAsPanel((value) => ({ ...value, open: false, status: "idle" }));
       setSession((value) => commitSavedAs(value, descriptor));
       if (closeIntent !== null) {
-        await executeAuthorizedClose(closeIntent.kind, [
-          closeIntent.documentId,
+        await finishCloseIntent(closeIntent, [
+          closeIntent.active.documentId,
           descriptor.id,
-        ], closeIntent.tabId);
+        ]);
       }
     } catch (err) {
       clearCloseIntent();
@@ -919,10 +976,14 @@ function App() {
           "The document could not be closed safely. Please try again.",
         );
         closeIntentRef.current = {
-          tabId,
-          documentId: tab.document.id,
-          content: tab.document.content,
           kind: "tab",
+          active: {
+            tabId,
+            documentId: tab.document.id,
+            content: tab.document.content,
+          },
+          pending: [],
+          completedDocumentIds: [],
         };
         closeConfirmPendingRef.current = true;
         setCloseConfirmPending(true);
@@ -932,10 +993,14 @@ function App() {
       return;
     }
     closeIntentRef.current = {
-      tabId,
-      documentId: tab.document.id,
-      content: tab.document.content,
       kind: "tab",
+      active: {
+        tabId,
+        documentId: tab.document.id,
+        content: tab.document.content,
+      },
+      pending: [],
+      completedDocumentIds: [],
     };
     closeConfirmPendingRef.current = true;
     setCloseConfirmError(null);
