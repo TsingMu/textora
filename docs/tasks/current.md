@@ -6,21 +6,22 @@
 
 ## 进行中
 
-暂无进行中任务。下一个已承诺待办为「代码高亮集成验收与文档收尾」。
+暂无进行中任务。
 
 ## 已承诺待办
 
-### 代码高亮集成验收与文档收尾
-
-- **状态**：待开始
-- **Feature Spec**：`docs/features/code-syntax-highlighting.md`
-- **目标**：完成代码高亮的 release 构建与 macOS 真实交互验收，并把 Feature Spec 状态改为已完成、同步 README 当前状态。
-- **范围**：在 release `Textora.app` 上验收至少一种代码文件（如 `.ts`/`.py`/`.java`）、一种配置文件（如 `.json`/`.toml`/`.yaml`）、一种脚本（如 `.sh`/`.sql`）与一种未知扩展名文件的打开/高亮/状态栏语言与普通文本退化；多标签高亮隔离、另存为后重新识别、高亮下普通输入/撤销/列块编辑/保存/关闭保护的真实交互；按需补 README 与 Feature Spec 验证记录。
-- **非范围**：不新增语言、主题、折叠或补全；不引入 Markdown 预览。
-- **依赖**：高亮与既有编辑能力回归已完成（上一项任务）。
-- **完成标准**：`npm run check`、`npm run tauri -- build`、`git diff --check` 通过；Feature Spec 验收条件勾选并改为已完成；README 同步。
+暂无已承诺待办。
 
 ## 最近完成
+
+### 代码高亮集成验收与文档收尾
+
+- **状态**：已完成
+- **开始日期**：2026-08-10
+- **完成日期**：2026-08-10
+- **Feature Spec**：`docs/features/code-syntax-highlighting.md`
+- **结果**：完成代码高亮的自动化回归、前端构建、release 构建、系统应用重新部署和 macOS 真实交互验收，并把 `docs/features/code-syntax-highlighting.md` 与 README 同步为已完成状态。首版代码高亮支持按文件名/扩展名识别 JavaScript、TypeScript、JSON、HTML、CSS、Rust、Python、Java、Shell、SQL、TOML、YAML、Markdown 和 Plain Text；活动标签状态栏显示语言名，切换标签、打开文件与另存为后重新识别；未知扩展名与 Untitled 退化为普通文本；Markdown 仅源码高亮，不引入预览。未新增 LSP、补全、主题、折叠、Markdown 预览、文件系统权限、shell 权限、网络权限或远程页面权限。
+- **验证**：`npm run check` 通过（typecheck + vitest **161 passed / 0 failed**）；`npm run build` 通过；`npm run tauri -- build` 通过并生成 release `Textora.app`；`git diff --check` 通过。已用 `/usr/bin/ditto` 覆盖部署到 `/Applications/Textora.app`，并经 `codesign --force --deep --sign - /Applications/Textora.app` 本机重签名；`codesign --verify --deep --strict /Applications/Textora.app` 通过，`CFBundleIdentifier` 为 `com.tsingmu.textora`，`CFBundleIconFile` 为 `icon.icns`，安装后图标资源与项目 `src-tauri/icons/icon.icns` SHA-256 一致。人工验证通过：在重新部署后的 `/Applications/Textora.app` 中打开 `.ts`、`.json`、`.sh` 与未知扩展名文件，确认语言状态栏、普通文本退化和多标签隔离均符合规格。
 
 ### 高亮与既有编辑能力回归
 
