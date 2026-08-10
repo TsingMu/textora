@@ -6,13 +6,57 @@
 
 ## 进行中
 
-暂无进行中任务。
+暂无进行中任务。下一个已承诺待办为「代码高亮集成验收与文档收尾」。
 
 ## 已承诺待办
 
-暂无已承诺待办。
+### 代码高亮集成验收与文档收尾
+
+- **状态**：待开始
+- **Feature Spec**：`docs/features/code-syntax-highlighting.md`
+- **目标**：完成代码高亮的 release 构建与 macOS 真实交互验收，并把 Feature Spec 状态改为已完成、同步 README 当前状态。
+- **范围**：在 release `Textora.app` 上验收至少一种代码文件（如 `.ts`/`.py`/`.java`）、一种配置文件（如 `.json`/`.toml`/`.yaml`）、一种脚本（如 `.sh`/`.sql`）与一种未知扩展名文件的打开/高亮/状态栏语言与普通文本退化；多标签高亮隔离、另存为后重新识别、高亮下普通输入/撤销/列块编辑/保存/关闭保护的真实交互；按需补 README 与 Feature Spec 验证记录。
+- **非范围**：不新增语言、主题、折叠或补全；不引入 Markdown 预览。
+- **依赖**：高亮与既有编辑能力回归已完成（上一项任务）。
+- **完成标准**：`npm run check`、`npm run tauri -- build`、`git diff --check` 通过；Feature Spec 验收条件勾选并改为已完成；README 同步。
 
 ## 最近完成
+
+### 高亮与既有编辑能力回归
+
+- **状态**：已完成
+- **开始日期**：2026-08-10
+- **完成日期**：2026-08-10
+- **Feature Spec**：`docs/features/code-syntax-highlighting.md`
+- **结果**：验证高亮启用下既有编辑能力不回退，并补齐自动化回归用例。新增 `src/Editor.test.ts`「column block editing under syntax highlighting」用例：TypeScript 语言扩展与列块选区扩展同时启用时，多选区、列块删除、列块粘贴、数字序列填充仍按既有结果工作，且数字序列填充可经 `undo` 恢复（证明语言扩展不破坏列块编辑与撤销栈）。新增 `src/Editor.test.tsx` 用例：在 `typescript` 与 `markdown` 之间重配置语言时，编辑器实例与文档内容保持不变且不触发 `onChange`（证明高亮重配置不丢弃文档/脏状态）。新增 `src/App.test.tsx` 两条集成用例：打开 `.tsx` 文件后切换到初始 Untitled 再切回，状态栏语言在 `TypeScript` 与 `Plain Text` 之间按活动标签跟随且互不污染；Untitled 经另存为保存到 `.ts` 路径后，活动标签与状态栏语言重新识别为 `TypeScript`。未改生产代码、Rust/capability/IPC 与保存/关闭保护链路；高亮重配置仍走既有 `languageCompartment` 的 `Compartment.reconfigure`，不重建编辑器实例。
+- **验证**：`npm run check` 通过（typecheck + vitest **161 passed / 0 failed**，新增 7 个高亮回归用例：4 个列块编辑 + 1 个语言重配置保文档 + 2 个 App 多标签/另存为重新识别）；`npm run build` 通过；`git diff --check` 通过。前端切片，macOS release 真实交互验收（各语言高亮、状态栏语言、未知退化、多标签隔离）与 Feature Spec/README 收尾留给集成验收切片。
+
+### 接入 CodeMirror 基础语法高亮与状态栏语言
+
+- **状态**：已完成
+- **开始日期**：2026-08-10
+- **完成日期**：2026-08-10
+- **Feature Spec**：`docs/features/code-syntax-highlighting.md`
+- **结果**：把 `LanguageMode` 映射到 CodeMirror 语言扩展并接入编辑器与状态栏。新增依赖 `@codemirror/lang-{javascript,json,html,css,python,java,sql,markdown,rust,yaml}`、`@codemirror/legacy-modes`（shell/toml 经 `StreamLanguage`）、`@codemirror/language`。新增 `src/languageExtensions.ts`：`languageExtension(mode)` 集中映射（typescript 用 `javascript({typescript,jsx})`，shell/toml 用 `StreamLanguage.define`），`plain-text` 返回 `null`，`safeLanguageExtension` 捕获构造错误退化为普通文本。`Editor.tsx` 新增 `language` prop 与 `languageCompartmentRef`（复用既有 `Compartment` 模式），在活动标签切换/打开/另存为导致 `LanguageMode` 变化时重配置语言扩展，不重建编辑器实例。`App.tsx` 按 `detectLanguage(session.path, session.displayName)` 计算 `activeLanguage` 传入 `Editor`，并在状态栏以 `languageDisplayName` 显示语言名（与编码·换行并列）。Markdown 仅源码高亮、无预览。未改 Rust/capability/IPC 与保存/关闭保护链路。
+- **验证**：`npm run check` 通过（typecheck + vitest **154 passed / 0 failed**，新增 `languageExtensions` 映射测试与 `Editor` language prop 重配置用例，既有编辑器实例保持/可编辑切换用例补 `language` prop）；`npm run build` 通过（语言包纳入 bundle，体积增长属预期，未做代码分割优化）；`git diff --check` 通过。前端切片，macOS 真实交互（各语言高亮、状态栏语言、Markdown 源码、未知退化）留给集成验收。
+
+### 接入语言识别与普通文本退化契约
+
+- **状态**：已完成
+- **开始日期**：2026-08-10
+- **完成日期**：2026-08-10
+- **Feature Spec**：`docs/features/code-syntax-highlighting.md`
+- **结果**：新增前端纯函数模块 `src/languageRecognition.ts`：`LanguageMode` 枚举（JavaScript/TypeScript/JSON/HTML/CSS/Rust/Python/Java/shell/SQL/TOML/YAML/Markdown + `plain-text`）+ `detectLanguage(path, displayName)` + `languageDisplayName(mode)`。`path` 非空时取其 basename，否则用 `displayName`；完整文件名（`package.json`/`tsconfig.json`/`jsconfig.json`/`Cargo.toml`/`pyproject.toml`）优先匹配，再回退扩展名；扩展名大小写不敏感；Untitled、无扩展名、隐藏文件与未知扩展名退化为 `plain-text`。未接入 CodeMirror、未新增依赖、未改 UI/Rust/capability。
+- **验证**：`npm run check` 通过（typecheck + vitest **150 passed / 0 failed**，新增 `languageRecognition` 测试覆盖各语言扩展名、TS/JS 变体、yaml/html/markdown 别名、大小写不敏感、复合配置名、Untitled/未知/隐藏文件退化、路径 basename 与显示名派生）；`npm run build` 通过；`git diff --check` 通过。前端切片，未改 Rust，未做 macOS 真实交互。
+
+### 确认代码文本识别与最小语法高亮规格
+
+- **状态**：已完成
+- **开始日期**：2026-08-10
+- **完成日期**：2026-08-10
+- **Feature Spec**：`docs/features/code-syntax-highlighting.md`
+- **结果**：代码高亮规格从草案更新为已确认。四个开放问题决议为：首版语言清单为**核心集（JavaScript/TypeScript/JSON/HTML/CSS/Rust/TOML/YAML）+ 常用脚本（shell/SQL/Python）+ Java**，并纳入 Markdown 源码高亮；**状态栏显示**检测到的语言名（`Plain Text`/`TypeScript`/`JSON` 等），与编码·换行设置并列；**Markdown 按源码高亮**纳入首版（不引入预览，预览仍属独立的 Markdown 分栏规格）；**大文件不新增退化规则**，50 MiB 以内各语言行为一致，明显卡顿作为后续性能任务。规格补充了首版语言清单表（含匹配输入与 CodeMirror 包方向）、复合文件名优先匹配规则、状态栏语言派生规则、Markdown 仅源码高亮边界与大文件一致性规则，并把开放问题替换为决议记录；实现拆分为语言识别契约 → CodeMirror 高亮与状态栏 → 既有能力回归 → 集成验收。`current.md` 写入首个实现切片「接入语言识别与普通文本退化契约」。
+- **验证**：文档审查；本任务不修改生产代码，未运行构建或测试。
 
 ### 修复关闭主窗口后 Dock 点击无法恢复窗口
 

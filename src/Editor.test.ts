@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { EditorSelection, EditorState } from "@codemirror/state";
+import { EditorSelection, EditorState, type Extension } from "@codemirror/state";
 import { history, undo } from "@codemirror/commands";
 import { EditorView } from "@codemirror/view";
 import { describe, expect, it } from "vitest";
@@ -13,6 +13,7 @@ import {
   columnBlockSequenceSpec,
   columnBlockSelectionExtensions,
 } from "./Editor";
+import { languageExtension } from "./languageExtensions";
 
 if (!("getClientRects" in Range.prototype)) {
   Object.defineProperty(Range.prototype, "getClientRects", {
@@ -260,6 +261,101 @@ describe("column block selection editor extensions", () => {
           EditorSelection.cursor(8),
         ]),
         extensions: [history(), columnBlockSelectionExtensions],
+      }),
+    });
+
+    try {
+      expect(columnBlockSequenceCommand(view)).toBe(true);
+      expect(view.state.doc.toString()).toBe("1row\n2row\n3row");
+      expect(undo(view)).toBe(true);
+      expect(view.state.doc.toString()).toBe("row\nrow\nrow");
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+});
+
+// 语法高亮与列块编辑同时启用时的回归保护：语言扩展不得破坏多选区、列块删除/粘贴/
+// 数字序列，也不得让撤销栈在高亮重配置后失效（docs/features/code-syntax-highlighting.md
+// 切片 4）。
+describe("column block editing under syntax highlighting", () => {
+  const highlightedExtensions: Extension[] = [
+    languageExtension("typescript")!,
+    columnBlockSelectionExtensions,
+  ];
+
+  it("keeps multiple selection ranges with a language extension active", () => {
+    const state = EditorState.create({
+      doc: "alpha\nbravo\ncharlie",
+      extensions: highlightedExtensions,
+    });
+
+    const next = state.update({
+      selection: EditorSelection.create([
+        EditorSelection.range(1, 3),
+        EditorSelection.range(7, 9),
+      ]),
+    }).state;
+
+    expect(next.selection.ranges).toHaveLength(2);
+    expect(next.selection.ranges.map((range) => [range.from, range.to])).toEqual([
+      [1, 3],
+      [7, 9],
+    ]);
+  });
+
+  it("deletes every column block range with a language extension active", () => {
+    const state = EditorState.create({
+      doc: "abcde\nABCDE\n12345",
+      selection: EditorSelection.create([
+        EditorSelection.range(1, 3),
+        EditorSelection.range(7, 9),
+      ]),
+      extensions: highlightedExtensions,
+    });
+
+    const spec = columnBlockDeleteSpec(state, "forward");
+    expect(spec).not.toBeNull();
+    const next = state.update(spec!).state;
+
+    expect(next.doc.toString()).toBe("ade\nADE\n12345");
+    expect(next.selection.ranges.map((range) => range.from)).toEqual([1, 5]);
+  });
+
+  it("pastes into every column block range with a language extension active", () => {
+    const state = EditorState.create({
+      doc: "abef\nABEF",
+      selection: EditorSelection.create([
+        EditorSelection.range(2, 2),
+        EditorSelection.range(7, 7),
+      ]),
+      extensions: highlightedExtensions,
+    });
+
+    const plan = columnBlockPastePlan(state, "cd");
+    if (plan?.kind !== "apply") {
+      throw new Error("expected column block paste to apply");
+    }
+    const next = state.update(plan.spec).state;
+
+    expect(next.doc.toString()).toBe("abcdef\nABcdEF");
+    expect(next.selection.ranges.map((range) => range.from)).toEqual([4, 11]);
+  });
+
+  it("fills and undoes a decimal sequence with a language extension active", () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const view = new EditorView({
+      parent: host,
+      state: EditorState.create({
+        doc: "row\nrow\nrow",
+        selection: EditorSelection.create([
+          EditorSelection.cursor(0),
+          EditorSelection.cursor(4),
+          EditorSelection.cursor(8),
+        ]),
+        extensions: [history(), ...highlightedExtensions],
       }),
     });
 

@@ -17,10 +17,13 @@ import {
 } from "@codemirror/view";
 import { defaultKeymap, historyKeymap } from "@codemirror/commands";
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
+import { safeLanguageExtension } from "./languageExtensions";
+import type { LanguageMode } from "./languageRecognition";
 
 type EditorProps = {
   content: string;
   disabled?: boolean;
+  language: LanguageMode;
   onChange: (content: string) => void;
 };
 
@@ -236,7 +239,7 @@ export const columnBlockSelectionExtensions: Extension = [
 ];
 
 export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(
-  { content, disabled = false, onChange },
+  { content, disabled = false, language, onChange },
   ref,
 ) {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -244,6 +247,7 @@ export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(
   const viewRef = useRef<EditorView | null>(null);
   const isSyncingContentRef = useRef(false);
   const availabilityRef = useRef(new Compartment());
+  const languageCompartmentRef = useRef(new Compartment());
 
   onChangeRef.current = onChange;
 
@@ -267,6 +271,7 @@ export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(
       extensions: [
         basicSetup,
         columnBlockSelectionExtensions,
+        languageCompartmentRef.current.of(safeLanguageExtension(language) ?? []),
         availabilityRef.current.of([
           EditorState.readOnly.of(disabled),
           EditorView.editable.of(!disabled),
@@ -341,6 +346,19 @@ export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(
       isSyncingContentRef.current = false;
     }
   }, [content]);
+
+  // 语言扩展随活动标签的 LanguageMode 重配置；普通文本/加载失败时不挂任何语言扩展。
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) {
+      return;
+    }
+    view.dispatch({
+      effects: languageCompartmentRef.current.reconfigure(
+        safeLanguageExtension(language) ?? [],
+      ),
+    });
+  }, [language]);
 
   return <div className="editor-host" ref={hostRef} />;
 });

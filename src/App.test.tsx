@@ -551,6 +551,50 @@ describe("App tab session", () => {
         ?.getAttribute("aria-current"),
     ).toBe("page");
   });
+
+  it("tracks the detected language per tab without leaking across switches", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        return {
+          id: "doc-ts",
+          path: "/tmp/app.tsx",
+          displayName: "app.tsx",
+          byteCount: 0,
+          encoding: "utf8",
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 0, sha256: "zero" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode("").buffer;
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await act(async () => root.render(<App />));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+
+    expect(tabTitles()).toEqual(["Untitled", "app.tsx"]);
+    expect(container.querySelector(".statusbar-language")?.textContent).toBe("TypeScript");
+
+    // 切到初始 Untitled 标签：状态栏退化为普通文本，且不影响 app.tsx 的识别。
+    await act(async () => {
+      container.querySelectorAll<HTMLButtonElement>(".document-tab-select")[0]?.click();
+    });
+    expect(container.querySelector(".statusbar-language")?.textContent).toBe("Plain Text");
+
+    // 切回 .tsx 标签：语言跟随活动标签恢复，证明高亮按标签隔离。
+    await act(async () => {
+      container.querySelectorAll<HTMLButtonElement>(".document-tab-select")[1]?.click();
+    });
+    expect(container.querySelector(".statusbar-language")?.textContent).toBe("TypeScript");
+  });
 });
 
 describe("App save entry", () => {
@@ -1909,6 +1953,62 @@ describe("App save entry", () => {
     expect(container.querySelector(".statusbar")?.textContent).toContain(
       "Modified",
     );
+  });
+
+  it("re-detects the language from the new path after saving as a different extension", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "prepare_save_as") {
+        return {
+          fileName: "Untitled",
+          directory: { id: "grant-default", displayName: "tmp" },
+        };
+      }
+      if (cmd === "preview_save_target") {
+        return { exists: false, isCurrentPath: false };
+      }
+      if (cmd === "save_document_as_at") {
+        return {
+          id: "untitled-1",
+          path: "/tmp/saved.ts",
+          displayName: "saved.ts",
+          byteCount: 0,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 0, sha256: "new" },
+          readOnly: false,
+        };
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await act(async () => root.render(<App />));
+    expect(container.querySelector(".statusbar-language")?.textContent).toBe("Plain Text");
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".save-button")?.click();
+    });
+    const chooser = container.querySelector(".save-as-dialog");
+    const fileName = chooser?.querySelector<HTMLInputElement>('input[type="text"]');
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        "value",
+      )?.set;
+      setter?.call(fileName, "saved.ts");
+      fileName?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    await act(async () => {
+      chooser?.querySelector<HTMLButtonElement>(".confirm-save")?.click();
+    });
+
+    expect(container.querySelector(".document-tab.is-active")?.textContent).toContain(
+      "saved.ts",
+    );
+    expect(container.querySelector(".statusbar-language")?.textContent).toBe("TypeScript");
   });
 });
 

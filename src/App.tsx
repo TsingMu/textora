@@ -18,6 +18,7 @@ import {
   type DocumentSession,
 } from "./documentSession";
 import { Editor, type EditorHandle } from "./Editor";
+import { detectLanguage, languageDisplayName } from "./languageRecognition";
 import {
   activeDocument,
   addOpenedDocumentTab,
@@ -1236,6 +1237,7 @@ function App() {
     !session.readOnly && !busy && (session.path === null || session.isDirty);
   const canSaveAs = session.path !== null && !busy;
   const canEdit = !editorLocked;
+  const activeLanguage = detectLanguage(session.path, session.displayName);
 
   return (
     <main className="app-shell">
@@ -1349,6 +1351,7 @@ function App() {
             ref={editorRef}
             content={session.content}
             disabled={editorLocked}
+            language={activeLanguage}
             onChange={(content) => {
               setSession((current) => updateDocumentContent(current, content));
             }}
@@ -1431,6 +1434,8 @@ function App() {
         <footer className="statusbar">
           <div>{session.isDirty ? "Modified" : "Saved"}</div>
           <div className="statusbar-details">
+            <span className="statusbar-language">{languageDisplayName(activeLanguage)}</span>
+            <span className="format-settings-sep" aria-hidden="true">·</span>
             <button
               type="button"
               className="format-settings-summary"

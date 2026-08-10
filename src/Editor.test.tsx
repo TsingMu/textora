@@ -29,7 +29,14 @@ describe("Editor", () => {
     const onChange = vi.fn();
 
     await act(async () => {
-      root.render(<Editor content="" disabled={false} onChange={onChange} />);
+      root.render(
+        <Editor
+          content=""
+          disabled={false}
+          language="plain-text"
+          onChange={onChange}
+        />,
+      );
     });
 
     const editable = container.querySelector<HTMLElement>(".cm-content");
@@ -38,7 +45,14 @@ describe("Editor", () => {
     expect(document.activeElement).toBe(editable);
 
     await act(async () => {
-      root.render(<Editor content="a" disabled={false} onChange={onChange} />);
+      root.render(
+        <Editor
+          content="a"
+          disabled={false}
+          language="plain-text"
+          onChange={onChange}
+        />,
+      );
     });
 
     expect(container.querySelector(".cm-content")).toBe(editable);
@@ -50,21 +64,113 @@ describe("Editor", () => {
   it("toggles editability without replacing the editor instance", async () => {
     const onChange = vi.fn();
     await act(async () => {
-      root.render(<Editor content="keep" disabled={false} onChange={onChange} />);
+      root.render(
+        <Editor
+          content="keep"
+          disabled={false}
+          language="plain-text"
+          onChange={onChange}
+        />,
+      );
     });
     const editable = container.querySelector<HTMLElement>(".cm-content");
     expect(editable?.getAttribute("contenteditable")).toBe("true");
 
     await act(async () => {
-      root.render(<Editor content="keep" disabled onChange={onChange} />);
+      root.render(
+        <Editor
+          content="keep"
+          disabled
+          language="plain-text"
+          onChange={onChange}
+        />,
+      );
     });
     expect(container.querySelector(".cm-content")).toBe(editable);
     expect(editable?.getAttribute("contenteditable")).toBe("false");
 
     await act(async () => {
-      root.render(<Editor content="keep" disabled={false} onChange={onChange} />);
+      root.render(
+        <Editor
+          content="keep"
+          disabled={false}
+          language="plain-text"
+          onChange={onChange}
+        />,
+      );
     });
     expect(container.querySelector(".cm-content")).toBe(editable);
     expect(editable?.getAttribute("contenteditable")).toBe("true");
+  });
+
+  it("reconfigures the language extension without replacing the editor instance", async () => {
+    const onChange = vi.fn();
+    await act(async () => {
+      root.render(
+        <Editor
+          content="const x = 1"
+          disabled={false}
+          language="plain-text"
+          onChange={onChange}
+        />,
+      );
+    });
+    const editable = container.querySelector<HTMLElement>(".cm-content");
+    expect(editable).not.toBeNull();
+
+    await act(async () => {
+      root.render(
+        <Editor
+          content="const x = 1"
+          disabled={false}
+          language="typescript"
+          onChange={onChange}
+        />,
+      );
+    });
+    expect(container.querySelector(".cm-content")).toBe(editable);
+
+    await act(async () => {
+      root.render(
+        <Editor
+          content="const x = 1"
+          disabled={false}
+          language="markdown"
+          onChange={onChange}
+        />,
+      );
+    });
+    expect(container.querySelector(".cm-content")).toBe(editable);
+  });
+
+  it("preserves the document content across language reconfiguration", async () => {
+    const onChange = vi.fn();
+    await act(async () => {
+      root.render(
+        <Editor
+          content="const x = 1"
+          disabled={false}
+          language="typescript"
+          onChange={onChange}
+        />,
+      );
+    });
+    const editable = container.querySelector<HTMLElement>(".cm-content");
+    expect(container.querySelector(".cm-line")?.textContent).toBe("const x = 1");
+
+    await act(async () => {
+      root.render(
+        <Editor
+          content="const x = 1"
+          disabled={false}
+          language="markdown"
+          onChange={onChange}
+        />,
+      );
+    });
+
+    expect(container.querySelector(".cm-content")).toBe(editable);
+    expect(container.querySelector(".cm-line")?.textContent).toBe("const x = 1");
+    expect(onChange).not.toHaveBeenCalled();
   });
 });
