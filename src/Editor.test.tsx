@@ -3,7 +3,8 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Editor } from "./Editor";
+import { tags } from "@lezer/highlight";
+import { Editor, textoraSyntaxHighlightStyle } from "./Editor";
 
 describe("Editor", () => {
   let container: HTMLDivElement;
@@ -172,5 +173,14 @@ describe("Editor", () => {
     expect(container.querySelector(".cm-content")).toBe(editable);
     expect(container.querySelector(".cm-line")?.textContent).toBe("const x = 1");
     expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("provides project syntax classes for Markdown fenced language labels", () => {
+    expect(textoraSyntaxHighlightStyle.style([tags.labelName])).toEqual(
+      expect.any(String),
+    );
+    expect(textoraSyntaxHighlightStyle.style([tags.meta])).toEqual(
+      expect.any(String),
+    );
   });
 });

@@ -10,18 +10,54 @@
 
 ## 已承诺待办
 
-### 建立 Markdown 代码块高亮渲染契约并接入预览
-
-- **状态**：待开始
-- **Feature Spec**：`docs/features/markdown-code-block-highlighting.md`
-- **目标**：让 Markdown 预览中的普通 fenced code block 根据语言标记显示本地语法着色，同时保持 Markdown 源码仍是保存权威数据。
-- **范围**：识别 fenced code block info string 的首个 token；为 JavaScript/TypeScript、JSON、HTML、CSS、Rust、Python、Java、Shell、SQL、TOML、YAML、Markdown 等既有语言集合接入预览侧高亮；未知语言、空语言或高亮失败时退化为普通转义代码块；保留 fenced `mermaid` 图表渲染优先级；补齐 Markdown 渲染与 App 级自动化测试。
-- **非范围**：新增源码编辑器语言、复制按钮、行号、折叠、主题配置、代码执行、LSP、导出、Markdown 所见即所得、滚动同步、远程资源、网络、shell、Rust IPC 或 Tauri capability。
-- **依赖**：代码语法高亮、Markdown 源码与本地预览左右分栏、Markdown fenced Mermaid 本地渲染均已完成。
-- **拆分检查**：该任务只交付一个用户可观察行为——Markdown 预览普通代码块语法着色；包含必要的纯渲染契约、样式与 App 接入，未混入发布验收或额外代码块工具栏能力。
-- **完成标准**：支持语言代码块在 Markdown 预览中显示语法着色；未知/空语言普通显示；危险 HTML 与脚本按文本转义；Mermaid fence 仍渲染图表；保存仍只写 Markdown 源码；多标签隔离不回退；`npm run check`、`npm run build`、`git diff --check` 通过。
+暂无已承诺待办。
 
 ## 最近完成
+
+### 优化暗色模式下 Markdown Mermaid 箭头可读性
+
+- **状态**：已完成
+- **开始日期**：2026-08-10
+- **完成日期**：2026-08-10
+- **Feature Spec**：`docs/features/markdown-split-preview.md`、`docs/features/mermaid-local-preview.md`
+- **结果**：优化暗色模式下 Markdown 预览内 Mermaid 图表的箭头和连接线可读性。为 `.markdown-mermaid-preview` 内 Mermaid SVG 增加暗色局部覆盖：edge path 与 arrow marker 改为高对比浅色并加粗；节点改为暗底浅字和更清晰的紫色描边；edge label、cluster 和背景标签同步暗色适配，避免节点亮底刺眼且箭头融入背景。未改变 Mermaid 源码、渲染逻辑、安全清洗策略、图表类型支持、导出、主题偏好、保存逻辑、依赖、网络、shell、Rust IPC 或 Tauri capability。
+- **验证**：`npm run test -- mermaidPreview markdownPreview App` 通过（**95 passed / 0 failed**）；`npm run build` 通过；`git diff --check` 通过。本切片未运行 release 构建、未部署到 `/Applications`，视觉细节仍建议在暗色模式真实应用中人工复验。
+
+### 继续优化暗色模式按钮与 Markdown fence 标记可读性
+
+- **状态**：已完成
+- **开始日期**：2026-08-10
+- **完成日期**：2026-08-10
+- **Feature Spec**：`docs/features/markdown-code-block-highlighting.md`、`docs/features/markdown-split-preview.md`
+- **结果**：继续修正暗色模式剩余可读性问题。顶部工具栏按钮在暗色模式下新增更清晰的普通、hover、disabled 和 active 状态；`Save`、`Save As...`、`Sequence`、`Preview` 等按钮不再主要依赖低对比暗边框/暗文字区分。CodeMirror 编辑器接入项目级 `HighlightStyle`，让 Markdown fenced code block 的 info token（如 `json`、`bash`）走高对比的 `labelName` 配色，而不是使用默认暗蓝/紫色；同时保留既有语言重配置和编辑器实例复用行为。未新增主题偏好、用户自定义配色、语言能力、渲染逻辑、保存逻辑、依赖、网络、shell、Rust IPC 或 Tauri capability。
+- **验证**：`npm run test -- Editor markdownCodeHighlight markdownPreview App` 通过（**118 passed / 0 failed**）；`npm run build` 通过；`git diff --check` 通过。本切片未运行 release 构建、未部署到 `/Applications`，视觉细节仍建议在暗色模式真实应用中人工复验。
+
+### 优化暗色模式下 Markdown 预览与代码颜色可读性
+
+- **状态**：已完成
+- **开始日期**：2026-08-10
+- **完成日期**：2026-08-10
+- **Feature Spec**：`docs/features/markdown-code-block-highlighting.md`、`docs/features/markdown-split-preview.md`
+- **结果**：优化暗色模式下 Markdown 分栏预览与代码颜色可读性。预览面板不再使用大片亮底；正文、标题、引用、表格、行内代码、代码块、链接/图片占位、Mermaid 容器、loading/error 占位和 Preview 激活按钮均增加暗色覆盖。语法 token 颜色改为 CSS 变量驱动，并在暗色模式下同时覆盖 Markdown 预览代码块与 CodeMirror 编辑器 token，改善截图中 fenced 语言标记和代码高亮对比不足的问题。未新增主题偏好、渲染逻辑、保存逻辑、依赖、网络、shell、Rust IPC 或 Tauri capability。
+- **验证**：`npm run test -- markdownCodeHighlight markdownPreview App` 通过（**97 passed / 0 failed**）；`npm run build` 通过；`git diff --check` 通过。本切片未运行 release 构建、未部署到 `/Applications`，视觉细节仍建议在暗色模式真实应用中人工复验。
+
+### Markdown 代码块高亮集成验收与文档收尾
+
+- **状态**：已完成
+- **开始日期**：2026-08-10
+- **完成日期**：2026-08-10
+- **Feature Spec**：`docs/features/markdown-code-block-highlighting.md`
+- **结果**：完成 Markdown 预览代码块语法着色的组合验收、release 构建、bundle 配置检查、权限 diff、release 启动确认和文档收尾。`docs/features/markdown-code-block-highlighting.md` 已标记为已完成，验收条件全部勾选；README 当前状态与文档导航已同步；新增 `samples/markdown-code-highlight-smoke.md` 作为人工真实 UI 冒烟验证样例。未新增功能行为、复制按钮、行号、主题配置、代码执行、导出、远程资源、网络、shell、Rust IPC、Tauri capability、部署到 `/Applications`、签名/公证或安装器。
+- **验证**：`npm run check` 通过（typecheck + vitest **191 passed / 0 failed**）；`npm run build` 通过；`npm run tauri -- build` 通过并生成 release `Textora.app`；bundle 检查确认 `CFBundleIdentifier` 为 `com.tsingmu.textora`、`CFBundleExecutable` 为 `textora`；capability diff 确认未新增网络、shell、文件系统或 Rust/Tauri 权限；构建产物包含 `index`、`codemirror` 与 `mermaid.core` chunk；release app 可由 `/usr/bin/open -n` 启动，提权只读进程查询确认 `Textora.app/Contents/MacOS/textora` 正在运行；`git diff --check` 通过。当前自动化环境无法可靠观察 WebView 内点击和视觉颜色，真实 UI 可用 `samples/markdown-code-highlight-smoke.md` 人工复验。
+
+### 建立 Markdown 代码块高亮渲染契约并接入预览
+
+- **状态**：已完成
+- **开始日期**：2026-08-10
+- **完成日期**：2026-08-10
+- **Feature Spec**：`docs/features/markdown-code-block-highlighting.md`
+- **结果**：Markdown 预览中的普通 fenced code block 现在会按 info string 首个 token 识别 JavaScript、TypeScript、JSON、HTML、CSS、Rust、Python、Java、Shell、SQL、TOML、YAML 与 Markdown 等既有语言集合，并复用 CodeMirror parser 与 `@lezer/highlight` token class 输出本地安全高亮 HTML。未知语言、空语言、Mermaid 或高亮失败退化为普通转义代码块；fenced `mermaid` 仍优先走图表渲染。预览样式新增本地 token 配色；App 级测试确认预览中可见高亮 token，同时保存仍只写 Markdown 源码，不包含 Mermaid SVG 或高亮 HTML。未新增复制按钮、行号、折叠、主题配置、代码执行、导出、远程资源、网络、shell、Rust IPC 或 Tauri capability。
+- **验证**：`npm run test -- markdownCodeHighlight markdownPreview App` 通过（**97 passed / 0 failed**）；`npm run check` 通过（typecheck + vitest **191 passed / 0 failed**）；`npm run build` 通过（Vite 大 chunk 提示仍存在，不影响本切片）；`git diff --check` 通过。本切片未运行 release 构建或真实 macOS UI 验收，已拆出下一项「Markdown 代码块高亮集成验收与文档收尾」。
 
 ### 确认 Markdown 预览代码块语法着色规格
 

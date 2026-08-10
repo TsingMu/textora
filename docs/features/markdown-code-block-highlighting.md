@@ -1,6 +1,6 @@
 # Markdown 预览代码块语法着色
 
-> 状态：已确认（2026-08-10）
+> 状态：已完成（2026-08-10）
 
 ## 背景与目标
 
@@ -53,15 +53,15 @@ Textora 已支持 Markdown 源码/预览左右分栏，也已经在编辑器源�
 
 ## 验收条件
 
-- [ ] Markdown 预览中受支持语言的 fenced code block 显示为语法着色代码块。
-- [ ] JavaScript/TypeScript、JSON、HTML/CSS、Rust/Python/Java、Shell/SQL、TOML/YAML、Markdown 至少各有一个自动化覆盖样例或等价映射测试。
-- [ ] 未知语言和空语言标记的 fenced code block 仍按普通转义代码块显示。
-- [ ] 代码块中的原始 HTML、脚本和危险属性不会作为可执行 DOM 注入。
-- [ ] fenced `mermaid` code block 仍渲染为图表，且错误退化行为不回退。
-- [ ] Markdown 保存结果仍为源码，不包含高亮 span、样式类或 Mermaid SVG 预览产物。
-- [ ] 多标签切换时，高亮预览结果不污染其他 Markdown 标签或非 Markdown 标签。
-- [ ] 功能不引入新的网络、shell、文件系统、远程页面或 Rust/Tauri 权限。
-- [ ] 自动化测试覆盖语言识别、高亮退化、安全转义、Mermaid 优先级和保存源码不受影响。
+- [x] Markdown 预览中受支持语言的 fenced code block 显示为语法着色代码块。
+- [x] JavaScript/TypeScript、JSON、HTML/CSS、Rust/Python/Java、Shell/SQL、TOML/YAML、Markdown 至少各有一个自动化覆盖样例或等价映射测试。
+- [x] 未知语言和空语言标记的 fenced code block 仍按普通转义代码块显示。
+- [x] 代码块中的原始 HTML、脚本和危险属性不会作为可执行 DOM 注入。
+- [x] fenced `mermaid` code block 仍渲染为图表，且错误退化行为不回退。
+- [x] Markdown 保存结果仍为源码，不包含高亮 span、样式类或 Mermaid SVG 预览产物。
+- [x] 多标签切换时，高亮预览结果不污染其他 Markdown 标签或非 Markdown 标签。
+- [x] 功能不引入新的网络、shell、文件系统、远程页面或 Rust/Tauri 权限。
+- [x] 自动化测试覆盖语言识别、高亮退化、安全转义、Mermaid 优先级和保存源码不受影响。
 
 ## 依赖与约束
 
@@ -85,4 +85,5 @@ Markdown 预览代码块语法着色按以下顺序拆成小切片，实现时�
 
 ## 验证记录
 
-暂无实现验证。本规格确认任务仅修改文档，后续实现切片开始前应先在 `docs/tasks/current.md` 中把对应任务切换为“进行中”。
+- 2026-08-10「建立 Markdown 代码块高亮渲染契约并接入预览」：新增 `src/markdownCodeHighlight.ts` 预览侧高亮适配层，按 fenced code block info string 首个 token 识别 JavaScript、TypeScript、JSON、HTML、CSS、Rust、Python、Java、Shell、SQL、TOML、YAML 与 Markdown 等既有语言集合；复用 CodeMirror parser 与 `@lezer/highlight` 的 token class 生成安全 HTML；未知、空语言、Mermaid 或高亮失败退化为普通转义代码块。Markdown 渲染器已接入该适配层，fenced `mermaid` 仍优先走图表渲染；预览 CSS 新增本地 token 配色；App 级测试确认 Markdown 预览中出现高亮 token，同时保存仍只写 Markdown 源码，不写入 Mermaid SVG 或高亮 HTML。验证：`npm run test -- markdownCodeHighlight markdownPreview App` 通过（**97 passed / 0 failed**）；`npm run check` 通过（typecheck + vitest **191 passed / 0 failed**）；`npm run build` 通过（Vite 大 chunk 提示仍存在，不影响本切片）；`git diff --check` 通过。本切片未运行 release 构建或真实 macOS UI 验收。
+- 2026-08-10「Markdown 代码块高亮集成验收与文档收尾」：`npm run check` 通过（typecheck + vitest **191 passed / 0 failed**）；`npm run build` 通过；`npm run tauri -- build` 通过并生成 release `src-tauri/target/release/bundle/macos/Textora.app`；bundle 检查确认 `CFBundleIdentifier` 为 `com.tsingmu.textora`、`CFBundleExecutable` 为 `textora`；capability diff 确认未新增网络、shell、文件系统或 Rust/Tauri 权限；release app 可通过 `/usr/bin/open -n` 启动，提权只读进程查询确认 `Textora.app/Contents/MacOS/textora` 正在运行；新增 `samples/markdown-code-highlight-smoke.md` 作为真实 UI 冒烟验证样例。当前自动化环境无法可靠观察 WebView 内点击和视觉颜色，最终人工复验可打开该样例确认：普通代码块高亮、未知语言普通显示、Mermaid fence 图表优先级、保存源码和多标签隔离。

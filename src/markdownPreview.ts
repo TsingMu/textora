@@ -1,3 +1,5 @@
+import { renderHighlightedCodeBlock } from "./markdownCodeHighlight";
+
 export type MarkdownPreviewResult =
   | {
       status: "ok";
@@ -68,7 +70,7 @@ function renderMarkdownToSafeHtml(
       continue;
     }
 
-    const fence = line.match(/^ {0,3}```\s*([\w-]+)?\s*$/);
+    const fence = line.match(/^ {0,3}```\s*([^\s`]*)?.*$/);
     if (fence) {
       const language = fence[1] ?? "";
       const codeLines: string[] = [];
@@ -90,7 +92,10 @@ function renderMarkdownToSafeHtml(
         ? ` class="language-${escapeAttribute(language)}"`
         : "";
       blocks.push(
-        `<pre><code${languageClass}>${escapeHtml(codeLines.join("\n"))}</code></pre>`,
+        `<pre><code${languageClass}>${renderHighlightedCodeBlock(
+          codeLines.join("\n"),
+          language,
+        )}</code></pre>`,
       );
       continue;
     }
@@ -155,7 +160,7 @@ export function collectMarkdownMermaidBlocks(source: string): string[] {
 
   while (index < lines.length) {
     const line = lines[index] ?? "";
-    const fence = line.match(/^ {0,3}```\s*([\w-]+)?\s*$/);
+    const fence = line.match(/^ {0,3}```\s*([^\s`]*)?.*$/);
     if (!fence) {
       index += 1;
       continue;

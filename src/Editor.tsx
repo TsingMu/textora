@@ -16,6 +16,8 @@ import {
   rectangularSelection,
 } from "@codemirror/view";
 import { defaultKeymap, historyKeymap } from "@codemirror/commands";
+import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
+import { tags } from "@lezer/highlight";
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import { safeLanguageExtension } from "./languageExtensions";
 import type { LanguageMode } from "./languageRecognition";
@@ -238,6 +240,29 @@ export const columnBlockSelectionExtensions: Extension = [
   ),
 ];
 
+export const textoraSyntaxHighlightStyle = HighlightStyle.define([
+  { tag: tags.keyword, color: "var(--syntax-keyword)" },
+  { tag: [tags.atom, tags.bool, tags.number], color: "var(--syntax-atom)" },
+  { tag: [tags.string, tags.inserted], color: "var(--syntax-string)" },
+  { tag: tags.comment, color: "var(--syntax-comment)", fontStyle: "italic" },
+  {
+    tag: [
+      tags.variableName,
+      tags.definition(tags.variableName),
+      tags.propertyName,
+      tags.typeName,
+      tags.labelName,
+    ],
+    color: "var(--syntax-variable)",
+  },
+  { tag: [tags.function(tags.variableName), tags.className], color: "var(--syntax-function)" },
+  {
+    tag: [tags.operator, tags.punctuation, tags.meta],
+    color: "var(--syntax-punctuation)",
+  },
+  { tag: [tags.invalid, tags.deleted], color: "var(--syntax-invalid)" },
+]);
+
 export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(
   { content, disabled = false, language, onChange },
   ref,
@@ -270,6 +295,7 @@ export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(
       doc: content,
       extensions: [
         basicSetup,
+        syntaxHighlighting(textoraSyntaxHighlightStyle),
         columnBlockSelectionExtensions,
         languageCompartmentRef.current.of(safeLanguageExtension(language) ?? []),
         availabilityRef.current.of([

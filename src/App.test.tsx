@@ -2329,6 +2329,10 @@ const kept = true;
 flowchart TD
 A-->B
 \`\`\`
+
+\`\`\`ts
+const answer = 42;
+\`\`\`
 `;
     let savedContent = "";
     invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
@@ -2377,6 +2381,9 @@ A-->B
       expect(container.querySelector(".markdown-mermaid-preview")?.innerHTML).toContain(
         "A--&gt;B",
       );
+      expect(container.querySelector(".markdown-preview-content")?.innerHTML).toContain(
+        "tok-keyword",
+      );
     });
 
     const nextSource = markdownSource.replace("A-->B", "A-->Saved");
@@ -2400,6 +2407,7 @@ A-->B
     expect(savedContent).toBe(nextSource);
     expect(savedContent).not.toContain("<svg");
     expect(savedContent).not.toContain("mock-mermaid");
+    expect(savedContent).not.toContain("tok-keyword");
   });
 });
 

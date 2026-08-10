@@ -38,7 +38,8 @@ const answer = 42;
     expect(result.html).toContain("<th>Name</th>");
     expect(result.html).toContain("<td>alpha</td>");
     expect(result.html).toContain('<pre><code class="language-ts">');
-    expect(result.html).toContain("const answer = 42;");
+    expect(result.html).toContain('class="tok-keyword"');
+    expect(result.html).toContain("answer");
   });
 
   it("收集并渲染 Mermaid fenced code block 的本地预览占位", () => {
@@ -71,7 +72,26 @@ const kept = true;
     expect(result.html).toContain("markdown-mermaid-preview is-ok");
     expect(result.html).toContain('<svg data-testid="diagram"></svg>');
     expect(result.html).toContain('<pre><code class="language-ts">');
-    expect(result.html).toContain("const kept = true;");
+    expect(result.html).toContain('class="tok-keyword"');
+    expect(result.html).toContain("kept");
+  });
+
+  it("普通 fenced code block 按语言标记渲染本地语法着色", () => {
+    const result = renderMarkdownPreview(`\`\`\`TS title="demo"
+const answer = 42;
+\`\`\`
+
+\`\`\`wat
+<script>alert(1)</script>
+\`\`\`
+`);
+
+    expect(result.status).toBe("ok");
+    expect(result.html).toContain('<code class="language-TS">');
+    expect(result.html).toContain('class="tok-keyword"');
+    expect(result.html).toContain('class="tok-number"');
+    expect(result.html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
+    expect(result.html).not.toContain("<script>");
   });
 
   it("Mermaid fenced code block 未有渲染结果时显示 loading，占位语言大小写不敏感", () => {
@@ -85,6 +105,7 @@ sequenceDiagram
     expect(result.html).toContain("markdown-mermaid-preview is-loading");
     expect(result.html).toContain("Rendering Mermaid preview");
     expect(result.html).not.toContain("<pre><code");
+    expect(result.html).not.toContain("tok-keyword");
   });
 
   it("转义原始 HTML，不插入可执行 DOM", () => {

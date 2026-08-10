@@ -13,6 +13,14 @@
   --traffic-close: #ff6159;
   --traffic-minimize: #ffbd2e;
   --traffic-zoom: #28c840;
+  --syntax-keyword: #ffb86c;
+  --syntax-atom: #f1fa8c;
+  --syntax-string: #a7e3a1;
+  --syntax-comment: #9a9288;
+  --syntax-variable: #8fd3ff;
+  --syntax-function: #ffd27d;
+  --syntax-punctuation: #d8d1c8;
+  --syntax-invalid: #ff9b91;
 }
 
 * {
@@ -306,6 +314,50 @@ textarea {
   padding: 0;
   background: transparent;
   color: inherit;
+}
+
+.markdown-preview-content pre code .tok-keyword {
+  color: var(--syntax-keyword);
+}
+
+.markdown-preview-content pre code .tok-atom,
+.markdown-preview-content pre code .tok-bool,
+.markdown-preview-content pre code .tok-number {
+  color: var(--syntax-atom);
+}
+
+.markdown-preview-content pre code .tok-string,
+.markdown-preview-content pre code .tok-inserted {
+  color: var(--syntax-string);
+}
+
+.markdown-preview-content pre code .tok-comment {
+  color: var(--syntax-comment);
+  font-style: italic;
+}
+
+.markdown-preview-content pre code .tok-variableName,
+.markdown-preview-content pre code .tok-definition,
+.markdown-preview-content pre code .tok-propertyName,
+.markdown-preview-content pre code .tok-typeName,
+.markdown-preview-content pre code .tok-labelName {
+  color: var(--syntax-variable);
+}
+
+.markdown-preview-content pre code .tok-function,
+.markdown-preview-content pre code .tok-className {
+  color: var(--syntax-function);
+}
+
+.markdown-preview-content pre code .tok-operator,
+.markdown-preview-content pre code .tok-punctuation,
+.markdown-preview-content pre code .tok-meta {
+  color: var(--syntax-punctuation);
+}
+
+.markdown-preview-content pre code .tok-invalid,
+.markdown-preview-content pre code .tok-deleted {
+  color: var(--syntax-invalid);
 }
 
 .markdown-preview-content table {
@@ -858,6 +910,14 @@ textarea {
     --traffic-close: #ff5f57;
     --traffic-minimize: #febc2e;
     --traffic-zoom: #28c840;
+    --syntax-keyword: #ffb86c;
+    --syntax-atom: #f4d35e;
+    --syntax-string: #8fd694;
+    --syntax-comment: #a8a097;
+    --syntax-variable: #93d7ff;
+    --syntax-function: #ffd166;
+    --syntax-punctuation: #d9d2c9;
+    --syntax-invalid: #ff8f86;
   }
 
   .app-shell {
@@ -897,6 +957,44 @@ textarea {
     color: #cfc6b8;
   }
 
+  .open-button,
+  .save-as-button,
+  .column-sequence-button,
+  .preview-toggle {
+    border-color: #5a5046;
+    background: #302b26;
+    color: #eee5da;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.025);
+  }
+
+  .open-button:hover:not(:disabled),
+  .save-as-button:hover:not(:disabled),
+  .column-sequence-button:hover:not(:disabled),
+  .preview-toggle:hover:not(:disabled) {
+    border-color: #d98a65;
+    background: #3a3029;
+  }
+
+  .save-button {
+    border-color: #c76642;
+    background: #c76642;
+    color: #fff4ea;
+  }
+
+  .save-button:disabled,
+  .save-as-button:disabled,
+  .column-sequence-button:disabled,
+  .preview-toggle:disabled {
+    opacity: 1;
+    border-color: #3a352f;
+    background: #25221f;
+    color: #6f675e;
+  }
+
+  .column-sequence-button:not(:disabled) {
+    color: #ffad7a;
+  }
+
   .cm-editor {
     color: #e5dfd5;
     background: var(--surface-raised);
@@ -909,5 +1007,191 @@ textarea {
   .cm-editor .cm-activeLine,
   .cm-editor .cm-activeLineGutter {
     background: rgba(255, 255, 255, 0.035);
+  }
+
+  .cm-editor .tok-keyword {
+    color: var(--syntax-keyword);
+  }
+
+  .cm-editor .tok-atom,
+  .cm-editor .tok-bool,
+  .cm-editor .tok-number {
+    color: var(--syntax-atom);
+  }
+
+  .cm-editor .tok-string,
+  .cm-editor .tok-inserted {
+    color: var(--syntax-string);
+  }
+
+  .cm-editor .tok-comment {
+    color: var(--syntax-comment);
+  }
+
+  .cm-editor .tok-variableName,
+  .cm-editor .tok-definition,
+  .cm-editor .tok-propertyName,
+  .cm-editor .tok-typeName,
+  .cm-editor .tok-labelName {
+    color: var(--syntax-variable);
+  }
+
+  .cm-editor .tok-function,
+  .cm-editor .tok-className {
+    color: var(--syntax-function);
+  }
+
+  .cm-editor .tok-operator,
+  .cm-editor .tok-punctuation,
+  .cm-editor .tok-meta {
+    color: var(--syntax-punctuation);
+  }
+
+  .cm-editor .tok-invalid,
+  .cm-editor .tok-deleted {
+    color: var(--syntax-invalid);
+  }
+
+  .preview-toggle.is-active {
+    border-color: rgba(255, 184, 108, 0.56);
+    background: rgba(255, 184, 108, 0.16);
+    color: #ffd6b0;
+  }
+
+  .markdown-preview-pane {
+    background: #1f1d1a;
+  }
+
+  .mermaid-preview-pane {
+    background: #211f1c;
+  }
+
+  .markdown-preview-content {
+    color: #e8e0d4;
+  }
+
+  .markdown-preview-content h1,
+  .markdown-preview-content h2,
+  .markdown-preview-content h3,
+  .markdown-preview-content h4,
+  .markdown-preview-content h5,
+  .markdown-preview-content h6 {
+    color: #f4ede3;
+  }
+
+  .markdown-preview-content blockquote {
+    border-left-color: #6b5f53;
+    color: #c7bdb2;
+  }
+
+  .markdown-preview-content code {
+    background: #34302a;
+    color: #f0e8dc;
+  }
+
+  .markdown-preview-content pre {
+    border: 1px solid #3c3730;
+    background: #181614;
+    color: #f0e8dc;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.025);
+  }
+
+  .markdown-preview-content th,
+  .markdown-preview-content td {
+    border-color: #474139;
+  }
+
+  .markdown-preview-content th {
+    background: #2d2924;
+    color: #f0e8dc;
+  }
+
+  .markdown-preview-link,
+  .markdown-preview-image-placeholder {
+    color: #ffb86c;
+  }
+
+  .markdown-preview-link-url {
+    color: #b8aea3;
+  }
+
+  .markdown-preview-image-placeholder {
+    border-color: #7c614d;
+    background: #332820;
+  }
+
+  .markdown-preview-error {
+    border-color: #8c4d43;
+    background: #38241f;
+    color: #ffb7ac;
+  }
+
+  .markdown-mermaid-preview {
+    border-color: #464038;
+    background: #24211e;
+  }
+
+  .markdown-mermaid-preview svg .edgePaths path,
+  .markdown-mermaid-preview svg path.flowchart-link,
+  .markdown-mermaid-preview svg .edge-thickness-normal {
+    stroke: #d8d2c9 !important;
+    stroke-width: 2.2px !important;
+  }
+
+  .markdown-mermaid-preview svg marker path,
+  .markdown-mermaid-preview svg marker polygon,
+  .markdown-mermaid-preview svg .arrowMarkerPath {
+    fill: #d8d2c9 !important;
+    stroke: #d8d2c9 !important;
+  }
+
+  .markdown-mermaid-preview svg .node rect,
+  .markdown-mermaid-preview svg .node polygon,
+  .markdown-mermaid-preview svg .node circle,
+  .markdown-mermaid-preview svg .node ellipse {
+    fill: #302b42 !important;
+    stroke: #b895ff !important;
+    stroke-width: 1.8px !important;
+  }
+
+  .markdown-mermaid-preview svg .label,
+  .markdown-mermaid-preview svg .nodeLabel,
+  .markdown-mermaid-preview svg text,
+  .markdown-mermaid-preview svg tspan {
+    color: #f4ede3 !important;
+    fill: #f4ede3 !important;
+  }
+
+  .markdown-mermaid-preview svg .edgeLabel,
+  .markdown-mermaid-preview svg .edgeLabel p {
+    color: #f4ede3 !important;
+    background-color: #24211e !important;
+  }
+
+  .markdown-mermaid-preview svg .edgeLabel rect,
+  .markdown-mermaid-preview svg .labelBkg {
+    fill: #24211e !important;
+    background-color: #24211e !important;
+  }
+
+  .markdown-mermaid-preview svg .cluster rect {
+    fill: #211f1c !important;
+    stroke: #6f665c !important;
+  }
+
+  .mermaid-preview-content {
+    color: #e8e0d4;
+  }
+
+  .mermaid-preview-loading {
+    border-color: #464038;
+    background: #24211e;
+    color: #c7bdb2;
+  }
+
+  .mermaid-preview-error {
+    border-color: #8c4d43;
+    background: #38241f;
+    color: #ffb7ac;
   }
 }
