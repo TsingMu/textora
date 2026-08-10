@@ -25,6 +25,7 @@ import {
   addUntitledTab,
   closeTabCleanly,
   createInitialTabSession,
+  setMarkdownPreviewOpen,
   switchActiveTab,
   updateActiveDocument,
   updateDocumentByTabId,
@@ -60,6 +61,7 @@ import {
   type LineEndingChoice,
   type SaveDirectoryGrant,
 } from "./platform";
+import { renderMarkdownPreview } from "./markdownPreview";
 
 const initialTabs = createInitialTabSession();
 type ConflictOperationStatus = "idle" | "canceling" | "reloading" | "overwriting";
@@ -105,6 +107,9 @@ function invalidSaveFileName(fileName: string): boolean {
 function App() {
   const [tabSession, setTabSession] = useState<TabSessionState>(initialTabs);
   const session = activeDocument(tabSession);
+  const activeTab = tabSession.tabs.find(
+    (tab) => tab.tabId === tabSession.activeTabId,
+  );
   const [health, setHealth] = useState<HealthStatus | null>(null);
   const [backendUnavailable, setBackendUnavailable] = useState(false);
   const [conflictOperation, setConflictOperation] = useState<{
@@ -1043,6 +1048,18 @@ function App() {
     editorRef.current?.fillColumnBlockSequence();
   }
 
+  function handleMarkdownPreviewToggle() {
+    updateTabSession((current) => {
+      const tab = current.tabs.find((item) => item.tabId === current.activeTabId);
+      if (tab === undefined) return current;
+      return setMarkdownPreviewOpen(
+        current,
+        tab.tabId,
+        !tab.markdownPreviewOpen,
+      );
+    });
+  }
+
   function openFormatSettings() {
     setFormatDraft(saveFormat);
     setFormatSettingsOpen(true);
@@ -1238,6 +1255,12 @@ function App() {
   const canSaveAs = session.path !== null && !busy;
   const canEdit = !editorLocked;
   const activeLanguage = detectLanguage(session.path, session.displayName);
+  const markdownPreviewOpen = activeTab?.markdownPreviewOpen ?? false;
+  const markdownPreviewVisible =
+    activeLanguage === "markdown" && markdownPreviewOpen;
+  const markdownPreview = markdownPreviewVisible
+    ? renderMarkdownPreview(session.content)
+    : null;
 
   return (
     <main className="app-shell">
@@ -1286,6 +1309,24 @@ function App() {
           >
             Sequence
           </button>
+          {activeLanguage === "markdown" && (
+            <button
+              type="button"
+              className={`markdown-preview-toggle ${
+                markdownPreviewOpen ? "is-active" : ""
+              }`}
+              onClick={handleMarkdownPreviewToggle}
+              disabled={busy}
+              aria-pressed={markdownPreviewOpen}
+              aria-label={
+                markdownPreviewOpen
+                  ? "Hide Markdown preview"
+                  : "Show Markdown preview"
+              }
+            >
+              Preview
+            </button>
+          )}
         </div>
         <div className="backend-state" aria-live="polite">
           <span
@@ -1346,16 +1387,35 @@ function App() {
           </button>
         </div>
 
-        <div className="editor-panel">
-          <Editor
-            ref={editorRef}
-            content={session.content}
-            disabled={editorLocked}
-            language={activeLanguage}
-            onChange={(content) => {
-              setSession((current) => updateDocumentContent(current, content));
-            }}
-          />
+        <div
+          className={`editor-panel ${
+            markdownPreviewVisible ? "has-markdown-preview" : ""
+          }`}
+        >
+          <div className="editor-source-pane">
+            <Editor
+              ref={editorRef}
+              content={session.content}
+              disabled={editorLocked}
+              language={activeLanguage}
+              onChange={(content) => {
+                setSession((current) => updateDocumentContent(current, content));
+              }}
+            />
+          </div>
+          {markdownPreviewVisible && markdownPreview !== null && (
+            <aside
+              className={`markdown-preview-pane ${
+                markdownPreview.status === "error" ? "is-error" : ""
+              }`}
+              aria-label="Markdown preview"
+            >
+              <div
+                className="markdown-preview-content"
+                dangerouslySetInnerHTML={{ __html: markdownPreview.html }}
+              />
+            </aside>
+          )}
           {session.openStatus === "loading" && (
             <div className="notice notice-loading" role="status">Opening…</div>
           )}

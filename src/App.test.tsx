@@ -2012,6 +2012,158 @@ describe("App save entry", () => {
   });
 });
 
+describe("App Markdown preview", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+
+  beforeEach(() => {
+    (
+      globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
+    ).IS_REACT_ACT_ENVIRONMENT = true;
+    invokeMock.mockReset();
+    resetTauriWindowMock();
+    setupInvoke();
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  it("does not show the Preview toggle for non-Markdown documents", async () => {
+    await act(async () => root.render(<App />));
+
+    expect(container.querySelector(".markdown-preview-toggle")).toBeNull();
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+
+    await vi.waitFor(() => {
+      expect(container.querySelector(".statusbar-language")?.textContent).toBe(
+        "Plain Text",
+      );
+    });
+    expect(container.querySelector(".markdown-preview-toggle")).toBeNull();
+    expect(container.querySelector(".markdown-preview-pane")).toBeNull();
+  });
+
+  it("opens a per-tab Markdown split preview and updates it from source edits", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        return {
+          id: "doc-md",
+          path: "/tmp/README.md",
+          displayName: "README.md",
+          byteCount: 64,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 64, sha256: "md" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode(
+          "# Title\n\n![diagram](https://example.com/a.png)\n\n<script>bad()</script>",
+        ).buffer;
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await act(async () => root.render(<App />));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+
+    await vi.waitFor(() => {
+      expect(container.querySelector(".statusbar-language")?.textContent).toBe(
+        "Markdown",
+      );
+    });
+    const toggle = container.querySelector<HTMLButtonElement>(
+      ".markdown-preview-toggle",
+    );
+    expect(toggle).not.toBeNull();
+    expect(toggle?.getAttribute("aria-pressed")).toBe("false");
+
+    await act(async () => {
+      toggle?.click();
+    });
+
+    expect(toggle?.getAttribute("aria-pressed")).toBe("true");
+    expect(container.querySelector(".markdown-preview-pane")).not.toBeNull();
+    expect(container.querySelector(".markdown-preview-content")?.innerHTML).toContain(
+      "<h1>Title</h1>",
+    );
+    expect(container.querySelector(".markdown-preview-content")?.innerHTML).toContain(
+      "markdown-preview-image-placeholder",
+    );
+    expect(container.querySelector(".markdown-preview-content")?.innerHTML).not.toContain(
+      "<img",
+    );
+    expect(container.querySelector(".markdown-preview-content")?.innerHTML).not.toContain(
+      "<script>",
+    );
+
+    const editable = container.querySelector<HTMLElement>(".cm-content");
+    await act(async () => {
+      if (editable === null) throw new Error("missing editor");
+      editable.textContent = "## Updated\n\n- [x] done";
+      editable.dispatchEvent(
+        new InputEvent("input", {
+          bubbles: true,
+          inputType: "insertText",
+          data: "## Updated\n\n- [x] done",
+        }),
+      );
+      await Promise.resolve();
+    });
+
+    await vi.waitFor(() => {
+      expect(
+        container.querySelector(".markdown-preview-content")?.innerHTML,
+      ).toContain("<h2>Updated</h2>");
+    });
+    const taskCheckbox = container.querySelector<HTMLInputElement>(
+      ".markdown-preview-content input[type='checkbox']",
+    );
+    expect(taskCheckbox?.disabled).toBe(true);
+    expect(taskCheckbox?.checked).toBe(true);
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".new-tab-button")?.click();
+    });
+    expect(container.querySelector(".statusbar-language")?.textContent).toBe(
+      "Plain Text",
+    );
+    expect(container.querySelector(".markdown-preview-toggle")).toBeNull();
+    expect(container.querySelector(".markdown-preview-pane")).toBeNull();
+
+    const markdownTab = Array.from(
+      container.querySelectorAll<HTMLButtonElement>(".document-tab-select"),
+    ).find((button) => button.textContent?.includes("README.md"));
+    await act(async () => {
+      markdownTab?.click();
+    });
+
+    expect(container.querySelector(".statusbar-language")?.textContent).toBe(
+      "Markdown",
+    );
+    expect(
+      container
+        .querySelector<HTMLButtonElement>(".markdown-preview-toggle")
+        ?.getAttribute("aria-pressed"),
+    ).toBe("true");
+    expect(container.querySelector(".markdown-preview-pane")).not.toBeNull();
+  });
+});
+
 describe("App window close protection", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot>;

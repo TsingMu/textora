@@ -1,6 +1,6 @@
 # Markdown 源码与本地预览左右分栏
 
-> 状态：已确认（2026-08-10）
+> 状态：实现中（2026-08-10）
 
 ## 背景与目标
 
@@ -84,10 +84,15 @@ Markdown 分栏预览按以下顺序拆成可连续交付的小切片，实现�
 
 1. **确认 Markdown 源码与本地预览左右分栏规格**（本任务）：确定预览入口、分栏状态归属、滚动同步、安全策略和首版 Markdown 语法清单；不修改生产代码。
 2. **建立 Markdown 预览渲染与安全退化契约**：新增本地 Markdown 渲染适配层，明确原始 HTML、链接、图片和渲染错误的处理；覆盖纯函数/组件级测试，不接入主界面状态。
-3. **接入 Markdown 分栏入口与布局状态**：在 Markdown 活动标签中提供预览开关和左右分栏布局，非 Markdown 标签保持现有编辑视图；按确认后的状态归属保存分栏开关。
-4. **预览随编辑更新与多标签隔离**：源码变化后更新预览，多标签切换时保持各标签状态互不污染，并确认保存仍只写源码。
-5. **Markdown 分栏集成验收与文档收尾**：完整自动化、release 构建和 macOS 真实应用验收；规格状态改为已完成，必要时同步 README。
+3. **接入 Markdown 分栏入口与预览更新**：在 Markdown 活动标签中提供预览开关和左右分栏布局，非 Markdown 标签保持现有编辑视图；按确认后的状态归属保存分栏开关；源码变化后更新预览，多标签切换时保持各标签状态互不污染。
+4. **Markdown 分栏集成验收与文档收尾**：完整自动化、release 构建和 macOS 真实应用验收；确认保存仍只写源码，规格状态改为已完成，必要时同步 README。
 
 ## 验证记录
 
-待实现完成后记录实际自动化、构建和 macOS 交互验证；未执行的检查不得列为通过。
+2026-08-10 已完成自动化与 release 构建验证：
+
+- `npm run check` 通过（typecheck + vitest **167 passed / 0 failed**），覆盖 Markdown 识别入口、非 Markdown 不显示 Preview、Markdown 开关分栏、安全链接/图片占位、编辑后预览更新、按标签隔离，以及渲染契约的 HTML 转义/错误退化。
+- `npm run build` 通过。
+- `npm run tauri -- build` 通过并生成 release `src-tauri/target/release/bundle/macos/Textora.app`；Vite 对现有语言包/主 bundle 的大 chunk 提示不影响本功能验收。
+- `git diff --check` 通过。
+- release `Textora.app` 可由 `/usr/bin/open -n` 启动。当前自动化环境无法可靠观测 Textora WebView 窗口内容：激活后系统报告前台进程为 `textora`，但截图捕获到其他/远程窗口画面，进程列表查询也受限。因此真实 macOS 点击验收（打开 Markdown、开启 Preview、编辑后预览更新、保存源码、多标签切换、关闭保护）尚未记录为通过，等待人工确认。

@@ -8,6 +8,7 @@ import type { DocumentDescriptor } from "./platform";
 export type DocumentTab = {
   tabId: string;
   document: DocumentSession;
+  markdownPreviewOpen: boolean;
 };
 
 export type TabSessionState = {
@@ -23,6 +24,7 @@ export function createInitialTabSession(): TabSessionState {
       {
         tabId: "tab-1",
         document: createNewDocument("untitled-1"),
+        markdownPreviewOpen: false,
       },
     ],
     activeTabId: "tab-1",
@@ -38,6 +40,7 @@ function untitledDisplayName(number: number): string {
 function createUntitledTab(tabId: string, number: number): DocumentTab {
   return {
     tabId,
+    markdownPreviewOpen: false,
     document: {
       ...createNewDocument(`untitled-${number}`),
       displayName: untitledDisplayName(number),
@@ -105,6 +108,7 @@ export function addOpenedDocumentTab(
       ...state.tabs,
       {
         tabId,
+        markdownPreviewOpen: false,
         document: commitOpenedDocument(
           createNewDocument(descriptor.id),
           descriptor,
@@ -116,6 +120,22 @@ export function addOpenedDocumentTab(
     nextUntitledNumber: state.nextUntitledNumber,
     nextTabNumber: state.nextTabNumber + 1,
   };
+}
+
+export function setMarkdownPreviewOpen(
+  state: TabSessionState,
+  tabId: string,
+  open: boolean,
+): TabSessionState {
+  let changed = false;
+  const tabs = state.tabs.map((tab) => {
+    if (tab.tabId !== tabId || tab.markdownPreviewOpen === open) {
+      return tab;
+    }
+    changed = true;
+    return { ...tab, markdownPreviewOpen: open };
+  });
+  return changed ? { ...state, tabs } : state;
 }
 
 export function switchActiveTab(

@@ -6,23 +6,34 @@
 
 ## 进行中
 
-暂无进行中任务。
+### Markdown 分栏集成验收与文档收尾
+
+- **状态**：进行中
+- **开始日期**：2026-08-10
+- **Feature Spec**：`docs/features/markdown-split-preview.md`
+- **目标**：完成 Markdown 左右分栏预览的自动化回归、release 构建、macOS 真实交互验收，并把 Feature Spec 与 README 同步为已完成。
+- **范围**：验收 Markdown 文件打开后 `Preview` 开关、左右分栏、编辑后预览更新、安全 HTML/链接/图片占位、多标签隔离、非 Markdown 不显示入口、保存仍只写源码、关闭保护不回退；按需补遗漏的小修和文档记录。
+- **非范围**：不新增滚动同步、重启恢复、全局偏好、Mermaid、所见即所得、导出、脚注、数学公式、目录大纲、远程资源加载或新权限。
+- **依赖**：Markdown 分栏入口、预览更新和安全渲染契约已完成。
+- **拆分检查**：本任务是该功能的最后集成验收和文档收尾，不再承担新的主要用户行为；若验收发现大块新增需求，应拆回 backlog 或新切片。
+- **实施要点**：重点确认预览只是源码派生视图，不改变文档内容、编码/换行、脏状态、保存格式或关闭保护；只报告实际跑过的验证。
+- **完成标准**：`npm run check`、`npm run build`、`npm run tauri -- build`、`git diff --check` 通过；macOS release 应用人工/自动真实交互验收通过；Feature Spec 验收条件勾选并改为已完成；README 当前状态同步。
+- **当前进度**：`npm run check`、`npm run build`、`npm run tauri -- build` 与 `git diff --check` 已通过；release `Textora.app` 已构建并可由 `/usr/bin/open -n` 启动。当前桌面自动化环境无法可靠观测 Textora WebView 窗口内容：激活后系统报告前台进程为 `textora`，但截图捕获到其他/远程窗口画面，进程列表查询也受限。因此尚未把 Markdown 文件打开、Preview 开关、分栏预览更新、保存源码和关闭保护的真实 macOS 点击流程记录为通过；下一步需要人工在 release 应用中完成这些交互验证，然后才能把规格标记为已完成。
 
 ## 已承诺待办
 
-### 接入 Markdown 分栏入口与预览更新
-
-- **状态**：待开始
-- **Feature Spec**：`docs/features/markdown-split-preview.md`
-- **目标**：在 Markdown 活动标签中提供 `Preview` 开关和左右分栏布局，使用已完成的安全渲染契约显示本地预览，并让预览随源码编辑更新。
-- **范围**：仅 Markdown 标签显示工具栏 `Preview` 开关；开启后左侧保留 CodeMirror 源码编辑、右侧显示安全预览；关闭后恢复单栏源码；分栏状态按标签保存在当前会话内；源码变化后更新预览；多标签切换时分栏状态和预览内容互不污染；渲染错误显示安全错误占位且不阻止编辑/保存。
-- **非范围**：不做滚动同步、重启恢复、全局偏好、真实 macOS release 验收或文档最终收尾；不实现 Mermaid、所见即所得、导出、脚注、数学公式、目录大纲、远程资源加载或新权限。
-- **依赖**：Markdown 预览渲染与安全退化契约已完成。
-- **拆分检查**：本任务交付一个完整用户入口（开关分栏并看到随编辑更新的安全预览），但不承担 release 集成验收和规格关闭；这些留给后续集成验收切片。
-- **实施要点**：复用当前活动标签语言识别结果判断是否显示入口；预览状态应归属标签会话，不影响文档内容、脏状态、保存格式或关闭保护。
-- **完成标准**：自动化测试覆盖 Markdown/非 Markdown 入口显示、开关分栏、编辑后预览更新、多标签隔离、错误占位不阻塞编辑；`npm run check`、`npm run build`、`git diff --check` 通过。
+暂无已承诺待办。
 
 ## 最近完成
+
+### 接入 Markdown 分栏入口与预览更新
+
+- **状态**：已完成
+- **开始日期**：2026-08-10
+- **完成日期**：2026-08-10
+- **Feature Spec**：`docs/features/markdown-split-preview.md`
+- **结果**：在 Markdown 活动标签工具栏接入 `Preview` 开关，非 Markdown 标签不显示该入口。开启后编辑区进入左右分栏：左侧保留 CodeMirror Markdown 源码编辑，右侧使用 `renderMarkdownPreview` 显示本地安全预览；关闭后恢复单栏源码。分栏状态新增为 `DocumentTab.markdownPreviewOpen`，按标签保存在当前会话内，不写入文档内容、不影响脏状态、保存格式或关闭保护；源码编辑后预览随 `session.content` 重新派生，多标签切换时 Markdown 分栏状态与预览内容互不污染。新增样式覆盖基础 Markdown 预览排版、安全链接/图片占位和错误占位。未新增依赖、Tauri capability、Rust IPC、滚动同步、重启恢复或全局偏好。
+- **验证**：`npm run check` 通过（typecheck + vitest **167 passed / 0 failed**，新增 App 级测试覆盖非 Markdown 不显示 Preview、Markdown 开关分栏、安全占位、编辑后预览更新、按标签隔离）；`npm run build` 通过（Vite 大 chunk 体积提示仍为既有语言包提示，不影响本切片）；`git diff --check` 通过。本切片未做 release 构建、真实 macOS 验收或规格最终收尾。
 
 ### 建立 Markdown 预览渲染与安全退化契约
 
