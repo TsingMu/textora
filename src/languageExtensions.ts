@@ -1,7 +1,8 @@
 /**
  * {@link LanguageMode} 到 CodeMirror 语言扩展的映射（`docs/features/code-syntax-highlighting.md` 切片 2）。
  *
- * 集中映射便于随活动标签重配置；`plain-text` 返回 `null`（不挂任何语言扩展）。
+ * 集中映射便于随活动标签重配置；`plain-text` 和首版未接入高亮的格式返回 `null`
+ *（不挂任何语言扩展）。
  * 语言包加载或构造失败时不应阻止编辑——调用方在 `try` 中应用，失败回退到普通文本。
  */
 
@@ -23,7 +24,8 @@ import type { Extension } from "@codemirror/state";
 import type { LanguageMode } from "./languageRecognition";
 
 /**
- * 返回 `mode` 对应的 CodeMirror 语言扩展；`plain-text` 返回 `null`（普通文本，无语言扩展）。
+ * 返回 `mode` 对应的 CodeMirror 语言扩展；`plain-text` 以及尚未接入 CodeMirror
+ * 语法支持的格式返回 `null`（普通文本，无语言扩展）。
  * 任意语言包构造抛错时由调用方捕获并退化为 `null`。
  */
 export function languageExtension(mode: LanguageMode): Extension | null {
@@ -54,6 +56,8 @@ export function languageExtension(mode: LanguageMode): Extension | null {
       return yaml();
     case "markdown":
       return markdown();
+    case "mermaid":
+      return null;
     case "plain-text":
       return null;
   }

@@ -5,6 +5,8 @@ import {
   addUntitledTab,
   closeTabCleanly,
   createInitialTabSession,
+  setMarkdownPreviewOpen,
+  setMermaidPreviewOpen,
   switchActiveTab,
   updateActiveDocument,
 } from "./tabSession";
@@ -70,5 +72,28 @@ describe("tab session", () => {
     expect(activeDocument(state).displayName).toBe("Untitled 3");
     expect(activeDocument(state).content).toBe("");
     expect(activeDocument(state).isDirty).toBe(false);
+  });
+
+  it("keeps Markdown and Mermaid preview switches independent per tab", () => {
+    let state = createInitialTabSession();
+    const firstTabId = state.activeTabId;
+    state = addUntitledTab(state);
+    const secondTabId = state.activeTabId;
+
+    state = setMarkdownPreviewOpen(state, firstTabId, true);
+    state = setMermaidPreviewOpen(state, secondTabId, true);
+
+    expect(
+      state.tabs.find((tab) => tab.tabId === firstTabId)?.markdownPreviewOpen,
+    ).toBe(true);
+    expect(
+      state.tabs.find((tab) => tab.tabId === firstTabId)?.mermaidPreviewOpen,
+    ).toBe(false);
+    expect(
+      state.tabs.find((tab) => tab.tabId === secondTabId)?.markdownPreviewOpen,
+    ).toBe(false);
+    expect(
+      state.tabs.find((tab) => tab.tabId === secondTabId)?.mermaidPreviewOpen,
+    ).toBe(true);
   });
 });

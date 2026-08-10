@@ -32,6 +32,8 @@ describe("detectLanguage", () => {
       ["values.yml", "yaml"],
       ["README.md", "markdown"],
       ["README.markdown", "markdown"],
+      ["diagram.mmd", "mermaid"],
+      ["diagram.mermaid", "mermaid"],
     ];
 
     for (const [fileName, expected] of cases) {
@@ -47,6 +49,8 @@ describe("detectLanguage", () => {
     expect(detectLanguage(null, "script.PY")).toBe("python");
     expect(detectLanguage(null, "config.JSON")).toBe("json");
     expect(detectLanguage(null, "README.MD")).toBe("markdown");
+    expect(detectLanguage(null, "diagram.MMD")).toBe("mermaid");
+    expect(detectLanguage(null, "diagram.MERMAID")).toBe("mermaid");
   });
 
   it("完整文件名优先于扩展名匹配", () => {
@@ -102,6 +106,7 @@ describe("languageDisplayName", () => {
       ["toml", "TOML"],
       ["yaml", "YAML"],
       ["markdown", "Markdown"],
+      ["mermaid", "Mermaid"],
       ["plain-text", "Plain Text"],
     ];
     for (const [mode, expected] of cases) {

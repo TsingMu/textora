@@ -10,19 +10,90 @@
 
 ## 已承诺待办
 
-### 确认 Mermaid 本地编辑与预览规格
+### 建立 Markdown 代码块高亮渲染契约并接入预览
 
 - **状态**：待开始
-- **Feature Spec**：`docs/features/mermaid-local-preview.md`
-- **目标**：把 Mermaid 本地编辑与预览从 backlog 候选推进为已确认规格，明确首版入口、语言识别、支持图表类型、渲染库与安全配置、渲染频率，以及是否纳入 Markdown fenced code block。
-- **范围**：确认 Mermaid 预览只作为源码派生视图；决定 `.mmd` / `.mermaid` 独立文件与 Markdown fenced code block 的首版优先级；决定状态栏语言名、预览入口、渲染频率、错误展示、安全配置和首版图表类型；把开放问题替换为决议记录，并按合适颗粒度更新后续实现任务。
-- **非范围**：不实现 Mermaid 渲染、语言识别、布局、保存逻辑或测试；不引入导出、所见即所得、远程资源加载、网络访问、shell 或新权限。
-- **依赖**：基础文本编辑、多标签会话、保存/关闭保护、代码语法高亮和 Markdown 本地预览已完成；`docs/features/mermaid-local-preview.md` 草案已创建。
-- **拆分检查**：本任务只交付规格确认和任务拆分，不包含生产代码或实现性测试；后续语言识别/渲染契约、预览入口接入与集成验收已在 Feature Spec 中拆成独立切片。
-- **实施要点**：先逐项收敛开放问题，再更新 Feature Spec 状态为“已确认”；若安全配置或 Markdown code block 演进形成重要、非显然且容易反复争论的约束，再考虑同步 `docs/DECISIONS.md`。
-- **完成标准**：`docs/features/mermaid-local-preview.md` 中开放问题全部有明确决议；验收条件与实现拆分能直接指导首个实现切片；`docs/tasks/current.md` 写入下一项待实现任务；文档 diff 无空白错误。
+- **Feature Spec**：`docs/features/markdown-code-block-highlighting.md`
+- **目标**：让 Markdown 预览中的普通 fenced code block 根据语言标记显示本地语法着色，同时保持 Markdown 源码仍是保存权威数据。
+- **范围**：识别 fenced code block info string 的首个 token；为 JavaScript/TypeScript、JSON、HTML、CSS、Rust、Python、Java、Shell、SQL、TOML、YAML、Markdown 等既有语言集合接入预览侧高亮；未知语言、空语言或高亮失败时退化为普通转义代码块；保留 fenced `mermaid` 图表渲染优先级；补齐 Markdown 渲染与 App 级自动化测试。
+- **非范围**：新增源码编辑器语言、复制按钮、行号、折叠、主题配置、代码执行、LSP、导出、Markdown 所见即所得、滚动同步、远程资源、网络、shell、Rust IPC 或 Tauri capability。
+- **依赖**：代码语法高亮、Markdown 源码与本地预览左右分栏、Markdown fenced Mermaid 本地渲染均已完成。
+- **拆分检查**：该任务只交付一个用户可观察行为——Markdown 预览普通代码块语法着色；包含必要的纯渲染契约、样式与 App 接入，未混入发布验收或额外代码块工具栏能力。
+- **完成标准**：支持语言代码块在 Markdown 预览中显示语法着色；未知/空语言普通显示；危险 HTML 与脚本按文本转义；Mermaid fence 仍渲染图表；保存仍只写 Markdown 源码；多标签隔离不回退；`npm run check`、`npm run build`、`git diff --check` 通过。
 
 ## 最近完成
+
+### 确认 Markdown 预览代码块语法着色规格
+
+- **状态**：已完成
+- **开始日期**：2026-08-10
+- **完成日期**：2026-08-10
+- **Feature Spec**：`docs/features/markdown-code-block-highlighting.md`
+- **结果**：新增 Markdown 预览代码块语法着色规格，确认首版只处理 Markdown 预览右侧普通 fenced code block；按 info string 首个 token 大小写不敏感识别既有代码高亮语言集合；未知、空语言或高亮失败退化为普通转义代码块；fenced `mermaid` 保持图表渲染优先级；不纳入复制按钮、行号、折叠、主题配置、代码执行、LSP、导出、所见即所得、滚动同步、远程资源或新 Tauri/Rust 权限。已拆出下一项实现切片「建立 Markdown 代码块高亮渲染契约并接入预览」。
+- **验证**：文档审查；`git diff --check` 通过。本任务不修改生产代码，未运行构建或测试。
+
+### Markdown Mermaid 集成验收
+
+- **状态**：已完成
+- **开始日期**：2026-08-10
+- **完成日期**：2026-08-10
+- **Feature Spec**：`docs/features/markdown-split-preview.md`、`docs/features/mermaid-local-preview.md`
+- **结果**：完成 Markdown 预览中 fenced `mermaid` code block 本地渲染集成的自动化、前端构建、release 构建、bundle 配置、权限 diff、按需 chunk 和 release 启动验收记录。未新增功能行为，未部署到 `/Applications`，未做签名/公证/安装器。
+- **验证**：`npm run check` 通过（typecheck + vitest **184 passed / 0 failed**）；`npm run build` 通过；`npm run tauri -- build` 通过并生成 release `Textora.app`；bundle 检查确认 `CFBundleIdentifier` 为 `com.tsingmu.textora`；capability diff 确认未新增网络、shell、文件系统或 Rust/Tauri 权限；构建产物确认 Mermaid 仍作为按需 chunk 存在；release app 可启动，进程名为 `textora`；`git diff --check` 通过。本轮自动验收未直接观察 WebView 内点击结果，真实 UI 可用 `samples/markdown-mermaid-preview-smoke.md` 人工复验。
+
+### 在 Markdown 预览中渲染 Mermaid fenced code block
+
+- **状态**：已完成
+- **开始日期**：2026-08-10
+- **完成日期**：2026-08-10
+- **Feature Spec**：`docs/features/markdown-split-preview.md`、`docs/features/mermaid-local-preview.md`
+- **结果**：Markdown 预览现在会识别 fenced `mermaid` code block（大小写不敏感，可带空白），并复用既有 `renderMermaidPreview` 本地安全渲染契约在原位置显示图表。源码变更后约 300ms debounce 更新，渲染错误在对应代码块位置显示错误占位，不锁定 Markdown 编辑器；异步结果按活动标签与源码校验，避免旧结果覆盖新 Markdown 或污染其他标签。普通代码块继续按代码块显示；保存仍只提交 Markdown 源码，不包含 SVG 预览产物。新增 `samples/markdown-mermaid-preview-smoke.md` 作为人工冒烟验证样例。未新增 Markdown inline Mermaid、导出、所见即所得、滚动同步、全局偏好、重启恢复、远程资源、网络、shell、Rust IPC 或 Tauri capability。
+- **验证**：`npm run test -- markdownPreview App` 通过（**90 passed / 0 failed**）；`npm run check` 通过（typecheck + vitest **184 passed / 0 failed**）；`npm run build` 通过，Mermaid 仍作为按需 chunk 加载；`git diff --check` 通过。本切片未运行 release 构建或真实 macOS UI 验收。
+
+### Mermaid 集成验收与文档收尾
+
+- **状态**：已完成
+- **开始日期**：2026-08-10
+- **完成日期**：2026-08-10
+- **Feature Spec**：`docs/features/mermaid-local-preview.md`
+- **结果**：完成 Mermaid 本地编辑与预览的组合回归、release 构建、真实 macOS 应用验收和文档收尾，并把 `docs/features/mermaid-local-preview.md` 与 README 同步为已完成状态。首版支持 `.mmd` / `.mermaid` 文件识别为 `Mermaid`、工具栏 `Preview` 开关、源码/预览左右分栏、本地 Mermaid 图表渲染、编辑后约 300ms debounce 更新、错误退化、多标签隔离、保存仍只写源码，以及 Markdown fenced Mermaid code block 仍按普通代码块显示。新增 `samples/mermaid-preview-smoke.mmd` 作为人工冒烟验证样例。未新增导出、所见即所得、滚动同步、全局偏好、重启恢复、Markdown 内嵌 Mermaid 渲染、Rust IPC、Tauri capability、网络、shell 或文件权限。
+- **验证**：`npm run check` 通过（typecheck + vitest **179 passed / 0 failed**）；`npm run build` 通过；`npm run tauri -- build` 通过并生成 release `Textora.app`；bundle 检查确认 `CFBundleIdentifier` 为 `com.tsingmu.textora`；capability diff 确认未新增网络、shell、文件系统或 Rust/Tauri 权限；release app 可启动，进程名为 `textora`；`git diff --check` 通过。人工真实 macOS UI 验收确认通过：打开 `.mmd`/`.mermaid`、状态栏 `Mermaid`、Preview 左右分栏、本地图表渲染、编辑后更新、错误退化、保存源码、多标签隔离、关闭保护，以及 Markdown fenced Mermaid code block 仍不渲染为图表。
+
+### 接入 Mermaid 预览入口与更新
+
+- **状态**：已完成
+- **开始日期**：2026-08-10
+- **完成日期**：2026-08-10
+- **Feature Spec**：`docs/features/mermaid-local-preview.md`
+- **结果**：在 Mermaid 活动标签接入 `Preview` 开关和源码/预览左右分栏，非 Mermaid 标签不显示 Mermaid 入口。预览开关状态新增为 `DocumentTab.mermaidPreviewOpen`，按标签保存在当前会话内，并与 Markdown 预览状态字段分离；源码变更后约 300ms debounce 调用 `renderMermaidPreview` 更新预览，渲染期间显示 loading，占位结果按 `tabId + source` 校验，避免旧异步结果覆盖新源码或污染其他标签。渲染错误显示在 Mermaid 预览区且不阻止继续编辑。`mermaidPreview.ts` 改为动态导入 `mermaid`，让 Mermaid 依赖进入按需 chunk，避免进入初始主入口 bundle。未渲染 Markdown fenced Mermaid code block，未新增导出、所见即所得、滚动同步、全局偏好、重启恢复、Rust IPC、Tauri capability、网络、shell 或文件权限。
+- **验证**：`npm run test -- mermaidPreview App tabSession` 通过（**88 passed / 0 failed**）；`npm run check` 通过（typecheck + vitest **178 passed / 0 failed**）；`npm run build` 通过，主入口 chunk 约 641 kB，Mermaid core 作为按需 chunk 约 623 kB，Vite 大 chunk 提示仍存在但不阻塞本切片；`git diff --check` 通过。本切片未做 release 构建或真实 macOS 交互验收。
+
+### 建立 Mermaid 本地渲染安全契约
+
+- **状态**：已完成
+- **开始日期**：2026-08-10
+- **完成日期**：2026-08-10
+- **Feature Spec**：`docs/features/mermaid-local-preview.md`
+- **结果**：新增本地打包的 `mermaid@11.16.1` 前端依赖、`src/mermaidPreview.ts` 渲染适配层和 `src/mermaidPreview.test.ts`。适配层集中初始化 Mermaid：`startOnLoad: false`、`securityLevel: "strict"`、`htmlLabels: false`、`arrowMarkerAbsolute: false`，并把渲染结果清洗为安全 SVG 字符串；清洗规则移除脚本、`foreignObject`、事件属性、非本地 `href`/`src`、`javascript:` 与外部 `url(...)`/`@import` 样式。`renderMermaidPreview` 成功时返回 `{ status: "ok", html }`，失败时返回安全错误占位，不向 UI 调用方抛异常。为 jsdom 补最小 SVG 文本测量 mock 以验证基础 flowchart 渲染。未接入 App 主界面、Preview 入口、分栏布局、Markdown fenced code block 渲染、Rust IPC、Tauri capability、网络、shell 或文件权限。
+- **验证**：`npm run test -- mermaidPreview` 通过（**4 passed / 0 failed**）；`npm run check` 通过（typecheck + vitest **174 passed / 0 failed**）；`npm run build` 通过（Vite 大 chunk 体积提示仍为既有语言包提示，不影响本切片；由于主界面尚未引用 `mermaidPreview.ts`，Mermaid 依赖会在后续 UI 接入切片进入实际 bundle）；`npm audit --omit=dev` 通过（生产依赖 **0 vulnerabilities**）；完整 `npm audit` 仍报告 3 个开发依赖链审计项，来源为 `vite -> postcss/nanoid` 与 `jsdom -> undici`，未自动执行 `npm audit fix`；`git diff --check` 通过。本切片未做 release 构建或真实 macOS 交互验收。
+
+### 接入 Mermaid 语言识别与普通文本退化契约
+
+- **状态**：已完成
+- **开始日期**：2026-08-10
+- **完成日期**：2026-08-10
+- **Feature Spec**：`docs/features/mermaid-local-preview.md`
+- **结果**：在前端语言识别契约中新增 `mermaid` 模式，`.mmd` / `.mermaid` 扩展名大小写不敏感，`languageDisplayName` 显示 `Mermaid`。CodeMirror 语言扩展映射中 Mermaid 暂时返回 `null`，按普通文本编辑退化，不新增 Mermaid 语法扩展或渲染依赖。App 级测试覆盖打开 Mermaid 文档后状态栏显示 `Mermaid`，且本切片不显示 `Preview` 开关或预览面板。未改 Rust、Tauri capability、保存/关闭链路、Markdown fenced code block 渲染、网络、shell 或文件权限。
+- **验证**：`npm run check` 通过（typecheck + vitest **170 passed / 0 failed**）；`npm run build` 通过（Vite 大 chunk 体积提示仍为既有语言包提示，不影响本切片）；`git diff --check` 通过。本切片未做 release 构建或真实 macOS 交互验收。
+
+### 确认 Mermaid 本地编辑与预览规格
+
+- **状态**：已完成
+- **开始日期**：2026-08-10
+- **完成日期**：2026-08-10
+- **Feature Spec**：`docs/features/mermaid-local-preview.md`
+- **结果**：将 Mermaid 本地编辑与预览规格从草案确认。首版决议为：优先支持独立 `.mmd` / `.mermaid` 文档；Markdown fenced Mermaid code block 暂不渲染，仍按普通代码块显示；Mermaid 纳入语言识别并在状态栏显示 `Mermaid`；预览入口复用 Markdown 的 `Preview` 开关和左右分栏模式，按标签保存在当前会话内；渲染更新采用约 300ms debounce；允许新增本地打包的 `mermaid` 前端依赖，但必须使用手动渲染与最严格可用安全配置，不引入远程资源、网络、shell 或新权限；首版验收图表类型限定为 `flowchart` / `graph`、`sequenceDiagram`、`stateDiagram`、`classDiagram` 与 `erDiagram`。已拆出下一项实现切片「接入 Mermaid 语言识别与普通文本退化契约」。
+- **验证**：文档审查；`git diff --check` 通过。本任务不修改生产代码，未运行构建或测试。
 
 ### Markdown 分栏集成验收与文档收尾
 

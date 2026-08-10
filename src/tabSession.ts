@@ -9,6 +9,7 @@ export type DocumentTab = {
   tabId: string;
   document: DocumentSession;
   markdownPreviewOpen: boolean;
+  mermaidPreviewOpen: boolean;
 };
 
 export type TabSessionState = {
@@ -25,6 +26,7 @@ export function createInitialTabSession(): TabSessionState {
         tabId: "tab-1",
         document: createNewDocument("untitled-1"),
         markdownPreviewOpen: false,
+        mermaidPreviewOpen: false,
       },
     ],
     activeTabId: "tab-1",
@@ -41,6 +43,7 @@ function createUntitledTab(tabId: string, number: number): DocumentTab {
   return {
     tabId,
     markdownPreviewOpen: false,
+    mermaidPreviewOpen: false,
     document: {
       ...createNewDocument(`untitled-${number}`),
       displayName: untitledDisplayName(number),
@@ -109,6 +112,7 @@ export function addOpenedDocumentTab(
       {
         tabId,
         markdownPreviewOpen: false,
+        mermaidPreviewOpen: false,
         document: commitOpenedDocument(
           createNewDocument(descriptor.id),
           descriptor,
@@ -134,6 +138,22 @@ export function setMarkdownPreviewOpen(
     }
     changed = true;
     return { ...tab, markdownPreviewOpen: open };
+  });
+  return changed ? { ...state, tabs } : state;
+}
+
+export function setMermaidPreviewOpen(
+  state: TabSessionState,
+  tabId: string,
+  open: boolean,
+): TabSessionState {
+  let changed = false;
+  const tabs = state.tabs.map((tab) => {
+    if (tab.tabId !== tabId || tab.mermaidPreviewOpen === open) {
+      return tab;
+    }
+    changed = true;
+    return { ...tab, mermaidPreviewOpen: open };
   });
   return changed ? { ...state, tabs } : state;
 }

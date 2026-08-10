@@ -26,6 +26,7 @@ import {
   closeTabCleanly,
   createInitialTabSession,
   setMarkdownPreviewOpen,
+  setMermaidPreviewOpen,
   switchActiveTab,
   updateActiveDocument,
   updateDocumentByTabId,
@@ -61,7 +62,15 @@ import {
   type LineEndingChoice,
   type SaveDirectoryGrant,
 } from "./platform";
-import { renderMarkdownPreview } from "./markdownPreview";
+import {
+  collectMarkdownMermaidBlocks,
+  renderMarkdownPreview,
+  type MarkdownMermaidBlockPreview,
+} from "./markdownPreview";
+import {
+  renderMermaidPreview,
+  type MermaidPreviewResult,
+} from "./mermaidPreview";
 
 const initialTabs = createInitialTabSession();
 type ConflictOperationStatus = "idle" | "canceling" | "reloading" | "overwriting";
@@ -91,6 +100,13 @@ type CloseIntent = {
   active: CloseIntentItem;
   pending: CloseIntentItem[];
   completedDocumentIds: string[];
+};
+type MermaidPreviewState =
+  | { source: string; status: "loading"; html: string }
+  | ({ source: string } & MermaidPreviewResult);
+type MarkdownMermaidPreviewState = {
+  source: string;
+  blocks: Record<number, MarkdownMermaidBlockPreview>;
 };
 
 function invalidSaveFileName(fileName: string): boolean {
@@ -140,6 +156,12 @@ function App() {
   });
   const [formatSettingsOpen, setFormatSettingsOpen] = useState(false);
   const [mixedLineEndingConfirmed, setMixedLineEndingConfirmed] = useState(true);
+  const [mermaidPreviews, setMermaidPreviews] = useState<
+    Record<string, MermaidPreviewState>
+  >({});
+  const [markdownMermaidPreviews, setMarkdownMermaidPreviews] = useState<
+    Record<string, MarkdownMermaidPreviewState>
+  >({});
   const [formatDraft, setFormatDraft] = useState<{
     encoding: EncodingChoice;
     lineEnding: LineEndingChoice;
@@ -1060,6 +1082,14 @@ function App() {
     });
   }
 
+  function handleMermaidPreviewToggle() {
+    updateTabSession((current) => {
+      const tab = current.tabs.find((item) => item.tabId === current.activeTabId);
+      if (tab === undefined) return current;
+      return setMermaidPreviewOpen(current, tab.tabId, !tab.mermaidPreviewOpen);
+    });
+  }
+
   function openFormatSettings() {
     setFormatDraft(saveFormat);
     setFormatSettingsOpen(true);
@@ -1258,9 +1288,149 @@ function App() {
   const markdownPreviewOpen = activeTab?.markdownPreviewOpen ?? false;
   const markdownPreviewVisible =
     activeLanguage === "markdown" && markdownPreviewOpen;
+  const markdownMermaidPreview =
+    activeTab !== undefined
+      ? markdownMermaidPreviews[activeTab.tabId]
+      : undefined;
   const markdownPreview = markdownPreviewVisible
-    ? renderMarkdownPreview(session.content)
+    ? renderMarkdownPreview(session.content, {
+        mermaidBlocks:
+          markdownMermaidPreview?.source === session.content
+            ? markdownMermaidPreview.blocks
+            : undefined,
+      })
     : null;
+  const mermaidPreviewOpen = activeTab?.mermaidPreviewOpen ?? false;
+  const mermaidPreviewVisible =
+    activeLanguage === "mermaid" && mermaidPreviewOpen;
+  const mermaidPreview =
+    activeTab !== undefined ? mermaidPreviews[activeTab.tabId] : undefined;
+
+  useEffect(() => {
+    if (!mermaidPreviewVisible || activeTab === undefined) {
+      return;
+    }
+
+    const tabId = activeTab.tabId;
+    const source = session.content;
+    setMermaidPreviews((current) => {
+      const previous = current[tabId];
+      if (previous?.source === source && previous.status !== "loading") {
+        return current;
+      }
+      return {
+        ...current,
+        [tabId]: {
+          source,
+          status: "loading",
+          html: '<div class="mermaid-preview-loading" role="status">Rendering Mermaid preview…</div>',
+        },
+      };
+    });
+
+    const timeout = window.setTimeout(() => {
+      void renderMermaidPreview(source).then((result) => {
+        setMermaidPreviews((current) => {
+          const existing = current[tabId];
+          const tabStillExists = tabSessionRef.current.tabs.some(
+            (tab) => tab.tabId === tabId && tab.document.content === source,
+          );
+          if (!tabStillExists || existing?.source !== source) {
+            return current;
+          }
+          return {
+            ...current,
+            [tabId]: { source, ...result },
+          };
+        });
+      });
+    }, 300);
+
+    return () => window.clearTimeout(timeout);
+  }, [
+    activeTab?.tabId,
+    mermaidPreviewVisible,
+    session.content,
+    setMermaidPreviews,
+  ]);
+
+  useEffect(() => {
+    if (!markdownPreviewVisible || activeTab === undefined) {
+      return;
+    }
+
+    const tabId = activeTab.tabId;
+    const source = session.content;
+    const mermaidBlocks = collectMarkdownMermaidBlocks(source);
+    if (mermaidBlocks.length === 0) {
+      return;
+    }
+
+    setMarkdownMermaidPreviews((current) => {
+      const previous = current[tabId];
+      if (
+        previous?.source === source &&
+        Object.keys(previous.blocks).length === mermaidBlocks.length &&
+        Object.values(previous.blocks).every((block) => block.status !== "loading")
+      ) {
+        return current;
+      }
+
+      const blocks: Record<number, MarkdownMermaidBlockPreview> = {};
+      mermaidBlocks.forEach((_block, index) => {
+        const previousBlock =
+          previous?.source === source ? previous.blocks[index] : undefined;
+        blocks[index] =
+          previousBlock?.status === "ok" || previousBlock?.status === "error"
+            ? previousBlock
+            : {
+                status: "loading",
+                html: '<div class="mermaid-preview-loading" role="status">Rendering Mermaid preview…</div>',
+              };
+      });
+
+      return {
+        ...current,
+        [tabId]: { source, blocks },
+      };
+    });
+
+    const timeout = window.setTimeout(() => {
+      void Promise.all(mermaidBlocks.map((block) => renderMermaidPreview(block))).then(
+        (results) => {
+          setMarkdownMermaidPreviews((current) => {
+            const existing = current[tabId];
+            const tabStillExists = tabSessionRef.current.tabs.some(
+              (tab) => tab.tabId === tabId && tab.document.content === source,
+            );
+            if (!tabStillExists || existing?.source !== source) {
+              return current;
+            }
+
+            const blocks: Record<number, MarkdownMermaidBlockPreview> = {};
+            results.forEach((result, index) => {
+              blocks[index] = {
+                status: result.status,
+                html: result.html,
+              };
+            });
+
+            return {
+              ...current,
+              [tabId]: { source, blocks },
+            };
+          });
+        },
+      );
+    }, 300);
+
+    return () => window.clearTimeout(timeout);
+  }, [
+    activeTab?.tabId,
+    markdownPreviewVisible,
+    session.content,
+    setMarkdownMermaidPreviews,
+  ]);
 
   return (
     <main className="app-shell">
@@ -1312,7 +1482,7 @@ function App() {
           {activeLanguage === "markdown" && (
             <button
               type="button"
-              className={`markdown-preview-toggle ${
+              className={`preview-toggle markdown-preview-toggle ${
                 markdownPreviewOpen ? "is-active" : ""
               }`}
               onClick={handleMarkdownPreviewToggle}
@@ -1322,6 +1492,24 @@ function App() {
                 markdownPreviewOpen
                   ? "Hide Markdown preview"
                   : "Show Markdown preview"
+              }
+            >
+              Preview
+            </button>
+          )}
+          {activeLanguage === "mermaid" && (
+            <button
+              type="button"
+              className={`preview-toggle mermaid-preview-toggle ${
+                mermaidPreviewOpen ? "is-active" : ""
+              }`}
+              onClick={handleMermaidPreviewToggle}
+              disabled={busy}
+              aria-pressed={mermaidPreviewOpen}
+              aria-label={
+                mermaidPreviewOpen
+                  ? "Hide Mermaid preview"
+                  : "Show Mermaid preview"
               }
             >
               Preview
@@ -1390,6 +1578,7 @@ function App() {
         <div
           className={`editor-panel ${
             markdownPreviewVisible ? "has-markdown-preview" : ""
+          } ${mermaidPreviewVisible ? "has-mermaid-preview" : ""
           }`}
         >
           <div className="editor-source-pane">
@@ -1413,6 +1602,19 @@ function App() {
               <div
                 className="markdown-preview-content"
                 dangerouslySetInnerHTML={{ __html: markdownPreview.html }}
+              />
+            </aside>
+          )}
+          {mermaidPreviewVisible && mermaidPreview !== undefined && (
+            <aside
+              className={`mermaid-preview-pane ${
+                mermaidPreview.status === "error" ? "is-error" : ""
+              }`}
+              aria-label="Mermaid preview"
+            >
+              <div
+                className="mermaid-preview-content"
+                dangerouslySetInnerHTML={{ __html: mermaidPreview.html }}
               />
             </aside>
           )}

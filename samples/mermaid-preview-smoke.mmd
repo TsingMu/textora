@@ -1,0 +1,14 @@
+flowchart TD
+  Start([Open Textora])
+  OpenFile[Open samples/mermaid-preview-smoke.mmd]
+  TogglePreview[Click Preview]
+  Render{Preview renders?}
+  Edit[Edit this source]
+  Update[Preview updates after a short delay]
+  Save[Save file]
+  Done([Mermaid preview smoke test passed])
+
+  Start --> OpenFile --> TogglePreview --> Render
+  Render -- Yes --> Edit --> Update --> Save --> Done
+  Render -- No --> Error[Check the preview error message]
+  Error --> Edit

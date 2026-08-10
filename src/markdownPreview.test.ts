@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { renderMarkdownPreview } from "./markdownPreview";
+import {
+  collectMarkdownMermaidBlocks,
+  renderMarkdownPreview,
+} from "./markdownPreview";
 
 describe("renderMarkdownPreview", () => {
   it("渲染首版 Markdown 与 GFM 基础结构", () => {
@@ -36,6 +39,52 @@ const answer = 42;
     expect(result.html).toContain("<td>alpha</td>");
     expect(result.html).toContain('<pre><code class="language-ts">');
     expect(result.html).toContain("const answer = 42;");
+  });
+
+  it("收集并渲染 Mermaid fenced code block 的本地预览占位", () => {
+    const source = `# Diagram
+
+\`\`\`mermaid
+flowchart TD
+  A-->B
+\`\`\`
+
+\`\`\`ts
+const kept = true;
+\`\`\`
+`;
+
+    expect(collectMarkdownMermaidBlocks(source)).toEqual([
+      "flowchart TD\n  A-->B",
+    ]);
+
+    const result = renderMarkdownPreview(source, {
+      mermaidBlocks: {
+        0: {
+          status: "ok",
+          html: '<svg data-testid="diagram"></svg>',
+        },
+      },
+    });
+
+    expect(result.status).toBe("ok");
+    expect(result.html).toContain("markdown-mermaid-preview is-ok");
+    expect(result.html).toContain('<svg data-testid="diagram"></svg>');
+    expect(result.html).toContain('<pre><code class="language-ts">');
+    expect(result.html).toContain("const kept = true;");
+  });
+
+  it("Mermaid fenced code block 未有渲染结果时显示 loading，占位语言大小写不敏感", () => {
+    const result = renderMarkdownPreview(`\`\`\` Mermaid
+sequenceDiagram
+  A->>B: hello
+\`\`\`
+`);
+
+    expect(result.status).toBe("ok");
+    expect(result.html).toContain("markdown-mermaid-preview is-loading");
+    expect(result.html).toContain("Rendering Mermaid preview");
+    expect(result.html).not.toContain("<pre><code");
   });
 
   it("转义原始 HTML，不插入可执行 DOM", () => {

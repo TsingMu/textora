@@ -10,9 +10,14 @@ export type MarkdownPreviewResult =
     };
 
 type MarkdownRenderer = (source: string) => string;
+export type MarkdownMermaidBlockPreview = {
+  status: "loading" | "ok" | "error";
+  html: string;
+};
 
 interface MarkdownPreviewOptions {
   renderer?: MarkdownRenderer;
+  mermaidBlocks?: Readonly<Record<number, MarkdownMermaidBlockPreview>>;
 }
 
 const TOKEN_PREFIX = "\uE000";
@@ -22,11 +27,14 @@ export function renderMarkdownPreview(
   source: string,
   options: MarkdownPreviewOptions = {},
 ): MarkdownPreviewResult {
-  const renderer = options.renderer ?? renderMarkdownToSafeHtml;
   try {
     return {
       status: "ok",
-      html: renderer(source),
+      html:
+        options.renderer?.(source) ??
+        renderMarkdownToSafeHtml(source, {
+          mermaidBlocks: options.mermaidBlocks,
+        }),
     };
   } catch (error) {
     const message =
@@ -43,10 +51,14 @@ export function renderMarkdownPreview(
   }
 }
 
-function renderMarkdownToSafeHtml(source: string): string {
+function renderMarkdownToSafeHtml(
+  source: string,
+  options: Pick<MarkdownPreviewOptions, "mermaidBlocks"> = {},
+): string {
   const lines = source.replace(/\r\n?/g, "\n").split("\n");
   const blocks: string[] = [];
   let index = 0;
+  let mermaidBlockIndex = 0;
 
   while (index < lines.length) {
     const line = lines[index] ?? "";
@@ -67,6 +79,12 @@ function renderMarkdownToSafeHtml(source: string): string {
       }
       if (index < lines.length) {
         index += 1;
+      }
+      if (language.trim().toLowerCase() === "mermaid") {
+        const preview = options.mermaidBlocks?.[mermaidBlockIndex];
+        blocks.push(renderMermaidCodeBlock(mermaidBlockIndex, preview));
+        mermaidBlockIndex += 1;
+        continue;
       }
       const languageClass = language
         ? ` class="language-${escapeAttribute(language)}"`
@@ -128,6 +146,50 @@ function renderMarkdownToSafeHtml(source: string): string {
   }
 
   return blocks.join("\n");
+}
+
+export function collectMarkdownMermaidBlocks(source: string): string[] {
+  const lines = source.replace(/\r\n?/g, "\n").split("\n");
+  const blocks: string[] = [];
+  let index = 0;
+
+  while (index < lines.length) {
+    const line = lines[index] ?? "";
+    const fence = line.match(/^ {0,3}```\s*([\w-]+)?\s*$/);
+    if (!fence) {
+      index += 1;
+      continue;
+    }
+
+    const language = (fence[1] ?? "").trim().toLowerCase();
+    const codeLines: string[] = [];
+    index += 1;
+    while (index < lines.length && !/^ {0,3}```\s*$/.test(lines[index] ?? "")) {
+      codeLines.push(lines[index] ?? "");
+      index += 1;
+    }
+    if (index < lines.length) {
+      index += 1;
+    }
+    if (language === "mermaid") {
+      blocks.push(codeLines.join("\n"));
+    }
+  }
+
+  return blocks;
+}
+
+function renderMermaidCodeBlock(
+  index: number,
+  preview: MarkdownMermaidBlockPreview | undefined,
+): string {
+  const content =
+    preview?.html ??
+    '<div class="mermaid-preview-loading" role="status">Rendering Mermaid preview…</div>';
+  const status = preview?.status ?? "loading";
+  return `<div class="markdown-mermaid-preview is-${escapeAttribute(
+    status,
+  )}" data-mermaid-index="${index}">${content}</div>`;
 }
 
 function renderParagraphs(lines: string[]): string {

@@ -36,6 +36,21 @@ const tauriEventMock = vi.hoisted(() => ({
   exitRequestedHandler: undefined as (() => void) | undefined,
   unlisten: vi.fn(),
 }));
+const mermaidPreviewMock = vi.hoisted(() => ({
+  renderMermaidPreview: vi.fn(async (source: string) => {
+    if (source.includes("BROKEN")) {
+      return {
+        status: "error" as const,
+        message: "mock Mermaid syntax error",
+        html: '<div class="mermaid-preview-error">mock Mermaid syntax error</div>',
+      };
+    }
+    return {
+      status: "ok" as const,
+      html: `<svg data-testid="mock-mermaid"><text>${source}</text></svg>`,
+    };
+  }),
+}));
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
@@ -83,9 +98,11 @@ vi.mock("@tauri-apps/api/event", () => ({
     return tauriEventMock.unlisten;
   },
 }));
+vi.mock("./mermaidPreview", () => mermaidPreviewMock);
 import App from "./App";
 
 function setupInvoke() {
+  mermaidPreviewMock.renderMermaidPreview.mockClear();
   invokeMock.mockImplementation(async (cmd: string, _args?: unknown) => {
     if (cmd === "health_check") {
       return { service: "document-core", version: "0.1.0" };
@@ -594,6 +611,46 @@ describe("App tab session", () => {
       container.querySelectorAll<HTMLButtonElement>(".document-tab-select")[1]?.click();
     });
     expect(container.querySelector(".statusbar-language")?.textContent).toBe("TypeScript");
+  });
+
+  it("shows a closed Mermaid preview toggle for Mermaid documents", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        return {
+          id: "doc-mermaid",
+          path: "/tmp/diagram.mmd",
+          displayName: "diagram.mmd",
+          byteCount: 20,
+          encoding: "utf8",
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 20, sha256: "mermaid" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode("flowchart TD\nA-->B").buffer;
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await act(async () => root.render(<App />));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+
+    expect(tabTitles()).toEqual(["Untitled", "diagram.mmd"]);
+    expect(container.querySelector(".statusbar-language")?.textContent).toBe("Mermaid");
+    expect(container.querySelector(".markdown-preview-toggle")).toBeNull();
+    expect(
+      container
+        .querySelector<HTMLButtonElement>(".mermaid-preview-toggle")
+        ?.getAttribute("aria-pressed"),
+    ).toBe("false");
+    expect(container.querySelector(".markdown-preview-pane")).toBeNull();
+    expect(container.querySelector(".mermaid-preview-pane")).toBeNull();
   });
 });
 
@@ -2161,6 +2218,434 @@ describe("App Markdown preview", () => {
         ?.getAttribute("aria-pressed"),
     ).toBe("true");
     expect(container.querySelector(".markdown-preview-pane")).not.toBeNull();
+  });
+
+  it("renders Mermaid fenced code blocks inside Markdown preview", async () => {
+    const markdownSource = `# Flow
+
+\`\`\`mermaid
+flowchart TD
+A-->B
+\`\`\`
+
+\`\`\`ts
+const kept = true;
+\`\`\`
+`;
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        return {
+          id: "doc-md",
+          path: "/tmp/README.md",
+          displayName: "README.md",
+          byteCount: markdownSource.length,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: markdownSource.length, sha256: "md" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode(markdownSource).buffer;
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await act(async () => root.render(<App />));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".markdown-preview-toggle")?.click();
+    });
+
+    expect(container.querySelector(".markdown-mermaid-preview")).not.toBeNull();
+    expect(container.querySelector(".markdown-preview-content")?.innerHTML).toContain(
+      "language-ts",
+    );
+    await vi.waitFor(() => {
+      expect(mermaidPreviewMock.renderMermaidPreview).toHaveBeenCalledWith(
+        "flowchart TD\nA-->B",
+      );
+      expect(container.querySelector(".markdown-mermaid-preview")?.innerHTML).toContain(
+        "A--&gt;B",
+      );
+    });
+  });
+
+  it("shows Mermaid fenced code block errors in place without locking Markdown editing", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        return {
+          id: "doc-md",
+          path: "/tmp/README.md",
+          displayName: "README.md",
+          byteCount: 20,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 20, sha256: "md" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder()
+          .encode("```mermaid\nflowchart TD\nBROKEN\n```")
+          .buffer;
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await act(async () => root.render(<App />));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".markdown-preview-toggle")?.click();
+    });
+
+    await vi.waitFor(() => {
+      expect(container.querySelector(".markdown-mermaid-preview.is-error")).not.toBeNull();
+      expect(container.querySelector(".markdown-mermaid-preview")?.textContent).toContain(
+        "mock Mermaid syntax error",
+      );
+    });
+    expect(
+      container
+        .querySelector<HTMLElement>(".cm-content")
+        ?.getAttribute("contenteditable"),
+    ).toBe("true");
+  });
+
+  it("saves Markdown source text while Mermaid fenced preview is rendered", async () => {
+    const markdownSource = `# Flow
+
+\`\`\`mermaid
+flowchart TD
+A-->B
+\`\`\`
+`;
+    let savedContent = "";
+    invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        return {
+          id: "doc-md",
+          path: "/tmp/README.md",
+          displayName: "README.md",
+          byteCount: markdownSource.length,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: markdownSource.length, sha256: "md" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode(markdownSource).buffer;
+      }
+      if (cmd === "save_document") {
+        savedContent = new TextDecoder().decode(args as Uint8Array);
+        return {
+          id: "doc-md",
+          path: "/tmp/README.md",
+          displayName: "README.md",
+          byteCount: savedContent.length,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: savedContent.length, sha256: "saved" },
+          readOnly: false,
+        };
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await act(async () => root.render(<App />));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".markdown-preview-toggle")?.click();
+    });
+    await vi.waitFor(() => {
+      expect(container.querySelector(".markdown-mermaid-preview")?.innerHTML).toContain(
+        "A--&gt;B",
+      );
+    });
+
+    const nextSource = markdownSource.replace("A-->B", "A-->Saved");
+    const editable = container.querySelector<HTMLElement>(".cm-content");
+    await act(async () => {
+      if (editable === null) throw new Error("missing editor");
+      editable.textContent = nextSource;
+      editable.dispatchEvent(
+        new InputEvent("input", {
+          bubbles: true,
+          inputType: "insertText",
+          data: nextSource,
+        }),
+      );
+      await Promise.resolve();
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".save-button")?.click();
+    });
+
+    expect(savedContent).toBe(nextSource);
+    expect(savedContent).not.toContain("<svg");
+    expect(savedContent).not.toContain("mock-mermaid");
+  });
+});
+
+describe("App Mermaid preview", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+
+  beforeEach(() => {
+    (
+      globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
+    ).IS_REACT_ACT_ENVIRONMENT = true;
+    invokeMock.mockReset();
+    resetTauriWindowMock();
+    setupInvoke();
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  function mockOpenMermaidDocument(initialContent: string) {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        return {
+          id: "doc-mermaid",
+          path: "/tmp/diagram.mmd",
+          displayName: "diagram.mmd",
+          byteCount: initialContent.length,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: initialContent.length, sha256: "mmd" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode(initialContent).buffer;
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+  }
+
+  it("opens a per-tab Mermaid split preview and updates it after source edits", async () => {
+    mockOpenMermaidDocument("flowchart TD\nA-->B");
+
+    await act(async () => root.render(<App />));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+
+    await vi.waitFor(() => {
+      expect(container.querySelector(".statusbar-language")?.textContent).toBe(
+        "Mermaid",
+      );
+    });
+    const toggle = container.querySelector<HTMLButtonElement>(
+      ".mermaid-preview-toggle",
+    );
+    expect(toggle).not.toBeNull();
+    expect(toggle?.getAttribute("aria-pressed")).toBe("false");
+
+    await act(async () => {
+      toggle?.click();
+    });
+
+    expect(toggle?.getAttribute("aria-pressed")).toBe("true");
+    expect(container.querySelector(".mermaid-preview-pane")).not.toBeNull();
+    expect(container.querySelector(".mermaid-preview-loading")).not.toBeNull();
+
+    await vi.waitFor(() => {
+      expect(mermaidPreviewMock.renderMermaidPreview).toHaveBeenCalledWith(
+        "flowchart TD\nA-->B",
+      );
+      expect(container.querySelector(".mermaid-preview-content")?.innerHTML).toContain(
+        "A--&gt;B",
+      );
+    });
+
+    const editable = container.querySelector<HTMLElement>(".cm-content");
+    await act(async () => {
+      if (editable === null) throw new Error("missing editor");
+      editable.textContent = "flowchart TD\nA-->C";
+      editable.dispatchEvent(
+        new InputEvent("input", {
+          bubbles: true,
+          inputType: "insertText",
+          data: "flowchart TD\nA-->C",
+        }),
+      );
+      await Promise.resolve();
+    });
+
+    await vi.waitFor(() => {
+      expect(mermaidPreviewMock.renderMermaidPreview).toHaveBeenCalledWith(
+        "flowchart TD\nA-->C",
+      );
+      expect(container.querySelector(".mermaid-preview-content")?.innerHTML).toContain(
+        "A--&gt;C",
+      );
+    });
+  });
+
+  it("shows Mermaid render errors without blocking editing", async () => {
+    mockOpenMermaidDocument("flowchart TD\nBROKEN");
+
+    await act(async () => root.render(<App />));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".mermaid-preview-toggle")?.click();
+    });
+
+    await vi.waitFor(() => {
+      expect(container.querySelector(".mermaid-preview-pane.is-error")).not.toBeNull();
+      expect(container.querySelector(".mermaid-preview-content")?.textContent).toContain(
+        "mock Mermaid syntax error",
+      );
+    });
+
+    const editable = container.querySelector<HTMLElement>(".cm-content");
+    expect(editable?.getAttribute("contenteditable")).toBe("true");
+  });
+
+  it("saves Mermaid source text while preview is open, not the rendered SVG", async () => {
+    const initialContent = "flowchart TD\nA-->B";
+    let savedDescriptorContent = "";
+    invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        return {
+          id: "doc-mermaid",
+          path: "/tmp/diagram.mmd",
+          displayName: "diagram.mmd",
+          byteCount: initialContent.length,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: initialContent.length, sha256: "mmd" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode(initialContent).buffer;
+      }
+      if (cmd === "save_document") {
+        savedDescriptorContent = new TextDecoder().decode(args as Uint8Array);
+        return {
+          id: "doc-mermaid",
+          path: "/tmp/diagram.mmd",
+          displayName: "diagram.mmd",
+          byteCount: savedDescriptorContent.length,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: savedDescriptorContent.length, sha256: "saved" },
+          readOnly: false,
+        };
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await act(async () => root.render(<App />));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".mermaid-preview-toggle")?.click();
+    });
+    await vi.waitFor(() => {
+      expect(container.querySelector(".mermaid-preview-content")?.innerHTML).toContain(
+        "A--&gt;B",
+      );
+    });
+
+    const nextSource = "flowchart TD\nA-->Saved";
+    const editable = container.querySelector<HTMLElement>(".cm-content");
+    await act(async () => {
+      if (editable === null) throw new Error("missing editor");
+      editable.textContent = nextSource;
+      editable.dispatchEvent(
+        new InputEvent("input", {
+          bubbles: true,
+          inputType: "insertText",
+          data: nextSource,
+        }),
+      );
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".save-button")?.click();
+    });
+
+    expect(savedDescriptorContent).toBe(nextSource);
+    expect(savedDescriptorContent).not.toContain("<svg");
+    expect(savedDescriptorContent).not.toContain("mock-mermaid");
+  });
+
+  it("keeps Mermaid preview state isolated across tab switches", async () => {
+    mockOpenMermaidDocument("flowchart TD\nA-->B");
+
+    await act(async () => root.render(<App />));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".mermaid-preview-toggle")?.click();
+    });
+    await vi.waitFor(() => {
+      expect(container.querySelector(".mermaid-preview-content")?.innerHTML).toContain(
+        "A--&gt;B",
+      );
+    });
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".new-tab-button")?.click();
+    });
+    expect(container.querySelector(".statusbar-language")?.textContent).toBe(
+      "Plain Text",
+    );
+    expect(container.querySelector(".mermaid-preview-toggle")).toBeNull();
+    expect(container.querySelector(".mermaid-preview-pane")).toBeNull();
+
+    const mermaidTab = Array.from(
+      container.querySelectorAll<HTMLButtonElement>(".document-tab-select"),
+    ).find((button) => button.textContent?.includes("diagram.mmd"));
+    await act(async () => {
+      mermaidTab?.click();
+    });
+
+    expect(container.querySelector(".statusbar-language")?.textContent).toBe(
+      "Mermaid",
+    );
+    expect(
+      container
+        .querySelector<HTMLButtonElement>(".mermaid-preview-toggle")
+        ?.getAttribute("aria-pressed"),
+    ).toBe("true");
+    expect(container.querySelector(".mermaid-preview-pane")).not.toBeNull();
   });
 });
 

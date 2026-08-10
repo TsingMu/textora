@@ -1,5 +1,6 @@
 /**
- * 代码文本语言识别契约（`docs/features/code-syntax-highlighting.md` 切片 1）。
+ * 代码文本语言识别契约（`docs/features/code-syntax-highlighting.md` 切片 1，
+ * `docs/features/mermaid-local-preview.md` 语言识别切片）。
  *
  * 纯函数：根据活动文档的路径或显示名返回 {@link LanguageMode}，未识别退化为
  * `plain-text`。本模块不依赖 CodeMirror、不读取文件、不触及 UI；后续 CodeMirror
@@ -21,6 +22,7 @@ export type LanguageMode =
   | "toml"
   | "yaml"
   | "markdown"
+  | "mermaid"
   | "plain-text";
 
 /** 完整文件名（小写）到语言模式的映射，优先于扩展名匹配。 */
@@ -57,6 +59,8 @@ const KNOWN_EXTENSIONS: Readonly<Record<string, LanguageMode>> = {
   yml: "yaml",
   md: "markdown",
   markdown: "markdown",
+  mmd: "mermaid",
+  mermaid: "mermaid",
 };
 
 /** {@link LanguageMode} 的展示名，用于状态栏等 UI。 */
@@ -74,6 +78,7 @@ const DISPLAY_NAMES: Readonly<Record<LanguageMode, string>> = {
   toml: "TOML",
   yaml: "YAML",
   markdown: "Markdown",
+  mermaid: "Mermaid",
   "plain-text": "Plain Text",
 };
 

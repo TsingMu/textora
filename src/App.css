@@ -226,17 +226,26 @@ textarea {
   min-width: 0;
 }
 
-.editor-panel.has-markdown-preview {
+.editor-panel.has-markdown-preview,
+.editor-panel.has-mermaid-preview {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(280px, 42%);
 }
 
-.markdown-preview-pane {
+.markdown-preview-pane,
+.mermaid-preview-pane {
   min-width: 0;
   min-height: 0;
   overflow: auto;
   border-left: 1px solid var(--border-subtle);
+}
+
+.markdown-preview-pane {
   background: #fffdf8;
+}
+
+.mermaid-preview-pane {
+  background: #fbfaf7;
 }
 
 .markdown-preview-content {
@@ -339,6 +348,69 @@ textarea {
   border-radius: 8px;
   background: #f7e7e3;
   color: #8a3526;
+}
+
+.markdown-mermaid-preview {
+  margin: 0 0 1em;
+  padding: 14px;
+  overflow: auto;
+  border: 1px solid #eadfd2;
+  border-radius: 10px;
+  background: #fbfaf7;
+}
+
+.markdown-mermaid-preview svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+}
+
+.markdown-mermaid-preview .mermaid-preview-loading,
+.markdown-mermaid-preview .mermaid-preview-error {
+  width: auto;
+  margin: 0;
+}
+
+.mermaid-preview-content {
+  display: grid;
+  min-height: 100%;
+  place-items: center;
+  padding: 24px;
+  color: #2d2924;
+}
+
+.mermaid-preview-content svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.mermaid-preview-loading,
+.mermaid-preview-error {
+  width: min(100%, 420px);
+  padding: 14px;
+  border-radius: 10px;
+  text-align: left;
+}
+
+.mermaid-preview-loading {
+  border: 1px solid #ded5c9;
+  background: #fffdf8;
+  color: var(--text-muted);
+}
+
+.mermaid-preview-error {
+  border: 1px solid #e2b9b0;
+  background: #f7e7e3;
+  color: #8a3526;
+}
+
+.mermaid-preview-error pre {
+  overflow: auto;
+  margin: 8px 0 0;
+  white-space: pre-wrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
 }
 
 .statusbar {
@@ -458,7 +530,7 @@ textarea {
 
 .save-as-button,
 .column-sequence-button,
-.markdown-preview-toggle {
+.preview-toggle {
   padding: 4px 12px;
   border: 1px solid var(--border-subtle);
   border-radius: 7px;
@@ -471,18 +543,18 @@ textarea {
 
 .save-as-button:hover:not(:disabled),
 .column-sequence-button:hover:not(:disabled),
-.markdown-preview-toggle:hover:not(:disabled) {
+.preview-toggle:hover:not(:disabled) {
   border-color: var(--accent);
 }
 
 .save-as-button:disabled,
 .column-sequence-button:disabled,
-.markdown-preview-toggle:disabled {
+.preview-toggle:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
 
-.markdown-preview-toggle.is-active {
+.preview-toggle.is-active {
   border-color: rgba(185, 87, 50, 0.45);
   background: #f8e8df;
   color: var(--accent);

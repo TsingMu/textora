@@ -13,6 +13,7 @@ Textora 已支持 Markdown 文件的源码语法高亮，但还不能像日常�
 - 为 Markdown 文件提供手动开启的源码/预览左右分栏视图。
 - 预览内容由当前活动标签的 Markdown 源码本地派生。
 - 支持常见 Markdown 结构的基础渲染：标题、段落、强调、链接文本、列表、任务列表、引用、代码块、行内代码、分隔线、表格和删除线。
+- 支持 fenced `mermaid` code block 在 Markdown 预览中使用本地 Mermaid 安全渲染契约显示为图表。
 - 切换标签时，分栏状态与预览内容应跟随活动标签，不污染其他标签。
 - 非 Markdown 文件默认保持现有源码编辑视图，不强制显示预览。
 - 预览失败或不支持的 Markdown 片段应安全退化为可编辑源码与可理解错误提示。
@@ -20,7 +21,7 @@ Textora 已支持 Markdown 文件的源码语法高亮，但还不能像日常�
 ## 非范围
 
 - Markdown 所见即所得编辑。
-- Mermaid 图表渲染或预览。
+- 未标记为 `mermaid` 的代码块图表化，或 Markdown inline Mermaid。
 - 导出 PDF/HTML/图片。
 - 远程图片、远程脚本、远程样式或任意网络访问。
 - 插件系统、自定义主题、目录大纲、脚注、数学公式、自动滚动同步等扩展能力。
@@ -44,6 +45,8 @@ Textora 已支持 Markdown 文件的源码语法高亮，但还不能像日常�
 - 原始 HTML 一律按文本转义显示，不作为 HTML 插入预览 DOM。
 - Markdown 链接首版显示为文本链接样式和 URL 文本，但不触发导航、不打开外部浏览器。
 - Markdown 图片首版不加载远程或本地资源，只显示 alt 文本与图片 URL 占位，避免新增网络或文件读取权限。
+- Markdown fenced `mermaid` code block 使用与独立 Mermaid 预览相同的本地渲染、安全清洗和错误退化策略；语言标记大小写不敏感，可带空白。
+- Mermaid fenced code block 渲染失败时只在对应代码块位置显示错误占位，不影响 Markdown 源码编辑、保存、关闭保护或其他 Markdown 结构预览。
 - 非 Markdown 标签切换回来时，不应改变 Markdown 标签的源码内容、脏状态、编码/换行设置或语言状态栏。
 - 大文件规则沿用首版 50 MiB 上限；若预览明显卡顿，应优先退化或延迟预览，不影响源码编辑。
 - 关闭、保存、另存为、文件缺失、冲突与未保存保护流程保持现有行为。
@@ -56,6 +59,7 @@ Textora 已支持 Markdown 文件的源码语法高亮，但还不能像日常�
 - [x] 非 Markdown 文件不被强制打开预览，普通文本与代码高亮体验不回退。
 - [x] 多标签切换时，Markdown 预览状态与源码内容相互隔离。
 - [x] 原始 HTML 被转义显示；链接不触发导航；图片不加载远程或本地资源，只显示安全占位。
+- [x] Markdown fenced `mermaid` code block 在本地渲染为图表；错误时在原位置安全退化，不阻止编辑或保存。
 - [x] 渲染失败、不支持语法或安全策略阻断时，源码编辑和保存仍可继续。
 - [x] 功能不引入网络、shell、远程页面或宽泛文件系统权限。
 - [x] 自动化测试覆盖 Markdown 识别入口、预览开关/分栏状态、多标签隔离、源码保存不受预览影响和安全退化。
@@ -77,6 +81,7 @@ Textora 已支持 Markdown 文件的源码语法高亮，但还不能像日常�
   4. 原始 HTML：全部转义为文本，不作为 HTML 插入预览 DOM。
   5. 链接与图片：链接不导航、不打开外部浏览器；图片不加载远程或本地资源，只显示 alt 文本与 URL 占位。
   6. 首版语法：支持常见 Markdown 与 GFM 表格、任务列表、删除线；不包含脚注、数学公式、目录大纲或 Mermaid 渲染。
+- 2026-08-10 后续演进：Markdown fenced `mermaid` code block 改为使用 Mermaid 本地渲染安全契约显示为图表。普通代码块仍按代码块显示；Markdown inline Mermaid、导出、所见即所得和远程资源加载仍不纳入范围。
 
 ## 实现拆分
 
@@ -96,3 +101,5 @@ Markdown 分栏预览按以下顺序拆成可连续交付的小切片，实现�
 - `npm run tauri -- build` 通过并生成 release `src-tauri/target/release/bundle/macos/Textora.app`；Vite 对现有语言包/主 bundle 的大 chunk 提示不影响本功能验收。
 - `git diff --check` 通过。
 - release `Textora.app` 可由 `/usr/bin/open -n` 启动。当前自动化环境无法可靠观测 Textora WebView 窗口内容：激活后系统报告前台进程为 `textora`，但截图捕获到其他/远程窗口画面，进程列表查询也受限。因此最终真实 macOS 点击验收由人工完成：在 release 应用中打开 Markdown、开启 Preview、编辑后确认预览更新、保存源码、多标签切换与关闭保护，结果均通过。
+- 2026-08-10「在 Markdown 预览中渲染 Mermaid fenced code block」：新增 `samples/markdown-mermaid-preview-smoke.md`；`npm run test -- markdownPreview App` 通过（**90 passed / 0 failed**）；`npm run check` 通过（typecheck + vitest **184 passed / 0 failed**）；`npm run build` 通过，Mermaid 仍作为按需 chunk 加载；`git diff --check` 通过。本切片未运行 release 构建或真实 macOS UI 验收。
+- 2026-08-10「Markdown Mermaid 集成验收」：`npm run check` 通过（typecheck + vitest **184 passed / 0 failed**）；`npm run build` 通过；`npm run tauri -- build` 通过并生成 release `Textora.app`；bundle 检查确认 `CFBundleIdentifier` 为 `com.tsingmu.textora`；capability diff 确认未新增网络、shell、文件系统或 Rust/Tauri 权限；构建产物确认 Mermaid 仍作为按需 chunk 存在；release app 可启动，进程名为 `textora`；`git diff --check` 通过。本轮自动验收未直接观察 WebView 内点击结果，真实 UI 可用 `samples/markdown-mermaid-preview-smoke.md` 人工复验。
