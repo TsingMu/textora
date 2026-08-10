@@ -6,25 +6,32 @@
 
 ## 进行中
 
-### Markdown 分栏集成验收与文档收尾
-
-- **状态**：进行中
-- **开始日期**：2026-08-10
-- **Feature Spec**：`docs/features/markdown-split-preview.md`
-- **目标**：完成 Markdown 左右分栏预览的自动化回归、release 构建、macOS 真实交互验收，并把 Feature Spec 与 README 同步为已完成。
-- **范围**：验收 Markdown 文件打开后 `Preview` 开关、左右分栏、编辑后预览更新、安全 HTML/链接/图片占位、多标签隔离、非 Markdown 不显示入口、保存仍只写源码、关闭保护不回退；按需补遗漏的小修和文档记录。
-- **非范围**：不新增滚动同步、重启恢复、全局偏好、Mermaid、所见即所得、导出、脚注、数学公式、目录大纲、远程资源加载或新权限。
-- **依赖**：Markdown 分栏入口、预览更新和安全渲染契约已完成。
-- **拆分检查**：本任务是该功能的最后集成验收和文档收尾，不再承担新的主要用户行为；若验收发现大块新增需求，应拆回 backlog 或新切片。
-- **实施要点**：重点确认预览只是源码派生视图，不改变文档内容、编码/换行、脏状态、保存格式或关闭保护；只报告实际跑过的验证。
-- **完成标准**：`npm run check`、`npm run build`、`npm run tauri -- build`、`git diff --check` 通过；macOS release 应用人工/自动真实交互验收通过；Feature Spec 验收条件勾选并改为已完成；README 当前状态同步。
-- **当前进度**：`npm run check`、`npm run build`、`npm run tauri -- build` 与 `git diff --check` 已通过；release `Textora.app` 已构建并可由 `/usr/bin/open -n` 启动。当前桌面自动化环境无法可靠观测 Textora WebView 窗口内容：激活后系统报告前台进程为 `textora`，但截图捕获到其他/远程窗口画面，进程列表查询也受限。因此尚未把 Markdown 文件打开、Preview 开关、分栏预览更新、保存源码和关闭保护的真实 macOS 点击流程记录为通过；下一步需要人工在 release 应用中完成这些交互验证，然后才能把规格标记为已完成。
+暂无进行中任务。
 
 ## 已承诺待办
 
-暂无已承诺待办。
+### 确认 Mermaid 本地编辑与预览规格
+
+- **状态**：待开始
+- **Feature Spec**：`docs/features/mermaid-local-preview.md`
+- **目标**：把 Mermaid 本地编辑与预览从 backlog 候选推进为已确认规格，明确首版入口、语言识别、支持图表类型、渲染库与安全配置、渲染频率，以及是否纳入 Markdown fenced code block。
+- **范围**：确认 Mermaid 预览只作为源码派生视图；决定 `.mmd` / `.mermaid` 独立文件与 Markdown fenced code block 的首版优先级；决定状态栏语言名、预览入口、渲染频率、错误展示、安全配置和首版图表类型；把开放问题替换为决议记录，并按合适颗粒度更新后续实现任务。
+- **非范围**：不实现 Mermaid 渲染、语言识别、布局、保存逻辑或测试；不引入导出、所见即所得、远程资源加载、网络访问、shell 或新权限。
+- **依赖**：基础文本编辑、多标签会话、保存/关闭保护、代码语法高亮和 Markdown 本地预览已完成；`docs/features/mermaid-local-preview.md` 草案已创建。
+- **拆分检查**：本任务只交付规格确认和任务拆分，不包含生产代码或实现性测试；后续语言识别/渲染契约、预览入口接入与集成验收已在 Feature Spec 中拆成独立切片。
+- **实施要点**：先逐项收敛开放问题，再更新 Feature Spec 状态为“已确认”；若安全配置或 Markdown code block 演进形成重要、非显然且容易反复争论的约束，再考虑同步 `docs/DECISIONS.md`。
+- **完成标准**：`docs/features/mermaid-local-preview.md` 中开放问题全部有明确决议；验收条件与实现拆分能直接指导首个实现切片；`docs/tasks/current.md` 写入下一项待实现任务；文档 diff 无空白错误。
 
 ## 最近完成
+
+### Markdown 分栏集成验收与文档收尾
+
+- **状态**：已完成
+- **开始日期**：2026-08-10
+- **完成日期**：2026-08-10
+- **Feature Spec**：`docs/features/markdown-split-preview.md`
+- **结果**：完成 Markdown 源码与本地预览左右分栏的自动化回归、release 构建、macOS 真实交互验收和文档收尾，并把 `docs/features/markdown-split-preview.md` 与 README 同步为已完成状态。首版支持 Markdown 标签工具栏 `Preview` 开关、左右分栏源码/预览布局、编辑后本地预览更新、按标签隔离预览状态、非 Markdown 不显示入口，以及 HTML 转义、链接非导航占位、图片非加载占位等安全退化策略；保存仍只写 Markdown 源码。未新增滚动同步、重启恢复、全局偏好、Mermaid、所见即所得、导出、脚注、数学公式、目录大纲、远程资源加载、网络权限、shell 权限或文件系统权限。
+- **验证**：`npm run check` 通过（typecheck + vitest **167 passed / 0 failed**）；`npm run build` 通过；`npm run tauri -- build` 通过并生成 release `Textora.app`；`git diff --check` 通过。release `Textora.app` 可由 `/usr/bin/open -n` 启动；自动化环境无法可靠观测 WebView 窗口内容，因此最终真实 macOS 点击验收由人工完成并确认通过：打开 Markdown、开启 Preview、编辑后预览更新、保存源码、多标签切换和关闭保护均符合规格。
 
 ### 接入 Markdown 分栏入口与预览更新
 
