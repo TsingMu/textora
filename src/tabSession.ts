@@ -9,6 +9,7 @@ export type DocumentTab = {
   tabId: string;
   document: DocumentSession;
   markdownPreviewOpen: boolean;
+  markdownWysiwygOpen: boolean;
   mermaidPreviewOpen: boolean;
 };
 
@@ -26,6 +27,7 @@ export function createInitialTabSession(): TabSessionState {
         tabId: "tab-1",
         document: createNewDocument("untitled-1"),
         markdownPreviewOpen: false,
+        markdownWysiwygOpen: false,
         mermaidPreviewOpen: false,
       },
     ],
@@ -43,6 +45,7 @@ function createUntitledTab(tabId: string, number: number): DocumentTab {
   return {
     tabId,
     markdownPreviewOpen: false,
+    markdownWysiwygOpen: false,
     mermaidPreviewOpen: false,
     document: {
       ...createNewDocument(`untitled-${number}`),
@@ -112,6 +115,7 @@ export function addOpenedDocumentTab(
       {
         tabId,
         markdownPreviewOpen: false,
+        markdownWysiwygOpen: false,
         mermaidPreviewOpen: false,
         document: commitOpenedDocument(
           createNewDocument(descriptor.id),
@@ -133,11 +137,41 @@ export function setMarkdownPreviewOpen(
 ): TabSessionState {
   let changed = false;
   const tabs = state.tabs.map((tab) => {
-    if (tab.tabId !== tabId || tab.markdownPreviewOpen === open) {
+    if (
+      tab.tabId !== tabId ||
+      (tab.markdownPreviewOpen === open && (!open || !tab.markdownWysiwygOpen))
+    ) {
       return tab;
     }
     changed = true;
-    return { ...tab, markdownPreviewOpen: open };
+    return {
+      ...tab,
+      markdownPreviewOpen: open,
+      markdownWysiwygOpen: open ? false : tab.markdownWysiwygOpen,
+    };
+  });
+  return changed ? { ...state, tabs } : state;
+}
+
+export function setMarkdownWysiwygOpen(
+  state: TabSessionState,
+  tabId: string,
+  open: boolean,
+): TabSessionState {
+  let changed = false;
+  const tabs = state.tabs.map((tab) => {
+    if (
+      tab.tabId !== tabId ||
+      (tab.markdownWysiwygOpen === open && (!open || !tab.markdownPreviewOpen))
+    ) {
+      return tab;
+    }
+    changed = true;
+    return {
+      ...tab,
+      markdownWysiwygOpen: open,
+      markdownPreviewOpen: open ? false : tab.markdownPreviewOpen,
+    };
   });
   return changed ? { ...state, tabs } : state;
 }

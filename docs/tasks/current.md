@@ -14,6 +14,42 @@
 
 ## 最近完成
 
+### 完成 Markdown WYSIWYG 真实应用验收与文档收尾
+
+- **状态**：已完成
+- **开始日期**：2026-08-11
+- **完成日期**：2026-08-11
+- **Feature Spec**：`docs/features/markdown-wysiwyg-mode.md`
+- **结果**：新增 `samples/markdown-wysiwyg-smoke.md` 真实应用冒烟样例并完成 WYSIWYG 首版组合验收。macOS release 应用确认 Markdown 才显示 Preview/WYSIWYG 入口；WYSIWYG 正确呈现并可编辑标题、段落、列表、任务项、引用和 fenced code block；切换 Preview 会退出 WYSIWYG 并显示同步后的源码派生结果；切到普通标签再返回时 Markdown 模式与内容保持隔离；保存只写 Markdown 源码，表格、Mermaid fence 与原始 HTML 源码岛保持；未保存关闭会弹出保存确认；只读文件进入 WYSIWYG 后所有字段与任务复选框均禁用。验收未发现需要修改生产代码的阻塞问题，未新增自动闭合 fence、代码格式化、富文本粘贴、跨重启恢复、网络、shell、Rust IPC 或 Tauri capability。
+- **验证记录**：`npm run test -- markdownWysiwyg MarkdownWysiwygEditor tabSession App` 通过（**98 passed / 0 failed**）；`npm run check` 通过（typecheck + vitest **202 passed / 0 failed**）；`npm run build` 通过；`npm run tauri -- build` 通过并生成 release `Textora.app`；macOS release 真实 UI 验收覆盖模式入口与互斥、常见块编辑、源码往返、源码岛保留、保存源码、多标签隔离、只读锁定和未保存关闭保护；`git diff --check` 通过。
+
+### 接入 Markdown WYSIWYG 模式入口与首版编辑视图
+
+- **状态**：已完成
+- **开始日期**：2026-08-10
+- **完成日期**：2026-08-10
+- **Feature Spec**：`docs/features/markdown-wysiwyg-mode.md`
+- **结果**：Markdown 标签新增 `WYSIWYG` 工具栏入口，非 Markdown 标签不显示；WYSIWYG 与 Preview 按标签互斥，默认仍为源码编辑；首版编辑视图支持标题、段落、无序/有序/任务列表、引用、fenced code block、分隔线和源码岛编辑，修改会同步 Markdown 源码、脏状态、保存和关闭保护链路。只读 Markdown 的 WYSIWYG 字段禁用；源码编辑器保留既有只读文件本地编辑后另存为副本流程。未新增跨重启模式偏好、代码格式化、自动闭合 fence、Mermaid 可视拖拽编辑、富文本粘贴、导出、远程资源、网络、shell、Rust IPC 或 Tauri capability。
+- **验证**：`npm run test -- markdownWysiwyg MarkdownWysiwygEditor tabSession App` 通过（**98 passed / 0 failed**）；`npm run check` 通过（typecheck + vitest **202 passed / 0 failed**）；`npm run build` 通过；`npm run tauri -- build` 通过并生成 release `Textora.app`；`git diff --check` 通过。当前自动化环境未做真实 WebView 人工点击验收。
+
+### 建立 Markdown WYSIWYG 块模型与源码往返契约
+
+- **状态**：已完成
+- **开始日期**：2026-08-10
+- **完成日期**：2026-08-10
+- **Feature Spec**：`docs/features/markdown-wysiwyg-mode.md`
+- **结果**：新增 `src/markdownWysiwyg.ts` 和 `src/markdownWysiwyg.test.ts`，建立首版 WYSIWYG 纯前端块模型。解析支持标题、段落、无序/有序/任务列表、引用、fenced code block 与分隔线；表格、原始 HTML、Mermaid fence、未知 fence 和未知结构作为源码岛保留；序列化会把块模型写回 Markdown 源码，为后续 UI 编辑和保存链路提供稳定 Markdown 源码契约。未接入 App 主界面，未新增 WYSIWYG 按钮、保存逻辑、依赖、网络、shell、Rust IPC 或 Tauri capability。
+- **验证**：`npm run test -- markdownWysiwyg` 通过（**4 passed / 0 failed**）；`npm run build` 通过；`git diff --check` 通过。
+
+### 确认 Markdown 所见即所得模式规格
+
+- **状态**：已完成
+- **开始日期**：2026-08-10
+- **完成日期**：2026-08-10
+- **Feature Spec**：`docs/features/markdown-wysiwyg-mode.md`
+- **结果**：新增 Markdown 所见即所得模式规格，确认 WYSIWYG 是 Markdown 的第三种手动模式，不替代默认源码编辑，也不改变现有 Preview 左右分栏入口；模式状态按标签保存在当前会话内，不做全局偏好或重启恢复；首版优先交付标题、段落、列表、引用、fenced code block 等常见块级结构的结构化编辑，复杂语法使用源码岛；保存永远写 Markdown 源码，WYSIWYG DOM 不进入文件；Mermaid 在 WYSIWYG 首版中不做可视拖拽编辑。已拆出下一项实现切片「建立 Markdown WYSIWYG 块模型与源码往返契约」。
+- **验证**：文档审查；本任务不修改生产代码，未运行构建或测试。
+
 ### 优化暗色模式下 Markdown Mermaid 箭头可读性
 
 - **状态**：已完成

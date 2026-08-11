@@ -2094,6 +2094,7 @@ describe("App Markdown preview", () => {
     await act(async () => root.render(<App />));
 
     expect(container.querySelector(".markdown-preview-toggle")).toBeNull();
+    expect(container.querySelector(".markdown-wysiwyg-toggle")).toBeNull();
 
     await act(async () => {
       container.querySelector<HTMLButtonElement>(".open-button")?.click();
@@ -2105,7 +2106,256 @@ describe("App Markdown preview", () => {
       );
     });
     expect(container.querySelector(".markdown-preview-toggle")).toBeNull();
+    expect(container.querySelector(".markdown-wysiwyg-toggle")).toBeNull();
     expect(container.querySelector(".markdown-preview-pane")).toBeNull();
+  });
+
+  it("opens WYSIWYG mode, exits it through Preview, and keeps the source editable state per tab", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        return {
+          id: "doc-md",
+          path: "/tmp/README.md",
+          displayName: "README.md",
+          byteCount: 64,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 64, sha256: "md" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode("# Title\n\nBody").buffer;
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await act(async () => root.render(<App />));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+
+    await vi.waitFor(() => {
+      expect(container.querySelector(".statusbar-language")?.textContent).toBe(
+        "Markdown",
+      );
+    });
+    expect(container.querySelector(".markdown-wysiwyg-toggle")).not.toBeNull();
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".markdown-wysiwyg-toggle")?.click();
+    });
+
+    expect(container.querySelector(".markdown-wysiwyg-editor")).not.toBeNull();
+    expect(container.querySelector(".editor-source-pane")).toBeNull();
+    expect(
+      container
+        .querySelector<HTMLButtonElement>(".markdown-wysiwyg-toggle")
+        ?.getAttribute("aria-pressed"),
+    ).toBe("true");
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".markdown-preview-toggle")?.click();
+    });
+
+    expect(container.querySelector(".markdown-wysiwyg-editor")).toBeNull();
+    expect(container.querySelector(".markdown-preview-pane")).not.toBeNull();
+    expect(
+      container
+        .querySelector<HTMLButtonElement>(".markdown-preview-toggle")
+        ?.getAttribute("aria-pressed"),
+    ).toBe("true");
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".new-tab-button")?.click();
+    });
+    expect(container.querySelector(".markdown-wysiwyg-toggle")).toBeNull();
+
+    const markdownTab = Array.from(
+      container.querySelectorAll<HTMLButtonElement>(".document-tab-select"),
+    ).find((button) => button.textContent?.includes("README.md"));
+    await act(async () => {
+      markdownTab?.click();
+    });
+
+    expect(container.querySelector(".markdown-preview-pane")).not.toBeNull();
+    expect(container.querySelector(".markdown-wysiwyg-editor")).toBeNull();
+  });
+
+  it("edits Markdown through WYSIWYG and saves Markdown source text", async () => {
+    let savedContent = "";
+    invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        return {
+          id: "doc-md",
+          path: "/tmp/README.md",
+          displayName: "README.md",
+          byteCount: 64,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 64, sha256: "md" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder()
+          .encode(
+            '# Title\n\nParagraph\n\n- [ ] item\n\n> quoted\n\n```json\n{"ok":true}\n```',
+          )
+          .buffer;
+      }
+      if (cmd === "save_document") {
+        savedContent = new TextDecoder().decode(args as Uint8Array);
+        return {
+          id: "doc-md",
+          path: "/tmp/README.md",
+          displayName: "README.md",
+          byteCount: savedContent.length,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: savedContent.length, sha256: "saved" },
+          readOnly: false,
+        };
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await act(async () => root.render(<App />));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    await vi.waitFor(() => {
+      expect(container.querySelector(".statusbar-language")?.textContent).toBe(
+        "Markdown",
+      );
+    });
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".markdown-wysiwyg-toggle")?.click();
+    });
+
+    const heading = container.querySelector<HTMLInputElement>(
+      ".markdown-wysiwyg-heading",
+    );
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        "value",
+      )?.set;
+      setter?.call(heading, "Edited");
+      heading?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    const paragraph = container.querySelector<HTMLTextAreaElement>(
+      ".markdown-wysiwyg-paragraph",
+    );
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype,
+        "value",
+      )?.set;
+      setter?.call(paragraph, "Updated paragraph");
+      paragraph?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    await act(async () => {
+      container.querySelector<HTMLInputElement>("input[aria-label='Task 1']")?.click();
+    });
+
+    const blockquote = container.querySelector<HTMLTextAreaElement>(
+      ".markdown-wysiwyg-blockquote",
+    );
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype,
+        "value",
+      )?.set;
+      setter?.call(blockquote, "updated quote");
+      blockquote?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    const code = container.querySelector<HTMLTextAreaElement>(
+      ".markdown-wysiwyg-code",
+    );
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype,
+        "value",
+      )?.set;
+      setter?.call(code, '{ "ok": false }');
+      code?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".markdown-wysiwyg-toggle")?.click();
+    });
+
+    expect(container.querySelector(".markdown-wysiwyg-editor")).toBeNull();
+    expect(container.querySelector(".cm-content")?.textContent).toContain(
+      "# Edited",
+    );
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".save-button")?.click();
+    });
+
+    expect(savedContent).toBe(
+      '# Edited\n\nUpdated paragraph\n\n- [x] item\n\n> updated quote\n\n```json\n{ "ok": false }\n```',
+    );
+    expect(savedContent).not.toContain("markdown-wysiwyg");
+    expect(savedContent).not.toContain("<input");
+  });
+
+  it("locks WYSIWYG fields for read-only Markdown documents", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        return {
+          id: "doc-md-readonly",
+          path: "/tmp/README.md",
+          displayName: "README.md",
+          byteCount: 12,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 12, sha256: "md-readonly" },
+          readOnly: true,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode("# Locked").buffer;
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await act(async () => root.render(<App />));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    await vi.waitFor(() => {
+      expect(container.querySelector(".statusbar-language")?.textContent).toBe(
+        "Markdown",
+      );
+    });
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".markdown-wysiwyg-toggle")?.click();
+    });
+
+    expect(
+      container.querySelector<HTMLInputElement>(".markdown-wysiwyg-heading")
+        ?.disabled,
+    ).toBe(true);
+    expect(container.querySelector(".readonly-badge")?.textContent).toBe(
+      "Read-only",
+    );
   });
 
   it("opens a per-tab Markdown split preview and updates it from source edits", async () => {

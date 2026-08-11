@@ -18,6 +18,7 @@ import {
   type DocumentSession,
 } from "./documentSession";
 import { Editor, type EditorHandle } from "./Editor";
+import { MarkdownWysiwygEditor } from "./MarkdownWysiwygEditor";
 import { detectLanguage, languageDisplayName } from "./languageRecognition";
 import {
   activeDocument,
@@ -26,6 +27,7 @@ import {
   closeTabCleanly,
   createInitialTabSession,
   setMarkdownPreviewOpen,
+  setMarkdownWysiwygOpen,
   setMermaidPreviewOpen,
   switchActiveTab,
   updateActiveDocument,
@@ -1082,6 +1084,18 @@ function App() {
     });
   }
 
+  function handleMarkdownWysiwygToggle() {
+    updateTabSession((current) => {
+      const tab = current.tabs.find((item) => item.tabId === current.activeTabId);
+      if (tab === undefined) return current;
+      return setMarkdownWysiwygOpen(
+        current,
+        tab.tabId,
+        !tab.markdownWysiwygOpen,
+      );
+    });
+  }
+
   function handleMermaidPreviewToggle() {
     updateTabSession((current) => {
       const tab = current.tabs.find((item) => item.tabId === current.activeTabId);
@@ -1286,8 +1300,11 @@ function App() {
   const canEdit = !editorLocked;
   const activeLanguage = detectLanguage(session.path, session.displayName);
   const markdownPreviewOpen = activeTab?.markdownPreviewOpen ?? false;
+  const markdownWysiwygOpen = activeTab?.markdownWysiwygOpen ?? false;
+  const markdownWysiwygVisible =
+    activeLanguage === "markdown" && markdownWysiwygOpen;
   const markdownPreviewVisible =
-    activeLanguage === "markdown" && markdownPreviewOpen;
+    activeLanguage === "markdown" && markdownPreviewOpen && !markdownWysiwygOpen;
   const markdownMermaidPreview =
     activeTab !== undefined
       ? markdownMermaidPreviews[activeTab.tabId]
@@ -1480,22 +1497,40 @@ function App() {
             Sequence
           </button>
           {activeLanguage === "markdown" && (
-            <button
-              type="button"
-              className={`preview-toggle markdown-preview-toggle ${
-                markdownPreviewOpen ? "is-active" : ""
-              }`}
-              onClick={handleMarkdownPreviewToggle}
-              disabled={busy}
-              aria-pressed={markdownPreviewOpen}
-              aria-label={
-                markdownPreviewOpen
-                  ? "Hide Markdown preview"
-                  : "Show Markdown preview"
-              }
-            >
-              Preview
-            </button>
+            <>
+              <button
+                type="button"
+                className={`preview-toggle markdown-preview-toggle ${
+                  markdownPreviewOpen && !markdownWysiwygOpen ? "is-active" : ""
+                }`}
+                onClick={handleMarkdownPreviewToggle}
+                disabled={busy}
+                aria-pressed={markdownPreviewOpen && !markdownWysiwygOpen}
+                aria-label={
+                  markdownPreviewOpen && !markdownWysiwygOpen
+                    ? "Hide Markdown preview"
+                    : "Show Markdown preview"
+                }
+              >
+                Preview
+              </button>
+              <button
+                type="button"
+                className={`preview-toggle markdown-wysiwyg-toggle ${
+                  markdownWysiwygOpen ? "is-active" : ""
+                }`}
+                onClick={handleMarkdownWysiwygToggle}
+                disabled={busy}
+                aria-pressed={markdownWysiwygOpen}
+                aria-label={
+                  markdownWysiwygOpen
+                    ? "Hide Markdown WYSIWYG editor"
+                    : "Show Markdown WYSIWYG editor"
+                }
+              >
+                WYSIWYG
+              </button>
+            </>
           )}
           {activeLanguage === "mermaid" && (
             <button
@@ -1578,20 +1613,31 @@ function App() {
         <div
           className={`editor-panel ${
             markdownPreviewVisible ? "has-markdown-preview" : ""
+          } ${markdownWysiwygVisible ? "has-markdown-wysiwyg" : ""
           } ${mermaidPreviewVisible ? "has-mermaid-preview" : ""
           }`}
         >
-          <div className="editor-source-pane">
-            <Editor
-              ref={editorRef}
+          {markdownWysiwygVisible ? (
+            <MarkdownWysiwygEditor
               content={session.content}
-              disabled={editorLocked}
-              language={activeLanguage}
+              disabled={editorLocked || session.readOnly}
               onChange={(content) => {
                 setSession((current) => updateDocumentContent(current, content));
               }}
             />
-          </div>
+          ) : (
+            <div className="editor-source-pane">
+              <Editor
+                ref={editorRef}
+                content={session.content}
+                disabled={editorLocked}
+                language={activeLanguage}
+                onChange={(content) => {
+                  setSession((current) => updateDocumentContent(current, content));
+                }}
+              />
+            </div>
+          )}
           {markdownPreviewVisible && markdownPreview !== null && (
             <aside
               className={`markdown-preview-pane ${

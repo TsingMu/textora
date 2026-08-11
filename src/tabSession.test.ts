@@ -6,6 +6,7 @@ import {
   closeTabCleanly,
   createInitialTabSession,
   setMarkdownPreviewOpen,
+  setMarkdownWysiwygOpen,
   setMermaidPreviewOpen,
   switchActiveTab,
   updateActiveDocument,
@@ -95,5 +96,24 @@ describe("tab session", () => {
     expect(
       state.tabs.find((tab) => tab.tabId === secondTabId)?.mermaidPreviewOpen,
     ).toBe(true);
+  });
+
+  it("keeps Markdown Preview and WYSIWYG modes mutually exclusive per tab", () => {
+    let state = createInitialTabSession();
+    const firstTabId = state.activeTabId;
+    state = addUntitledTab(state);
+    const secondTabId = state.activeTabId;
+
+    state = setMarkdownPreviewOpen(state, firstTabId, true);
+    state = setMarkdownWysiwygOpen(state, firstTabId, true);
+    state = setMarkdownPreviewOpen(state, secondTabId, true);
+
+    const first = state.tabs.find((tab) => tab.tabId === firstTabId);
+    const second = state.tabs.find((tab) => tab.tabId === secondTabId);
+
+    expect(first?.markdownPreviewOpen).toBe(false);
+    expect(first?.markdownWysiwygOpen).toBe(true);
+    expect(second?.markdownPreviewOpen).toBe(true);
+    expect(second?.markdownWysiwygOpen).toBe(false);
   });
 });
