@@ -10,9 +10,80 @@
 
 ## 已承诺待办
 
-暂无已承诺待办。
+暂无其他已承诺待办。
 
 ## 最近完成
+
+### 部署当前 release 到系统应用目录
+
+- **状态**：已完成
+- **开始日期**：2026-08-11
+- **完成日期**：2026-08-11
+- **结果**：停止现有 Textora 测试进程，使用 `/usr/bin/ditto` 将当前 release bundle 覆盖部署到 `/Applications/Textora.app`，并对安装后的应用执行本机 ad-hoc 重签名。未创建 DMG/安装器，未做 Developer ID 签名、公证、发布上传或版本号变更。
+- **验证记录**：`codesign --verify --deep --strict /Applications/Textora.app` 通过；安装后 `CFBundleIdentifier` 为 `com.tsingmu.textora`、`CFBundleExecutable` 为 `textora`；安装产物与 release bundle 的 `icon.icns` SHA-256 一致；`open -n /Applications/Textora.app` 启动成功，`pgrep -x textora` 返回进程 PID `77157`；`git diff --check` 通过。
+
+### Markdown fenced 编辑辅助集成验收与文档收尾
+
+- **状态**：已完成
+- **开始日期**：2026-08-11
+- **完成日期**：2026-08-11
+- **Feature Spec**：`docs/features/markdown-fenced-code-editing.md`
+- **结果**：在 release `Textora.app` 中完成 Markdown fenced 编辑辅助真实交互验收，并将 `Format JSON` 纳入现有工具栏按钮的亮色、暗色、hover 与 disabled 共用样式。真实应用确认 Enter 自动补齐 closing fence 且一次撤销恢复；Preview 左侧源码行为一致；WYSIWYG 隐藏格式化入口；有效 JSON 格式化、无效 JSON 与 `jsonc` 非阻塞提示符合规格；纯文本标签不显示入口，多标签内容互不污染；打开期间与只读文件禁用格式化；保存写回 Markdown 源码，未保存关闭仍弹出确认。未新增语言、依赖、保存链路、Rust IPC 或 capability。
+- **验证记录**：`npm run check` 通过（typecheck + vitest **259 passed / 0 failed**）；`npm run tauri -- build` 通过并生成 release `Textora.app`；macOS release 真实 UI 验收覆盖格式化与撤销、无效/不支持上下文、Preview/WYSIWYG、自动闭合与撤销、纯文本/Markdown 多标签隔离、打开忙碌态、只读态、保存源码和未保存关闭保护；视觉截图确认 `Format JSON` 与 `Preview`、`WYSIWYG`、`Save As...` 使用一致按钮样式；`git diff --check` 通过。
+
+### 修复文档末行 fence 语法树判定
+
+- **状态**：已完成
+- **开始日期**：2026-08-11
+- **完成日期**：2026-08-11
+- **Feature Spec**：`docs/features/markdown-fenced-code-editing.md`
+- **结果**：`fenceAutoCloseDecisionFromTree` 改为在行末向左解析语法树节点，正确命中 EOF 处的 `CodeInfo`/`CodeMark` 并上溯到 `FencedCode`；不再要求树覆盖不存在的 `doc.length + 1`。只有语法树覆盖到文档末尾时，才根据单个 `CodeMark` 确认 opening 未闭合；已闭合或位于外层 fence 内仍不触发。大文档测试改用真实 `EditorView` + `forceParsing`，直接断言 EOF 语法树决策，并覆盖大文档末尾刚输入 opening fence 后立即判定。同时保留 `formatJsonNotice` 按 `session.id`/`session.path` 清除与未完成 macOS 验收任务的待开始状态。
+- **验证记录**：`npm run check` 通过（typecheck + vitest **259 passed / 0 failed**）；`npm run build` 通过；`git diff --check` 通过。本任务未运行 release 构建；macOS 真实应用交互验收仍为下一项已承诺待办。
+
+### 修复 Markdown fenced 编辑辅助四项问题
+
+- **状态**：已完成
+- **开始日期**：2026-08-11
+- **完成日期**：2026-08-11
+- **Feature Spec**：`docs/features/markdown-fenced-code-editing.md`
+- **结果**：修复未提交变更中的四项问题。(1) **Enter 性能**：`markdownFenceContext.ts` 抽出共享核心 `unclosedOpeningFromLineSource(lineCount, getLineText, cursorLine)`，纯函数 `unclosedOpeningAtLineEnd` 改为薄封装；`Editor.markdownFenceAutoCloseSpec` 改用 CodeMirror `doc.line(n)` 行 API 按需取行，删除 Enter 热路径上的 `state.doc.toString()`/`splitLines` 全文扫描。(2) **跨标签提示隔离**：`App.tsx` 在 `activeTabId` 变化（覆盖切换/新建/关闭/打开/另存为）与 WYSIWYG 切换时清除 `formatJsonNotice`，避免跨标签/跨模式残留。(3) **真实验收状态**：按实际执行修正 Feature Spec/README/current.md——macOS 真实应用交互验收**未执行**，Feature Spec 状态改为「实现完成，macOS 真实应用交互验收待执行」、对应验收条件改为未勾选、README 将本功能从「已完成 macOS 真实应用验收」中拆出。(4) **章节合并**：合并 `current.md` 中因历次编辑累积的 5 个重复「最近完成」章节为单一章节。补充测试：Editor 大文档普通换行不触发自动闭合、inside-fence 不触发、shorter-closing 下方仍触发；App 跨标签切换与 WYSIWYG 切换清除提示。
+- **验证记录**：`npm run check` 通过（typecheck + vitest **254 passed / 0 failed**，新增 3 个 Editor + 2 个 App 用例）；`npm run build` 通过；`git diff --check` 通过。本任务未运行 release 构建；macOS 真实应用交互验收仍待人工执行（见下「集成验收」条目的未尽事项）。
+
+### 接入 fenced JSON 显式格式化
+
+- **状态**：已完成
+- **开始日期**：2026-08-11
+- **完成日期**：2026-08-11
+- **Feature Spec**：`docs/features/markdown-fenced-code-editing.md`
+- **结果**：`src/Editor.tsx` 新增 `formatJsonFencePlan(state)`：用 `fenceContextAt` 判定主光标是否在闭合 fence 内容区且 `infoToken === "json"`（大小写不敏感，`jsonc`/`application/json`/未知不匹配），命中则用浏览器内建 `JSON.parse`/`JSON.stringify(value, null, 2)` 把整个内容区替换为 2 空格缩进标准 JSON（末尾保留换行使 closing 独占一行，自然去除原有首尾空白行），单次事务 `userEvent: "format.json"` 可一次撤销，光标映射到内容区起始；解析失败返回 `invalid-json`，上下文不匹配返回 `no-context`，二者都不改源码/选择/撤销历史。`EditorHandle` 新增 `formatJsonFence()`，在 Markdown 且视图就绪时返回计划结果并在 `apply` 时派发事务，否则返回 `unavailable`。`src/App.tsx` 新增 `Format JSON` 工具栏按钮（仅 Markdown 源码、非 WYSIWYG 显示；`!canEdit || readOnly` 禁用）与非阻塞 `notice-format-json` 提示（`no-context`/`invalid-json` 各自安全文案 + Dismiss，不阻止编辑/保存/切换/关闭）；WYSIWYG 用独立编辑器组件，格式化天然只作用于 Markdown 单栏与 Preview 左侧源码。未改 Rust/capability/保存链路。
+- **验证记录**：`npm run check` 通过（typecheck + vitest **249 passed / 0 failed**，新增 8 个 `formatJsonFencePlan` 用例：有效 JSON 2 空格重排、紧凑/凌乱 JSON 规范化、大写 JSON 命中、无效 JSON 不改文档、未闭合/`jsonc`/未知/普通文本/fence 行光标均 `no-context`、一次撤销；新增 4 个 App 用例：Markdown 显示按钮且纯文本不显示、WYSIWYG 隐藏按钮、只读禁用、行首光标命中非阻塞提示且文档不变 + Dismiss 清除）；`npm run build` 通过；`git diff --check` 通过。前端切片，macOS release 真实交互验收留给集成验收切片。
+
+### 实现 Markdown opening fence 自动闭合
+
+- **状态**：已完成
+- **开始日期**：2026-08-11
+- **完成日期**：2026-08-11
+- **Feature Spec**：`docs/features/markdown-fenced-code-editing.md`
+- **结果**：扩展 `src/markdownFenceContext.ts` 新增 `unclosedOpeningAtLineEnd(text, offset)`：光标在行末、该行符合 opening fence 词法、未被上方未闭合 fence 包住、下方无匹配 closing 时返回 `marker`/`length`/`indent`，供自动闭合构造 closing；复用既有 `classifyFenceLine`/`isClosingFor`。`src/Editor.tsx` 新增 `markdownFenceAutoCloseSpec(state)` 与 `markdownFenceAutoCloseCommand(language)`：单一空光标命中未闭合 opening 行末时，在光标处插入 `\n\n` + 复制 opening 字符/长度/缩进的 closing，光标停在空内容行，单次事务 `userEvent: "input.newline"` 可一次撤销；非 Markdown、非空选区、多选区、非行末、已闭合或被外层 fence 包住时返回 false 交回默认 Enter。Editor 组件新增 `languageRef`（随 `language` prop 同步），在挂载扩展中加入 `Prec.high` Enter keymap 调用命令；由于 WYSIWYG 使用独立编辑器组件，自动闭合天然只作用于 Markdown 单栏与 Preview 左侧源码编辑器。未改列块编辑语义、保存/关闭保护链路、Rust/capability。
+- **验证记录**：`npm run check` 通过（typecheck + vitest **237 passed / 0 failed**，新增 9 个 `unclosedOpeningAtLineEnd` 用例 + 6 个 Editor 自动闭合用例：插入空内容行+匹配 closing、复制字符/长度/缩进、已有 closing 不接管、非空选区/多选/非行末不接管、一次撤销、非 Markdown 不接管）；`npm run build` 通过；`git diff --check` 通过。前端切片，未运行 release 构建，macOS 真实 Enter 交互留给集成验收切片。
+
+### 建立 Markdown fence 上下文识别契约
+
+- **状态**：已完成
+- **开始日期**：2026-08-11
+- **完成日期**：2026-08-11
+- **Feature Spec**：`docs/features/markdown-fenced-code-editing.md`
+- **结果**：新增纯前端模块 `src/markdownFenceContext.ts` 与测试 `src/markdownFenceContext.test.ts`，建立后续自动闭合与 fenced JSON 格式化共同依赖的单一来源。`classifyFenceLine(lineText)` 做行级词法判断：0–3 个前导空格、≥3 个连续反引号或波浪号，返回 `indent`/`marker`/`length`/`rest`，否则 `null`。`fenceContextAt(text, offset)` 自上而下扫描行，追踪当前打开的 fence，遇到同字符且长度不短于 opening、标记后无非空白内容的 closing 时结束代码块；返回 `marker`/`openLength`/`indent`/`infoToken`（首 token 小写归一化）/`opening`/`closing`（未闭合为 `null`）/`content` 半开 offset 区间。光标位于 opening 与 closing 之间内容区才返回上下文；fence 标记行、普通文本、代码块外、4+ 前导空格、越界 offset 返回 `null`；内容中较短的同类标记、另一种字符或带非空 info 的候选 closing 行不结束当前代码块；相邻多个代码块各自独立识别。导出 `classifyFenceLine` 供后续自动闭合切片复用，避免在 Editor/Preview/WYSIWYG 复制 fence 正则。
+- **验证记录**：`npm run test -- markdownFenceContext` 通过（**20 passed / 0 failed**）；`npm run check` 通过（typecheck + vitest **222 passed / 0 failed**）；`npm run build` 通过；`git diff --check` 通过。纯前端契约切片，未改 Editor/应用 UI/Rust/capability，未改变当前可观察行为，未做 macOS 真实交互。
+
+### 确认 Markdown fenced code block 编辑辅助规格
+
+- **状态**：已完成
+- **开始日期**：2026-08-11
+- **完成日期**：2026-08-11
+- **Feature Spec**：`docs/features/markdown-fenced-code-editing.md`
+- **结果**：新增并确认 Markdown fenced code block 编辑辅助规格。首版只作用于 Markdown 源码编辑器（包含 Preview 左侧，不包含 WYSIWYG）；支持反引号/波浪号 fence、至少 3 个标记字符和 0–3 个前导空格；单一空光标在未闭合 opening fence 行末按 Enter 时自动补齐结构；JSON 格式化必须通过 `Format JSON` 显式触发，只接受严格 `json` fence，采用 2 空格缩进，无效或错位上下文提示且不改源码。功能拆为上下文识别契约、自动闭合、显式 JSON 格式化和集成验收四个后续切片，首个切片已进入已承诺待办。
+- **验证记录**：文档审查与 `git diff --check` 通过；本任务未修改生产代码，未运行实现测试或构建。
 
 ### 完成 Markdown WYSIWYG 真实应用验收与文档收尾
 

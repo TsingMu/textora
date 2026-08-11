@@ -16,11 +16,12 @@ import {
   rectangularSelection,
 } from "@codemirror/view";
 import { defaultKeymap, historyKeymap } from "@codemirror/commands";
-import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
+import { HighlightStyle, syntaxHighlighting, syntaxTree } from "@codemirror/language";
 import { tags } from "@lezer/highlight";
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import { safeLanguageExtension } from "./languageExtensions";
 import type { LanguageMode } from "./languageRecognition";
+import { unclosedOpeningFromLineSource, fenceContextAt, classifyFenceLine } from "./markdownFenceContext";
 
 type EditorProps = {
   content: string;
@@ -31,12 +32,19 @@ type EditorProps = {
 
 export type EditorHandle = {
   fillColumnBlockSequence: () => boolean;
+  formatJsonFence: () => JsonFenceFormatResult | { kind: "unavailable" };
 };
 
 type ColumnBlockDeleteDirection = "backward" | "forward";
 type ColumnBlockPastePlan =
   | { kind: "apply"; spec: TransactionSpec }
   | { kind: "reject" };
+
+/** fenced JSON 格式化计划结果；`unavailable` 仅由 Editor 句柄在非 Markdown 或无视图时返回。 */
+export type JsonFenceFormatResult =
+  | { kind: "apply"; spec: TransactionSpec }
+  | { kind: "no-context" }
+  | { kind: "invalid-json" };
 
 function clipboardLines(text: string): string[] {
   const normalized = text.replace(/\r\n?/g, "\n");
@@ -214,6 +222,145 @@ export const columnBlockSequenceCommand: Command = (view) => {
   return true;
 };
 
+/**
+ * 用 Markdown 语法树判定当前行是否应触发 opening fence 自动闭合。返回三态：
+ * - `true`：当前行是一个未闭合 opening（树节点 `FencedCode` 起于本行且只有一个 `CodeMark`），应自动闭合；
+ * - `false`：当前行处于既有代码块内容中，或本行 opening 已有 closing（两个 `CodeMark`），不应自动闭合；
+ * - `null`：光标区尚未解析或树中无 `FencedCode`（如未加载 Markdown 语言），调用方应回退到文本扫描。
+ *
+ * 利用 lezer-markdown 的结构：闭合的 fenced block 为 `FencedCode(CodeMark, CodeInfo, CodeText, CodeMark)`，
+ * 未闭合为 `FencedCode(CodeMark, CodeInfo, CodeText)`（只有一个 `CodeMark`）；外层代码块内的 fence-like 行
+ * 属于其 `CodeText`，对应 `FencedCode.from` 落在当前行之前。查询是 O(树深)，不随文档大小增长。
+ */
+export function fenceAutoCloseDecisionFromTree(
+  state: EditorState,
+  line: { from: number; to: number },
+): boolean | null {
+  const tree = syntaxTree(state);
+  // 光标区尚未解析时无法信任树判定，交回退路径处理。
+  if (tree.length < line.to) return null;
+  // 光标在行末，向左解析才能取到以该位置结束的 CodeInfo/CodeMark；
+  // 向右 bias 在 EOF 会落到 Document，使文末 opening 被误判为无树上下文。
+  let node = tree.resolveInner(line.to, -1);
+  while (node.name !== "FencedCode" && node.parent !== null) {
+    node = node.parent;
+  }
+  if (node.name !== "FencedCode") return null;
+  // 若 FencedCode 起点不在当前行，说明当前行是外层代码块的内容。
+  if (node.from < line.from) return false;
+  let marks = 0;
+  const cursor = node.cursor();
+  if (cursor.firstChild()) {
+    do {
+      if (cursor.name === "CodeMark") marks++;
+    } while (cursor.nextSibling());
+  }
+  // 两个 CodeMark = 已闭合 → 不重复闭合。
+  if (marks >= 2) return false;
+  // 只有当树已覆盖文档末尾，才能由「只有一个 CodeMark」推断下方确实无 closing。
+  // 否则树可能只是尚未解析到较远的 closing，必须交回退路径处理。
+  return tree.length >= state.doc.length ? true : null;
+}
+
+/**
+ * 构造 Markdown opening fence 自动闭合事务：单一空光标位于未闭合 opening fence 行末时，插入
+ * 空内容行和匹配 closing（复制 opening 的字符/长度/缩进），光标停在空内容行。其他情况返回 null，
+ * 由调用方交回默认 Enter；自动闭合通过单次事务提交，可一次撤销。
+ *
+ * 性能：优先用 Markdown 语法树（`FencedCode`/`CodeMark`）在有界耗时内判定，避免遍历整篇大文档；
+ * 当光标区尚未解析或未加载 Markdown 语言时，回退到基于 `doc.line(n)` 的文本扫描（无界但始终正确）。
+ * 光标不在行末或当前行非 fence 时仅取当前行即提前返回。
+ */
+export function markdownFenceAutoCloseSpec(state: EditorState): TransactionSpec | null {
+  const ranges = state.selection.ranges;
+  if (ranges.length !== 1 || !ranges[0].empty) {
+    return null;
+  }
+  const offset = ranges[0].from;
+  const line = state.doc.lineAt(offset);
+  // `line.to` 是该行换行前的偏移（末行等于文档长度），光标必须恰在其上才算「行末」。
+  if (offset !== line.to) {
+    return null;
+  }
+  const info = classifyFenceLine(line.text);
+  if (info === null) {
+    return null;
+  }
+
+  const fromTree = fenceAutoCloseDecisionFromTree(state, line);
+  if (fromTree === false) {
+    return null;
+  }
+  if (fromTree !== true) {
+    // 树未给出结论（光标区未解析或无 Markdown 语言）：回退到文本扫描，保证语义正确。
+    const opening = unclosedOpeningFromLineSource(
+      state.doc.lines,
+      (n) => state.doc.line(n).text,
+      line.number,
+    );
+    if (opening === null) {
+      return null;
+    }
+  }
+
+  const closingLine = " ".repeat(info.indent) + info.marker.repeat(info.length);
+  return {
+    changes: { from: offset, to: offset, insert: "\n\n" + closingLine },
+    selection: EditorSelection.cursor(offset + 1),
+    scrollIntoView: true,
+    userEvent: "input.newline",
+  };
+}
+
+/**
+ * Enter 自动闭合命令。仅在当前语言为 Markdown 时尝试；命中自动闭合条件则提交事务并返回 true，
+ * 否则返回 false 让默认 Enter 接管，保留列块多选与非 Markdown 文档的既有换行行为。
+ */
+export function markdownFenceAutoCloseCommand(language: () => LanguageMode): Command {
+  return (view) => {
+    if (language() !== "markdown") {
+      return false;
+    }
+    const spec = markdownFenceAutoCloseSpec(view.state);
+    if (spec === null) {
+      return false;
+    }
+    view.dispatch(spec);
+    return true;
+  };
+}
+
+/**
+ * 构造 fenced JSON 显式格式化计划：光标位于闭合 `json` fenced code block 内容区时，用浏览器内建
+ * `JSON.parse`/`JSON.stringify(value, null, 2)` 把整个代码块内容替换为 2 空格缩进的标准 JSON，
+ * 单次事务可一次撤销，光标映射到内容区起始。光标不在闭合 json 内容区返回 `no-context`；解析失败
+ * 返回 `invalid-json`；二者都不改源码、选择或撤销历史。`jsonc`、`application/json` 与未知 token 不匹配。
+ */
+export function formatJsonFencePlan(state: EditorState): JsonFenceFormatResult {
+  const offset = state.selection.main.from;
+  const text = state.doc.toString();
+  const ctx = fenceContextAt(text, offset);
+  if (ctx === null || ctx.closing === null || ctx.infoToken !== "json") {
+    return { kind: "no-context" };
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(text.slice(ctx.content.from, ctx.content.to));
+  } catch {
+    return { kind: "invalid-json" };
+  }
+  const formatted = `${JSON.stringify(value, null, 2)}\n`;
+  return {
+    kind: "apply",
+    spec: {
+      changes: { from: ctx.content.from, to: ctx.content.to, insert: formatted },
+      selection: EditorSelection.cursor(ctx.content.from),
+      scrollIntoView: true,
+      userEvent: "format.json",
+    },
+  };
+}
+
 export const columnBlockSelectionExtensions: Extension = [
   EditorState.allowMultipleSelections.of(true),
   rectangularSelection(),
@@ -273,8 +420,10 @@ export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(
   const isSyncingContentRef = useRef(false);
   const availabilityRef = useRef(new Compartment());
   const languageCompartmentRef = useRef(new Compartment());
+  const languageRef = useRef(language);
 
   onChangeRef.current = onChange;
+  languageRef.current = language;
 
   useImperativeHandle(ref, () => ({
     fillColumnBlockSequence() {
@@ -283,6 +432,17 @@ export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(
         return false;
       }
       return columnBlockSequenceCommand(view);
+    },
+    formatJsonFence() {
+      const view = viewRef.current;
+      if (view === null || languageRef.current !== "markdown") {
+        return { kind: "unavailable" as const };
+      }
+      const result = formatJsonFencePlan(view.state);
+      if (result.kind === "apply") {
+        view.dispatch(result.spec);
+      }
+      return result;
     },
   }));
 
@@ -297,6 +457,11 @@ export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(
         basicSetup,
         syntaxHighlighting(textoraSyntaxHighlightStyle),
         columnBlockSelectionExtensions,
+        Prec.high(
+          keymap.of([
+            { key: "Enter", run: markdownFenceAutoCloseCommand(() => languageRef.current) },
+          ]),
+        ),
         languageCompartmentRef.current.of(safeLanguageExtension(language) ?? []),
         availabilityRef.current.of([
           EditorState.readOnly.of(disabled),

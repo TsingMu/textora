@@ -4,7 +4,7 @@ Textora 是一款 macOS 个人文本工作台，把 Windows 内网工作中常�
 
 ## 当前状态
 
-项目已建立 Tauri 2、React、TypeScript、Vite、CodeMirror 6 与 Rust 可运行工程基线。当前可新建、打开、普通保存和另存为文档；首次保存与另存为使用应用内目标面板直接选择文件名和位置，编码与换行由主界面右下角设置决定。文件打开、普通保存、首次保存、另存为、保存冲突解决、未保存关闭保护（窗口关闭与应用退出）、另存为内嵌目标面板、多标签会话、列块编辑、代码语法高亮、Markdown 源码与本地预览左右分栏、Markdown fenced Mermaid 本地渲染、Markdown 预览代码块语法着色、Markdown 所见即所得模式以及 Mermaid 本地编辑与预览均已完成自动化验证及 macOS 真实应用验收。
+项目已建立 Tauri 2、React、TypeScript、Vite、CodeMirror 6 与 Rust 可运行工程基线。当前可新建、打开、普通保存和另存为文档；首次保存与另存为使用应用内目标面板直接选择文件名和位置，编码与换行由主界面右下角设置决定。文件打开、普通保存、首次保存、另存为、保存冲突解决、未保存关闭保护（窗口关闭与应用退出）、另存为内嵌目标面板、多标签会话、列块编辑、代码语法高亮、Markdown 源码与本地预览左右分栏、Markdown fenced Mermaid 本地渲染、Markdown 预览代码块语法着色、Markdown 所见即所得模式、Markdown fenced code block 编辑辅助（opening fence 自动闭合与 fenced JSON 显式格式化）以及 Mermaid 本地编辑与预览均已完成自动化验证及 macOS 真实应用验收。
 
 ## 文档导航
 
@@ -26,6 +26,7 @@ Textora 是一款 macOS 个人文本工作台，把 Windows 内网工作中常�
 - `docs/features/code-syntax-highlighting.md`：已完成的代码文本识别与最小语法高亮规格
 - `docs/features/markdown-split-preview.md`：已完成的 Markdown 源码与本地预览左右分栏规格
 - `docs/features/markdown-code-block-highlighting.md`：已完成的 Markdown 预览代码块语法着色规格
+- `docs/features/markdown-fenced-code-editing.md`：已完成的 Markdown fenced code block 编辑辅助规格
 - `docs/features/markdown-wysiwyg-mode.md`：已完成的 Markdown 所见即所得模式规格
 - `docs/features/mermaid-local-preview.md`：已完成的 Mermaid 本地编辑与预览规格
 - `docs/tasks/current.md`：当前已承诺任务

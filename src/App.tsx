@@ -149,6 +149,7 @@ function App() {
   }>({ status: "idle", errorMessage: null });
   const [closeConfirmPending, setCloseConfirmPending] = useState(false);
   const [closeConfirmError, setCloseConfirmError] = useState<string | null>(null);
+  const [formatJsonNotice, setFormatJsonNotice] = useState<string | null>(null);
   const [saveFormat, setSaveFormat] = useState<{
     encoding: EncodingChoice;
     lineEnding: LineEndingChoice;
@@ -270,6 +271,12 @@ function App() {
     setFormatSettingsOpen(false);
     setMixedLineEndingConfirmed(session.lineEnding !== "mixed");
   }, [session.id, session.encoding, session.lineEnding]);
+
+  // 把 Format JSON 提示绑定到活动文档身份：切换标签、另存为（路径/身份变化）或文档替换时清除，
+  // 避免跨标签或跨文档残留。
+  useEffect(() => {
+    setFormatJsonNotice(null);
+  }, [session.id, session.path]);
 
   // 窗口关闭拦截 + 聚焦缺失检查（合并到同一 effect 以共享一次 dynamic import）。
   useEffect(() => {
@@ -1072,6 +1079,25 @@ function App() {
     editorRef.current?.fillColumnBlockSequence();
   }
 
+  function handleFormatJsonClick() {
+    if (!canEdit || session.readOnly) {
+      return;
+    }
+    const result = editorRef.current?.formatJsonFence();
+    if (result === undefined || result.kind === "unavailable") {
+      return;
+    }
+    if (result.kind === "no-context") {
+      setFormatJsonNotice(
+        "Place the cursor inside a closed JSON fenced code block.",
+      );
+    } else if (result.kind === "invalid-json") {
+      setFormatJsonNotice("Invalid JSON. The document was not changed.");
+    } else {
+      setFormatJsonNotice(null);
+    }
+  }
+
   function handleMarkdownPreviewToggle() {
     updateTabSession((current) => {
       const tab = current.tabs.find((item) => item.tabId === current.activeTabId);
@@ -1085,6 +1111,8 @@ function App() {
   }
 
   function handleMarkdownWysiwygToggle() {
+    // 进入/退出 WYSIWYG 时光标上下文变化，清除可能残留的 Format JSON 提示。
+    setFormatJsonNotice(null);
     updateTabSession((current) => {
       const tab = current.tabs.find((item) => item.tabId === current.activeTabId);
       if (tab === undefined) return current;
@@ -1530,6 +1558,17 @@ function App() {
               >
                 WYSIWYG
               </button>
+              {!markdownWysiwygOpen && (
+                <button
+                  type="button"
+                  className="format-json-button"
+                  onClick={handleFormatJsonClick}
+                  disabled={!canEdit || session.readOnly}
+                  aria-label="Format the JSON inside the cursor's fenced code block"
+                >
+                  Format JSON
+                </button>
+              )}
             </>
           )}
           {activeLanguage === "mermaid" && (
@@ -1664,10 +1703,21 @@ function App() {
               />
             </aside>
           )}
+          {formatJsonNotice !== null && (
+            <div className="notice notice-format-json" role="status">
+              <span>{formatJsonNotice}</span>
+              <button
+                type="button"
+                className="notice-dismiss"
+                onClick={() => setFormatJsonNotice(null)}
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
           {session.openStatus === "loading" && (
             <div className="notice notice-loading" role="status">Opening…</div>
-          )}
-          {session.saveStatus === "saving" && (
+          )}          {session.saveStatus === "saving" && (
             <div className="notice notice-loading" role="status">Saving…</div>
           )}
           {session.openStatus === "error" && session.openErrorCode !== null && (

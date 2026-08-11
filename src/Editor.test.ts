@@ -2,6 +2,8 @@
 
 import { EditorSelection, EditorState, type Extension } from "@codemirror/state";
 import { history, undo } from "@codemirror/commands";
+import { forceParsing } from "@codemirror/language";
+import { markdown } from "@codemirror/lang-markdown";
 import { EditorView } from "@codemirror/view";
 import { describe, expect, it } from "vitest";
 import {
@@ -12,6 +14,10 @@ import {
   columnBlockSequenceCommand,
   columnBlockSequenceSpec,
   columnBlockSelectionExtensions,
+  fenceAutoCloseDecisionFromTree,
+  formatJsonFencePlan,
+  markdownFenceAutoCloseCommand,
+  markdownFenceAutoCloseSpec,
 } from "./Editor";
 import { languageExtension } from "./languageExtensions";
 
@@ -364,6 +370,376 @@ describe("column block editing under syntax highlighting", () => {
       expect(view.state.doc.toString()).toBe("1row\n2row\n3row");
       expect(undo(view)).toBe(true);
       expect(view.state.doc.toString()).toBe("row\nrow\nrow");
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+});
+
+describe("markdown fence auto-close", () => {
+  it("inserts an empty content line and a matching closing fence at an unclosed opening", () => {
+    const state = EditorState.create({
+      doc: "```json",
+      selection: EditorSelection.cursor(7),
+    });
+
+    const spec = markdownFenceAutoCloseSpec(state);
+    expect(spec).not.toBeNull();
+    const next = state.update(spec!).state;
+
+    expect(next.doc.toString()).toBe("```json\n\n```");
+    expect(next.selection.main.from).toBe(8);
+  });
+
+  it("replicates the opening marker, length and indent in the closing fence", () => {
+    const state = EditorState.create({
+      doc: "  ~~~~ts",
+      selection: EditorSelection.cursor(8),
+    });
+
+    const spec = markdownFenceAutoCloseSpec(state);
+    expect(spec).not.toBeNull();
+    const next = state.update(spec!).state;
+
+    expect(next.doc.toString()).toBe("  ~~~~ts\n\n  ~~~~");
+    expect(next.selection.main.from).toBe(9);
+  });
+
+  it("returns null when the opening already has a matching closing", () => {
+    const state = EditorState.create({
+      doc: "```json\n{}\n```",
+      selection: EditorSelection.cursor(7),
+    });
+    expect(markdownFenceAutoCloseSpec(state)).toBeNull();
+  });
+
+  it("returns null for a non-empty selection, multiple cursors or a non-line-end cursor", () => {
+    const ranged = EditorState.create({
+      doc: "```json",
+      selection: EditorSelection.range(0, 3),
+    });
+    expect(markdownFenceAutoCloseSpec(ranged)).toBeNull();
+
+    const multi = EditorState.create({
+      doc: "```json",
+      selection: EditorSelection.create([
+        EditorSelection.cursor(0),
+        EditorSelection.cursor(7),
+      ]),
+    });
+    expect(markdownFenceAutoCloseSpec(multi)).toBeNull();
+
+    const midLine = EditorState.create({
+      doc: "```json",
+      selection: EditorSelection.cursor(3),
+    });
+    expect(markdownFenceAutoCloseSpec(midLine)).toBeNull();
+  });
+
+  it("commits as a single undoable transaction via the markdown command", () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const view = new EditorView({
+      parent: host,
+      state: EditorState.create({
+        doc: "```json",
+        selection: EditorSelection.cursor(7),
+        extensions: [history()],
+      }),
+    });
+
+    try {
+      expect(markdownFenceAutoCloseCommand(() => "markdown")(view)).toBe(true);
+      expect(view.state.doc.toString()).toBe("```json\n\n```");
+      expect(view.state.selection.main.from).toBe(8);
+      expect(undo(view)).toBe(true);
+      expect(view.state.doc.toString()).toBe("```json");
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it("leaves default Enter intact for non-markdown languages", () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const view = new EditorView({
+      parent: host,
+      state: EditorState.create({
+        doc: "```json",
+        selection: EditorSelection.cursor(7),
+        extensions: [history()],
+      }),
+    });
+
+    try {
+      expect(markdownFenceAutoCloseCommand(() => "plain-text")(view)).toBe(false);
+      expect(view.state.doc.toString()).toBe("```json");
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it("does not auto-close on a normal line in a large document", () => {
+    const lineText = "the quick brown fox jumps";
+    const lineLength = lineText.length;
+    const doc = Array.from({ length: 2000 }, () => lineText).join("\n");
+    // 光标在第 1000 行（0-based 999）行末：偏移 = 999*(L+1)+L。
+    const offset = 999 * (lineLength + 1) + lineLength;
+    const state = EditorState.create({
+      doc,
+      selection: EditorSelection.cursor(offset),
+    });
+
+    // 普通行：classifyFenceLine 当前行即返回 null，不应触发自动闭合，也不应因文档大而异常。
+    expect(markdownFenceAutoCloseSpec(state)).toBeNull();
+    expect(state.doc.toString()).toBe(doc);
+  });
+
+  it("does not auto-close when the opening-like line is inside another unclosed fence", () => {
+    // 第 1 行 ```` 打开未闭合代码块；第 2 行 ```json 是其内容，不是新 opening。
+    const doc = "```\n```json";
+    const state = EditorState.create({
+      doc,
+      selection: EditorSelection.cursor(doc.length),
+    });
+
+    expect(markdownFenceAutoCloseSpec(state)).toBeNull();
+    expect(state.doc.toString()).toBe(doc);
+  });
+
+  it("still auto-closes when a shorter same-marker line below is not a valid closing", () => {
+    // opening 4 个反引号；下方 3 个反引号短于 opening，不是 closing。
+    const doc = "````\n```";
+    const state = EditorState.create({
+      doc,
+      selection: EditorSelection.cursor(4),
+    });
+
+    const spec = markdownFenceAutoCloseSpec(state);
+    expect(spec).not.toBeNull();
+    if (spec === null) return;
+    const next = state.update(spec).state;
+    expect(next.doc.toString()).toBe("````\n\n````\n```");
+    expect(next.selection.main.from).toBe(5);
+  });
+
+  it("auto-closes an opening fence at the end of a large document via the syntax tree", () => {
+    const normal = "plain text line";
+    const above = 5000;
+    const doc =
+      Array.from({ length: above }, () => normal).join("\n") + "\n```json";
+    const host = document.createElement("div");
+    document.body.append(host);
+    const view = new EditorView({
+      parent: host,
+      state: EditorState.create({
+        doc,
+        selection: EditorSelection.cursor(doc.length),
+        extensions: [markdown()],
+      }),
+    });
+
+    try {
+      // forceParsing 会把解析结果提交回 EditorView.state；ensureSyntaxTree 只返回一棵树，
+      // 无法证明 markdownFenceAutoCloseSpec 真的走了语法树路径。
+      expect(forceParsing(view, doc.length, 5000)).toBe(true);
+      const line = view.state.doc.lineAt(doc.length);
+      // 直接锁定 EOF 语法树路径：旧实现会因要求 doc.length + 1 而返回 null。
+      expect(fenceAutoCloseDecisionFromTree(view.state, line)).toBe(true);
+
+      const spec = markdownFenceAutoCloseSpec(view.state);
+      expect(spec).not.toBeNull();
+      if (spec === null) return;
+      const next = view.state.update(spec).state;
+      expect(next.doc.toString().endsWith("```json\n\n```")).toBe(true);
+      expect(next.selection.main.from).toBe(doc.length + 1);
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it("keeps the EOF syntax-tree decision available immediately after typing the opening fence", () => {
+    const initialDoc = Array.from({ length: 5000 }, () => "plain text line").join("\n");
+    const host = document.createElement("div");
+    document.body.append(host);
+    const view = new EditorView({
+      parent: host,
+      state: EditorState.create({
+        doc: initialDoc,
+        selection: EditorSelection.cursor(initialDoc.length),
+        extensions: [markdown()],
+      }),
+    });
+
+    try {
+      expect(forceParsing(view, initialDoc.length, 5000)).toBe(true);
+      view.dispatch({
+        changes: { from: initialDoc.length, insert: "\n```json" },
+        selection: EditorSelection.cursor(initialDoc.length + "\n```json".length),
+      });
+      const line = view.state.doc.lineAt(view.state.doc.length);
+
+      expect(fenceAutoCloseDecisionFromTree(view.state, line)).toBe(true);
+      expect(markdownFenceAutoCloseSpec(view.state)).not.toBeNull();
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it("does not auto-close a fence-like line that sits inside an existing unclosed fence", () => {
+    // 外层 ``` 打开未闭合代码块；第 2 行 ```json 是其内容，不是新 opening。
+    const doc = "```\n```json\n";
+    const cursor = doc.indexOf("```json") + "```json".length;
+    const host = document.createElement("div");
+    document.body.append(host);
+    const view = new EditorView({
+      parent: host,
+      state: EditorState.create({
+        doc,
+        selection: EditorSelection.cursor(cursor),
+        extensions: [markdown()],
+      }),
+    });
+
+    try {
+      expect(forceParsing(view, doc.length, 1000)).toBe(true);
+      expect(
+        fenceAutoCloseDecisionFromTree(view.state, view.state.doc.lineAt(cursor)),
+      ).toBe(false);
+      expect(markdownFenceAutoCloseSpec(view.state)).toBeNull();
+      expect(view.state.doc.toString()).toBe(doc);
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it("does not duplicate a closing fence when one already exists below the opening", () => {
+    const doc = "```json\n{}\n```";
+    const cursor = doc.indexOf("\n");
+    const host = document.createElement("div");
+    document.body.append(host);
+    const view = new EditorView({
+      parent: host,
+      state: EditorState.create({
+        doc,
+        selection: EditorSelection.cursor(cursor),
+        extensions: [markdown()],
+      }),
+    });
+
+    try {
+      expect(forceParsing(view, doc.length, 1000)).toBe(true);
+      expect(
+        fenceAutoCloseDecisionFromTree(view.state, view.state.doc.lineAt(cursor)),
+      ).toBe(false);
+      expect(markdownFenceAutoCloseSpec(view.state)).toBeNull();
+      expect(view.state.doc.toString()).toBe(doc);
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+});
+
+describe("formatJsonFencePlan", () => {
+  function stateWith(doc: string, cursorOffset: number) {
+    return EditorState.create({ doc, selection: EditorSelection.cursor(cursorOffset) });
+  }
+
+  it("reformats a closed json fence content with 2-space indentation", () => {
+    const doc = '```json\n{"a": 1}\n```';
+    const cursor = doc.indexOf("\n") + 1;
+    const result = formatJsonFencePlan(stateWith(doc, cursor));
+
+    expect(result.kind).toBe("apply");
+    if (result.kind !== "apply") return;
+    const next = stateWith(doc, cursor).update(result.spec).state;
+
+    expect(next.doc.toString()).toBe('```json\n{\n  "a": 1\n}\n```');
+    expect(next.selection.main.from).toBe(cursor);
+  });
+
+  it("normalizes compact and messy json to canonical 2-space form", () => {
+    const doc = '```json\n{"b":[1,2,3]}\n```';
+    const cursor = doc.indexOf("[");
+    const result = formatJsonFencePlan(stateWith(doc, cursor));
+
+    expect(result.kind).toBe("apply");
+    if (result.kind !== "apply") return;
+    const next = stateWith(doc, cursor).update(result.spec).state;
+
+    expect(next.doc.toString()).toContain('  "b": [');
+    expect(next.doc.toString()).toContain('    1,');
+  });
+
+  it("recognizes an uppercase JSON info token", () => {
+    const doc = '```JSON\n{}\n```';
+    const cursor = doc.indexOf("{}");
+    const result = formatJsonFencePlan(stateWith(doc, cursor));
+    expect(result.kind).toBe("apply");
+  });
+
+  it("returns invalid-json without changing the document on parse failure", () => {
+    const doc = '```json\n{bad}\n```';
+    const cursor = doc.indexOf("{bad");
+    const state = stateWith(doc, cursor);
+    const result = formatJsonFencePlan(state);
+
+    expect(result.kind).toBe("invalid-json");
+    expect(state.doc.toString()).toBe(doc);
+  });
+
+  it("returns no-context for an unclosed fence", () => {
+    const doc = '```json\n{}';
+    const cursor = doc.indexOf("{}");
+    expect(formatJsonFencePlan(stateWith(doc, cursor)).kind).toBe("no-context");
+  });
+
+  it("returns no-context for jsonc, unknown languages and plain text", () => {
+    const jsonc = '```jsonc\n{}\n```';
+    expect(formatJsonFencePlan(stateWith(jsonc, jsonc.indexOf("{}"))).kind).toBe("no-context");
+
+    const rust = '```rust\nfn main() {}\n```';
+    expect(formatJsonFencePlan(stateWith(rust, rust.indexOf("fn"))).kind).toBe("no-context");
+
+    const plain = "just text";
+    expect(formatJsonFencePlan(stateWith(plain, 2)).kind).toBe("no-context");
+  });
+
+  it("returns no-context when the cursor is on a fence marker line", () => {
+    const doc = '```json\n{}\n```';
+    expect(formatJsonFencePlan(stateWith(doc, 0)).kind).toBe("no-context");
+    expect(formatJsonFencePlan(stateWith(doc, doc.lastIndexOf("```"))).kind).toBe("no-context");
+  });
+
+  it("commits as a single undoable transaction", () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const doc = '```json\n{"a": 1}\n```';
+    const view = new EditorView({
+      parent: host,
+      state: EditorState.create({
+        doc,
+        selection: EditorSelection.cursor(doc.indexOf("\n") + 1),
+        extensions: [history()],
+      }),
+    });
+
+    try {
+      const result = formatJsonFencePlan(view.state);
+      expect(result.kind).toBe("apply");
+      if (result.kind === "apply") {
+        view.dispatch(result.spec);
+      }
+      expect(view.state.doc.toString()).toBe('```json\n{\n  "a": 1\n}\n```');
+      expect(undo(view)).toBe(true);
+      expect(view.state.doc.toString()).toBe(doc);
     } finally {
       view.destroy();
       host.remove();

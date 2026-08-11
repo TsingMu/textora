@@ -4411,3 +4411,216 @@ describe("App bottom-right format settings", () => {
     expect(reopenedSelects[1]?.value).toBe("lf");
   });
 });
+
+describe("App Format JSON", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+
+  beforeEach(() => {
+    (
+      globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
+    ).IS_REACT_ACT_ENVIRONMENT = true;
+    invokeMock.mockReset();
+    resetTauriWindowMock();
+    setupInvoke();
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  function mockOpenMarkdown(content: string, readOnly = false) {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        return {
+          id: "doc-md",
+          path: "/tmp/test.md",
+          displayName: "test.md",
+          byteCount: content.length,
+          encoding: "utf8",
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: content.length, sha256: "md" },
+          readOnly,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode(content).buffer;
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+  }
+
+  async function openMarkdown(content: string, readOnly = false) {
+    mockOpenMarkdown(content, readOnly);
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+  }
+
+  it("shows Format JSON for a markdown document but not for plain text", async () => {
+    await act(async () => root.render(<App />));
+    expect(container.querySelector(".format-json-button")).toBeNull();
+
+    await openMarkdown("# title\n");
+    expect(container.querySelector(".format-json-button")).not.toBeNull();
+  });
+
+  it("hides Format JSON while WYSIWYG is active", async () => {
+    await act(async () => root.render(<App />));
+    await openMarkdown("# title\n");
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".markdown-wysiwyg-toggle")?.click();
+    });
+    expect(container.querySelector(".format-json-button")).toBeNull();
+    expect(container.querySelector('[aria-label="Markdown WYSIWYG editor"]')).not.toBeNull();
+  });
+
+  it("disables Format JSON for a read-only markdown document", async () => {
+    await act(async () => root.render(<App />));
+    await openMarkdown("# title\n", true);
+
+    expect(
+      container.querySelector<HTMLButtonElement>(".format-json-button")?.disabled,
+    ).toBe(true);
+  });
+
+  it("shows a non-blocking notice and leaves the document unchanged when the cursor is not in a closed json fence", async () => {
+    const content = "```json\n{}\n```";
+    await act(async () => root.render(<App />));
+    await openMarkdown(content);
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".format-json-button")?.click();
+    });
+
+    const notice = container.querySelector(".notice-format-json");
+    expect(notice).not.toBeNull();
+    expect(notice?.textContent).toContain("closed JSON fenced code block");
+    // 光标默认在行首（opening fence 行），文档不变。
+    expect(container.querySelector(".cm-content")?.textContent ?? "").toContain("```json");
+    // 提示是非阻塞的：其它编辑入口仍可用。
+    expect(
+      container.querySelector<HTMLButtonElement>(".column-sequence-button")?.disabled,
+    ).toBe(false);
+
+    await act(async () => {
+      notice?.querySelector<HTMLButtonElement>(".notice-dismiss")?.click();
+    });
+    expect(container.querySelector(".notice-format-json")).toBeNull();
+  });
+
+  it("clears the format-json notice when switching to another tab", async () => {
+    await act(async () => root.render(<App />));
+    await openMarkdown("```json\n{}\n```");
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".format-json-button")?.click();
+    });
+    expect(container.querySelector(".notice-format-json")).not.toBeNull();
+
+    // 切换到初始 Untitled 标签：光标与文档上下文变化，提示应被清除。
+    await act(async () => {
+      container.querySelectorAll<HTMLButtonElement>(".document-tab-select")[0]?.click();
+    });
+    expect(container.querySelector(".notice-format-json")).toBeNull();
+  });
+
+  it("clears the format-json notice when toggling WYSIWYG", async () => {
+    await act(async () => root.render(<App />));
+    await openMarkdown("```json\n{}\n```");
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".format-json-button")?.click();
+    });
+    expect(container.querySelector(".notice-format-json")).not.toBeNull();
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".markdown-wysiwyg-toggle")?.click();
+    });
+    expect(container.querySelector(".notice-format-json")).toBeNull();
+  });
+
+  it("clears the format-json notice after saving the markdown document as plain text", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        return {
+          id: "doc-md",
+          path: "/tmp/test.md",
+          displayName: "test.md",
+          byteCount: 14,
+          encoding: "utf8",
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 14, sha256: "md" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode("```json\n{}\n```").buffer;
+      }
+      if (cmd === "prepare_save_as") {
+        return {
+          fileName: "test.md",
+          directory: { id: "grant", displayName: "tmp" },
+        };
+      }
+      if (cmd === "preview_save_target") {
+        return { exists: false, isCurrentPath: false };
+      }
+      if (cmd === "save_document_as_at") {
+        return {
+          id: "doc-md",
+          path: "/tmp/notes.txt",
+          displayName: "notes.txt",
+          byteCount: 14,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 14, sha256: "new" },
+          readOnly: false,
+        };
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await act(async () => root.render(<App />));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".format-json-button")?.click();
+    });
+    expect(container.querySelector(".notice-format-json")).not.toBeNull();
+
+    // 另存为 notes.txt：活动文档身份（路径）改变，提示应被清除。
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".save-as-button")?.click();
+    });
+    const chooser = container.querySelector(".save-as-dialog");
+    const fileName = chooser?.querySelector<HTMLInputElement>('input[type="text"]');
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        "value",
+      )?.set;
+      setter?.call(fileName, "notes.txt");
+      fileName?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      chooser?.querySelector<HTMLButtonElement>(".confirm-save")?.click();
+    });
+
+    expect(container.querySelector(".notice-format-json")).toBeNull();
+    // 活动语言随 .txt 回到 plain-text，Format JSON 按钮消失。
+    expect(container.querySelector(".format-json-button")).toBeNull();
+  });
+});
