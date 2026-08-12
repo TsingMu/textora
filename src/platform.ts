@@ -36,6 +36,24 @@ export type OpenDocumentSelection =
   | { kind: "opened"; descriptor: DocumentDescriptor }
   | { kind: "existing"; tabId: string };
 
+export const EXTERNAL_DOCUMENT_CHANGED_EVENT = "textora-external-document-changed";
+
+export type ExternalDocumentChanged = {
+  documentId: string;
+  kind: "content" | "metadata" | "missing" | "reloadFailed";
+  error?: DocumentCommandError;
+};
+
+export type ExternalReloadReady =
+  | { kind: "content"; descriptor: DocumentDescriptor }
+  | { kind: "metadata"; descriptor: DocumentDescriptor };
+
+export type ExternalReloadRetry =
+  | { kind: "ready"; reload: ExternalReloadReady }
+  | { kind: "missing" }
+  | { kind: "failed"; error: DocumentCommandError }
+  | { kind: "unchanged" };
+
 export type DocumentErrorCode =
   | "file-too-large"
   | "unsupported-encoding"
@@ -90,6 +108,40 @@ export async function selectAndOpenDocument(
  */
 export async function readDocumentContent(id: string): Promise<ArrayBuffer> {
   return invoke<ArrayBuffer>("read_document_content", { id });
+}
+
+/** 采用 Rust 已复核的外部变化候选；内容正文随后经二进制读取通道取得。 */
+export async function prepareExternalReload(
+  id: string,
+): Promise<ExternalReloadReady | null> {
+  return invoke<ExternalReloadReady | null>("prepare_external_reload", { id });
+}
+
+/** 重新复核一次实时重载失败的目标；成功时返回可采用的既有外部 reload 描述。 */
+export async function retryExternalReload(
+  id: string,
+): Promise<ExternalReloadRetry | null> {
+  return invoke<ExternalReloadRetry | null>("retry_external_reload", { id });
+}
+
+/** 聚焦/恢复时复核一个已关联文档，返回与实时监听相同的安全变化信号。 */
+export async function refreshExternalDocument(
+  id: string,
+): Promise<ExternalDocumentChanged | null> {
+  return invoke<ExternalDocumentChanged | null>("refresh_external_document", {
+    id,
+  });
+}
+
+/** 将脏标签的完整编辑快照绑定到 Rust 已复核的外部内容变化候选。 */
+export async function prepareExternalConflict(
+  id: string,
+  content: string,
+): Promise<boolean> {
+  const body = new TextEncoder().encode(content);
+  return invoke<boolean>("prepare_external_conflict", body, {
+    headers: { "textora-document-id": id },
+  });
 }
 
 /**

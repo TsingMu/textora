@@ -34,6 +34,15 @@ const tauriWindowMock = vi.hoisted(() => ({
 
 const tauriEventMock = vi.hoisted(() => ({
   exitRequestedHandler: undefined as (() => void) | undefined,
+  externalChangeHandler: undefined as
+    | ((
+        payload: {
+          documentId: string;
+          kind: "content" | "metadata" | "missing" | "reloadFailed";
+          error?: { code: "file-too-large" | "unsupported-encoding" | "changed-during-read" | "read-failed"; message: string };
+        },
+      ) => void)
+    | undefined,
   unlisten: vi.fn(),
 }));
 const mermaidPreviewMock = vi.hoisted(() => ({
@@ -91,10 +100,14 @@ vi.mock("@tauri-apps/api/window", () => ({
 }));
 vi.mock("@tauri-apps/api/event", () => ({
   listen: async (
-    _event: string,
+    event: string,
     handler: (event: { payload: unknown }) => void,
   ) => {
-    tauriEventMock.exitRequestedHandler = () => handler({ payload: null });
+    if (event === "textora-app-exit-requested") {
+      tauriEventMock.exitRequestedHandler = () => handler({ payload: null });
+    } else if (event === "textora-external-document-changed") {
+      tauriEventMock.externalChangeHandler = (payload) => handler({ payload });
+    }
     return tauriEventMock.unlisten;
   },
 }));
@@ -164,6 +177,23 @@ async function emitAppExitRequest() {
   });
 }
 
+async function emitExternalChange(
+  payload: {
+    documentId: string;
+    kind: "content" | "metadata" | "missing" | "reloadFailed";
+    error?: { code: "file-too-large" | "unsupported-encoding" | "changed-during-read" | "read-failed"; message: string };
+  },
+) {
+  await vi.waitFor(() => {
+    expect(tauriEventMock.externalChangeHandler).toBeTypeOf("function");
+  });
+  await act(async () => {
+    tauriEventMock.externalChangeHandler?.(payload);
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
+
 function resetTauriWindowMock() {
   tauriWindowMock.focusHandler = undefined;
   tauriWindowMock.closeHandler = undefined;
@@ -174,6 +204,7 @@ function resetTauriWindowMock() {
   tauriWindowMock.pendingProgrammaticClose = undefined;
   tauriWindowMock.unlisten.mockReset();
   tauriEventMock.exitRequestedHandler = undefined;
+  tauriEventMock.externalChangeHandler = undefined;
   tauriEventMock.unlisten.mockReset();
 }
 
@@ -225,6 +256,461 @@ describe("App open flow", () => {
 
     expect(container.querySelector(".statusbar")?.textContent).toContain("GBK");
     expect(container.querySelector(".statusbar")?.textContent).toContain("LF");
+  });
+
+  it("reloads a clean open tab when Rust reports an external content change", async () => {
+    await act(async () => root.render(<App />));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+
+    const baseInvoke = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (cmd: string, args?: unknown, options?: unknown) => {
+      if (cmd === "prepare_external_reload") {
+        expect(args).toEqual({ id: "doc-9" });
+        return {
+          kind: "content",
+          descriptor: {
+            id: "doc-9",
+            path: "/tmp/notes.txt",
+            displayName: "notes.txt",
+            byteCount: 16,
+            encoding: { utf8: { bom: false } },
+            lineEnding: "crlf",
+            fingerprint: { sizeBytes: 16, sha256: "new" },
+            readOnly: false,
+          },
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode("Changed outside\r\n").buffer;
+      }
+      return baseInvoke(cmd, args, options);
+    });
+
+    await emitExternalChange({ documentId: "doc-9", kind: "content" });
+    await vi.waitFor(() => {
+      expect(container.querySelector(".cm-content")?.textContent).toContain(
+        "Changed outside",
+      );
+    });
+    expect(container.querySelector(".statusbar")?.textContent).toContain("CRLF");
+  });
+
+  it("updates readonly metadata without reloading editor content", async () => {
+    await act(async () => root.render(<App />));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+
+    const baseInvoke = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (cmd: string, args?: unknown, options?: unknown) => {
+      if (cmd === "prepare_external_reload") {
+        expect(args).toEqual({ id: "doc-9" });
+        return {
+          kind: "metadata",
+          descriptor: {
+            id: "doc-9",
+            path: "/tmp/notes.txt",
+            displayName: "notes.txt",
+            byteCount: 5,
+            encoding: "gbk",
+            lineEnding: "lf",
+            fingerprint: { sizeBytes: 5, sha256: "abc" },
+            readOnly: true,
+          },
+        };
+      }
+      if (cmd === "read_document_content") {
+        throw new Error("metadata must not read content");
+      }
+      return baseInvoke(cmd, args, options);
+    });
+
+    await emitExternalChange({ documentId: "doc-9", kind: "metadata" });
+
+    await vi.waitFor(() => {
+      expect(container.querySelector(".readonly-badge")?.textContent).toContain(
+        "Read-only",
+      );
+    });
+    expect(container.querySelector(".cm-content")?.textContent).toContain("Hello");
+    expect(container.querySelector(".notice-loading")).toBeNull();
+    expect(container.querySelector<HTMLButtonElement>(".save-button")?.disabled).toBe(
+      true,
+    );
+  });
+
+  it("syncs readonly metadata on a dirty tab while preserving local edits", async () => {
+    await act(async () => root.render(<App />));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    const editable = container.querySelector<HTMLElement>(".cm-content")!;
+    await act(async () => {
+      editable.textContent = "Local dirty";
+      editable.dispatchEvent(
+        new InputEvent("input", {
+          bubbles: true,
+          inputType: "insertText",
+          data: "Local dirty",
+        }),
+      );
+    });
+
+    const baseInvoke = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (cmd: string, args?: unknown, options?: unknown) => {
+      if (cmd === "prepare_external_reload") {
+        return {
+          kind: "metadata",
+          descriptor: {
+            id: "doc-9",
+            path: "/tmp/notes.txt",
+            displayName: "notes.txt",
+            byteCount: 5,
+            encoding: "gbk",
+            lineEnding: "lf",
+            fingerprint: { sizeBytes: 5, sha256: "abc" },
+            readOnly: true,
+          },
+        };
+      }
+      return baseInvoke(cmd, args, options);
+    });
+
+    await emitExternalChange({ documentId: "doc-9", kind: "metadata" });
+
+    await vi.waitFor(() => {
+      expect(container.querySelector(".readonly-badge")?.textContent).toContain(
+        "Read-only",
+      );
+    });
+    expect(container.querySelector(".cm-content")?.textContent).toContain("Local dirty");
+    expect(container.querySelector(".statusbar")?.textContent).toContain("Modified");
+    expect(container.querySelector(".notice-conflict")).toBeNull();
+  });
+
+  it("does not adopt an external change while the tab has local edits", async () => {
+    await act(async () => root.render(<App />));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    const editable = container.querySelector<HTMLElement>(".cm-content")!;
+    await act(async () => {
+      editable.textContent = "Local edit";
+      editable.dispatchEvent(
+        new InputEvent("input", {
+          bubbles: true,
+          inputType: "insertText",
+          data: "Local edit",
+        }),
+      );
+    });
+    const baseInvoke = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (cmd: string, args?: unknown, options?: unknown) => {
+      if (cmd === "prepare_external_conflict") return true;
+      if (cmd === "cancel_conflict") return undefined;
+      return baseInvoke(cmd, args, options);
+    });
+    invokeMock.mockClear();
+
+    await emitExternalChange({ documentId: "doc-9", kind: "content" });
+
+    expect(
+      invokeMock.mock.calls.some((call) => call[0] === "prepare_external_reload"),
+    ).toBe(false);
+    expect(
+      invokeMock.mock.calls.some((call) => call[0] === "prepare_external_conflict"),
+    ).toBe(true);
+    expect(container.querySelector(".cm-content")?.textContent).toContain("Local edit");
+    expect(container.querySelector(".notice-conflict")).not.toBeNull();
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".notice-action")?.click();
+    });
+    expect(
+      invokeMock.mock.calls.some((call) => call[0] === "cancel_conflict"),
+    ).toBe(true);
+    expect(container.querySelector(".notice-conflict")).toBeNull();
+    expect(container.querySelector(".cm-content")?.textContent).toContain("Local edit");
+  });
+
+  it("unlocks the dirty tab when the external candidate is already stale", async () => {
+    await act(async () => root.render(<App />));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    const editable = container.querySelector<HTMLElement>(".cm-content")!;
+    await act(async () => {
+      editable.textContent = "Keep this edit";
+      editable.dispatchEvent(
+        new InputEvent("input", {
+          bubbles: true,
+          inputType: "insertText",
+          data: "Keep this edit",
+        }),
+      );
+    });
+    const baseInvoke = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (cmd: string, args?: unknown, options?: unknown) => {
+      if (cmd === "prepare_external_conflict") return false;
+      return baseInvoke(cmd, args, options);
+    });
+
+    await emitExternalChange({ documentId: "doc-9", kind: "content" });
+
+    expect(container.querySelector(".notice-conflict")).toBeNull();
+    expect(container.querySelector(".cm-content")?.textContent).toContain("Keep this edit");
+    expect(
+      container.querySelector<HTMLElement>(".cm-content")?.getAttribute("contenteditable"),
+    ).toBe("true");
+  });
+
+  it("routes an external missing event into the missing-file keep flow", async () => {
+    await act(async () => root.render(<App />));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    const baseInvoke = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (cmd: string, args?: unknown, options?: unknown) => {
+      if (cmd === "check_target_exists") return false;
+      if (cmd === "close_document") return undefined;
+      return baseInvoke(cmd, args, options);
+    });
+
+    await emitExternalChange({ documentId: "doc-9", kind: "missing" });
+    await vi.waitFor(() => {
+      expect(
+        container.querySelector('[aria-label="File missing on disk"]'),
+      ).not.toBeNull();
+    });
+    expect(container.querySelector(".confirm-message")?.textContent).toContain(
+      "notes.txt",
+    );
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".confirm-cancel")?.click();
+      await Promise.resolve();
+    });
+
+    expect(
+      invokeMock.mock.calls.find((call) => call[0] === "close_document"),
+    ).toEqual(["close_document", { id: "doc-9" }]);
+    expect(container.querySelector('[aria-label="File missing on disk"]')).toBeNull();
+    expect(container.querySelector(".statusbar")?.textContent).toContain(
+      "Modified",
+    );
+  });
+
+  it("binds an external missing prompt to a background tab", async () => {
+    let openCount = 0;
+    invokeMock.mockImplementation(async (cmd: string, args?: { id?: string }) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        openCount += 1;
+        const id = `doc-${openCount}`;
+        return {
+          id,
+          path: `/tmp/${id}.txt`,
+          displayName: `${id}.txt`,
+          byteCount: 5,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 5, sha256: id },
+          readOnly: false,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode(args?.id ?? "").buffer;
+      }
+      if (cmd === "check_target_exists") {
+        expect(args).toEqual({ id: "doc-1" });
+        return false;
+      }
+      if (cmd === "close_document") return undefined;
+      if (cmd === "prepare_save_as") {
+        return { fileName: "Untitled", directory: null };
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await act(async () => root.render(<App />));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    expect(container.querySelector(".document-tab.is-active")?.textContent).toContain(
+      "doc-2.txt",
+    );
+
+    await emitExternalChange({ documentId: "doc-1", kind: "missing" });
+    await vi.waitFor(() => {
+      expect(container.querySelector(".confirm-message")?.textContent).toContain(
+        "doc-1.txt",
+      );
+    });
+    expect(container.querySelector(".document-tab.is-active")?.textContent).toContain(
+      "doc-2.txt",
+    );
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".confirm-discard")?.click();
+      await Promise.resolve();
+    });
+
+    expect(
+      invokeMock.mock.calls.find((call) => call[0] === "close_document"),
+    ).toEqual(["close_document", { id: "doc-1" }]);
+    expect(container.querySelector('[aria-label="File missing on disk"]')).toBeNull();
+    expect(container.querySelector(".document-tab.is-active")?.textContent).toContain(
+      "doc-2.txt",
+    );
+    const tabLabels = Array.from(
+      container.querySelectorAll(".document-tab"),
+      (tab) => tab.textContent ?? "",
+    );
+    expect(tabLabels.join(" ")).not.toContain("doc-1.txt");
+  });
+
+  it("ignores a stale external missing event after the target exists again", async () => {
+    await act(async () => root.render(<App />));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    const baseInvoke = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (cmd: string, args?: unknown, options?: unknown) => {
+      if (cmd === "check_target_exists") return true;
+      return baseInvoke(cmd, args, options);
+    });
+
+    await emitExternalChange({ documentId: "doc-9", kind: "missing" });
+
+    expect(container.querySelector('[aria-label="File missing on disk"]')).toBeNull();
+    expect(
+      invokeMock.mock.calls.some((call) => call[0] === "close_document"),
+    ).toBe(false);
+    expect(container.querySelector(".document-tab.is-active")?.textContent).toContain(
+      "notes.txt",
+    );
+  });
+
+  it("shows a retryable external reload failure and adopts the retry result", async () => {
+    await act(async () => root.render(<App />));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    const baseInvoke = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (cmd: string, args?: unknown, options?: unknown) => {
+      if (cmd === "retry_external_reload") {
+        expect(args).toEqual({ id: "doc-9" });
+        return {
+          kind: "ready",
+          reload: {
+            kind: "content",
+            descriptor: {
+              id: "doc-9",
+              path: "/tmp/notes.txt",
+              displayName: "notes.txt",
+              byteCount: 14,
+              encoding: { utf8: { bom: false } },
+              lineEnding: "lf",
+              fingerprint: { sizeBytes: 14, sha256: "retry" },
+              readOnly: false,
+            },
+          },
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode("Retry content\n").buffer;
+      }
+      return baseInvoke(cmd, args, options);
+    });
+
+    await emitExternalChange({
+      documentId: "doc-9",
+      kind: "reloadFailed",
+      error: { code: "unsupported-encoding", message: "invalid" },
+    });
+
+    await vi.waitFor(() => {
+      expect(container.querySelector(".notice-external-reload")?.textContent).toContain(
+        "not valid UTF-8",
+      );
+    });
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".notice-external-reload .notice-action")?.click();
+      await Promise.resolve();
+    });
+
+    await vi.waitFor(() => {
+      expect(container.querySelector(".cm-content")?.textContent).toContain(
+        "Retry content",
+      );
+    });
+    expect(container.querySelector(".notice-external-reload")).toBeNull();
+  });
+
+  it("keeps an external reload failure bound to its background tab", async () => {
+    let openCount = 0;
+    invokeMock.mockImplementation(async (cmd: string, args?: { id?: string }) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        openCount += 1;
+        const id = `doc-${openCount}`;
+        return {
+          id,
+          path: `/tmp/${id}.txt`,
+          displayName: `${id}.txt`,
+          byteCount: 5,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 5, sha256: id },
+          readOnly: false,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode(args?.id ?? "").buffer;
+      }
+      if (cmd === "prepare_save_as") {
+        return { fileName: "Untitled", directory: null };
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await act(async () => root.render(<App />));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    expect(container.querySelector(".document-tab.is-active")?.textContent).toContain(
+      "doc-2.txt",
+    );
+
+    await emitExternalChange({
+      documentId: "doc-1",
+      kind: "reloadFailed",
+      error: { code: "changed-during-read", message: "changed" },
+    });
+    expect(container.querySelector(".notice-external-reload")).toBeNull();
+
+    await act(async () => {
+      container.querySelectorAll<HTMLButtonElement>(".document-tab-select")[1]?.click();
+    });
+    expect(container.querySelector(".document-tab.is-active")?.textContent).toContain(
+      "doc-1.txt",
+    );
+    expect(container.querySelector(".notice-external-reload")?.textContent).toContain(
+      "changed while being read",
+    );
   });
 
   it("keeps the current document when the dialog is cancelled", async () => {
@@ -486,6 +972,345 @@ describe("App tab session", () => {
     expect(container.querySelector(".cm-content")?.textContent ?? "").toContain(
       "second tab",
     );
+  });
+
+  it("refreshes the matching background tab without changing the active tab", async () => {
+    let openCount = 0;
+    let externalRead = false;
+    invokeMock.mockImplementation(async (cmd: string, args?: { id?: string }) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        openCount += 1;
+        const id = `doc-${openCount}`;
+        return {
+          id,
+          path: `/tmp/${id}.txt`,
+          displayName: `${id}.txt`,
+          byteCount: 5,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 5, sha256: id },
+          readOnly: false,
+        };
+      }
+      if (cmd === "prepare_external_reload") {
+        externalRead = true;
+        return {
+          kind: "content",
+          descriptor: {
+            id: "doc-1",
+            path: "/tmp/doc-1.txt",
+            displayName: "doc-1.txt",
+            byteCount: 8,
+            encoding: { utf8: { bom: false } },
+            lineEnding: "lf",
+            fingerprint: { sizeBytes: 8, sha256: "changed" },
+            readOnly: false,
+          },
+        };
+      }
+      if (cmd === "read_document_content") {
+        const text = externalRead && args?.id === "doc-1" ? "updated 1" : args?.id;
+        return new TextEncoder().encode(text).buffer;
+      }
+      if (cmd === "prepare_save_as") {
+        return { fileName: "Untitled", directory: null };
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await act(async () => root.render(<App />));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    expect(container.querySelector(".document-tab.is-active")?.textContent).toContain(
+      "doc-2.txt",
+    );
+
+    await emitExternalChange({ documentId: "doc-1", kind: "content" });
+    expect(container.querySelector(".document-tab.is-active")?.textContent).toContain(
+      "doc-2.txt",
+    );
+    await act(async () => {
+      container.querySelectorAll<HTMLButtonElement>(".document-tab-select")[1]?.click();
+    });
+    await vi.waitFor(() => {
+      expect(container.querySelector(".cm-content")?.textContent).toContain("updated 1");
+    });
+  });
+
+  it("updates readonly metadata on a background tab without changing the active tab", async () => {
+    let openCount = 0;
+    invokeMock.mockImplementation(async (cmd: string, args?: { id?: string }) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        openCount += 1;
+        const id = `doc-${openCount}`;
+        return {
+          id,
+          path: `/tmp/${id}.txt`,
+          displayName: `${id}.txt`,
+          byteCount: 5,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 5, sha256: id },
+          readOnly: false,
+        };
+      }
+      if (cmd === "prepare_external_reload") {
+        expect(args).toEqual({ id: "doc-1" });
+        return {
+          kind: "metadata",
+          descriptor: {
+            id: "doc-1",
+            path: "/tmp/doc-1.txt",
+            displayName: "doc-1.txt",
+            byteCount: 5,
+            encoding: { utf8: { bom: false } },
+            lineEnding: "lf",
+            fingerprint: { sizeBytes: 5, sha256: "doc-1" },
+            readOnly: true,
+          },
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode(args?.id ?? "").buffer;
+      }
+      if (cmd === "prepare_save_as") {
+        return { fileName: "Untitled", directory: null };
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await act(async () => root.render(<App />));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+
+    await emitExternalChange({ documentId: "doc-1", kind: "metadata" });
+    expect(container.querySelector(".document-tab.is-active")?.textContent).toContain(
+      "doc-2.txt",
+    );
+    expect(container.querySelector(".readonly-badge")).toBeNull();
+
+    await act(async () => {
+      container.querySelectorAll<HTMLButtonElement>(".document-tab-select")[1]?.click();
+    });
+    expect(container.querySelector(".document-tab.is-active")?.textContent).toContain(
+      "doc-1.txt",
+    );
+    expect(container.querySelector(".readonly-badge")?.textContent).toContain(
+      "Read-only",
+    );
+  });
+
+  it("refreshes every associated tab on focus and updates a changed background tab", async () => {
+    let openCount = 0;
+    invokeMock.mockImplementation(async (cmd: string, args?: { id?: string }) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        openCount += 1;
+        const id = `doc-${openCount}`;
+        return {
+          id,
+          path: `/tmp/${id}.txt`,
+          displayName: `${id}.txt`,
+          byteCount: 5,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 5, sha256: id },
+          readOnly: false,
+        };
+      }
+      if (cmd === "refresh_external_document") {
+        if (args?.id === "doc-1") {
+          return { documentId: "doc-1", kind: "content" };
+        }
+        return null;
+      }
+      if (cmd === "prepare_external_reload") {
+        return {
+          kind: "content",
+          descriptor: {
+            id: "doc-1",
+            path: "/tmp/doc-1.txt",
+            displayName: "doc-1.txt",
+            byteCount: 13,
+            encoding: { utf8: { bom: false } },
+            lineEnding: "lf",
+            fingerprint: { sizeBytes: 13, sha256: "changed" },
+            readOnly: false,
+          },
+        };
+      }
+      if (cmd === "read_document_content") {
+        const text = args?.id === "doc-1" ? "focus update\n" : args?.id;
+        return new TextEncoder().encode(text).buffer;
+      }
+      if (cmd === "prepare_save_as") {
+        return { fileName: "Untitled", directory: null };
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await act(async () => root.render(<App />));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+
+    await emitWindowFocus();
+    await vi.waitFor(() => {
+      expect(
+        invokeMock.mock.calls.filter((call) => call[0] === "refresh_external_document"),
+      ).toHaveLength(2);
+    });
+    expect(container.querySelector(".document-tab.is-active")?.textContent).toContain(
+      "doc-2.txt",
+    );
+
+    await act(async () => {
+      container.querySelectorAll<HTMLButtonElement>(".document-tab-select")[1]?.click();
+    });
+    await vi.waitFor(() => {
+      expect(container.querySelector(".cm-content")?.textContent).toContain(
+        "focus update",
+      );
+    });
+  });
+
+  it("routes a focused refresh for a dirty background tab into conflict", async () => {
+    let openCount = 0;
+    invokeMock.mockImplementation(async (cmd: string, args?: { id?: string }) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        openCount += 1;
+        const id = `doc-${openCount}`;
+        return {
+          id,
+          path: `/tmp/${id}.txt`,
+          displayName: `${id}.txt`,
+          byteCount: 5,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 5, sha256: id },
+          readOnly: false,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode(args?.id ?? "").buffer;
+      }
+      if (cmd === "refresh_external_document") {
+        return args?.id === "doc-1"
+          ? { documentId: "doc-1", kind: "content" }
+          : null;
+      }
+      if (cmd === "prepare_external_conflict") return true;
+      if (cmd === "prepare_save_as") {
+        return { fileName: "Untitled", directory: null };
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await act(async () => root.render(<App />));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    await act(async () => {
+      container.querySelectorAll<HTMLButtonElement>(".document-tab-select")[1]?.click();
+    });
+    await act(async () => editContent("dirty from focus"));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+
+    await emitWindowFocus();
+    expect(container.querySelector(".document-tab.is-active")?.textContent).toContain(
+      "doc-2.txt",
+    );
+    expect(container.querySelector(".notice-conflict")).toBeNull();
+
+    await act(async () => {
+      container.querySelectorAll<HTMLButtonElement>(".document-tab-select")[1]?.click();
+    });
+    expect(container.querySelector(".cm-content")?.textContent).toContain(
+      "dirty from focus",
+    );
+    expect(container.querySelector(".notice-conflict")).not.toBeNull();
+  });
+
+  it("binds an external conflict to a dirty background tab", async () => {
+    let openCount = 0;
+    invokeMock.mockImplementation(async (cmd: string, args?: { id?: string }) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        openCount += 1;
+        const id = `doc-${openCount}`;
+        return {
+          id,
+          path: `/tmp/${id}.txt`,
+          displayName: `${id}.txt`,
+          byteCount: 5,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 5, sha256: id },
+          readOnly: false,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode(args?.id ?? "").buffer;
+      }
+      if (cmd === "prepare_external_conflict") return true;
+      if (cmd === "prepare_save_as") {
+        return { fileName: "Untitled", directory: null };
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await act(async () => root.render(<App />));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    await act(async () => {
+      container.querySelectorAll<HTMLButtonElement>(".document-tab-select")[1]?.click();
+    });
+    await act(async () => editContent("dirty doc one"));
+    await act(async () => {
+      container.querySelectorAll<HTMLButtonElement>(".document-tab-select")[2]?.click();
+    });
+
+    await emitExternalChange({ documentId: "doc-1", kind: "content" });
+    expect(container.querySelector(".document-tab.is-active")?.textContent).toContain(
+      "doc-2.txt",
+    );
+    expect(container.querySelector(".notice-conflict")).toBeNull();
+
+    await act(async () => {
+      container.querySelectorAll<HTMLButtonElement>(".document-tab-select")[1]?.click();
+    });
+    expect(container.querySelector(".cm-content")?.textContent).toContain("dirty doc one");
+    expect(container.querySelector(".notice-conflict")).not.toBeNull();
   });
 
   it("closes clean tabs and creates a fresh Untitled after the last tab closes", async () => {
@@ -1693,9 +2518,9 @@ describe("App save entry", () => {
           resolveSelection = resolve;
         });
       }
-      if (cmd === "check_target_exists") {
+      if (cmd === "refresh_external_document") {
         return Promise.reject(
-          new Error("existence check must not run in this state"),
+          new Error("external refresh must not run in this state"),
         );
       }
       return Promise.reject(new Error(`unexpected invoke ${cmd}`));
@@ -1708,7 +2533,7 @@ describe("App save entry", () => {
     });
     await emitWindowFocus();
     expect(
-      invokeMock.mock.calls.filter((call) => call[0] === "check_target_exists"),
+      invokeMock.mock.calls.filter((call) => call[0] === "refresh_external_document"),
     ).toHaveLength(0);
 
     await act(async () => {
@@ -1736,6 +2561,9 @@ describe("App save entry", () => {
       }
       if (cmd === "read_document_content") {
         return new TextEncoder().encode("Hello").buffer;
+      }
+      if (cmd === "refresh_external_document") {
+        return { documentId: "doc-retry", kind: "missing" };
       }
       if (cmd === "check_target_exists") {
         checkCount += 1;
@@ -1767,36 +2595,31 @@ describe("App save entry", () => {
     expect(checkCount).toBe(2);
   });
 
-  it("deduplicates focus checks and ignores a missing result for an old document", async () => {
-    let selectionCount = 0;
-    let resolveExistence: ((exists: boolean) => void) | undefined;
+  it("deduplicates focus refreshes while one is already running", async () => {
+    let resolveRefresh: ((change: null) => void) | undefined;
     invokeMock.mockImplementation(
       (cmd: string, args?: { id?: string }) => {
         if (cmd === "health_check") {
           return Promise.resolve({ service: "document-core", version: "0.1.0" });
         }
         if (cmd === "select_and_open_document") {
-          selectionCount += 1;
-          const suffix = selectionCount === 1 ? "a" : "b";
           return Promise.resolve({
-            id: `doc-${suffix}`,
-            path: `/tmp/${suffix}.txt`,
-            displayName: `${suffix}.txt`,
+            id: "doc-focus",
+            path: "/tmp/focus.txt",
+            displayName: "focus.txt",
             byteCount: 1,
             encoding: { utf8: { bom: false } },
             lineEnding: "lf",
-            fingerprint: { sizeBytes: 1, sha256: suffix },
+            fingerprint: { sizeBytes: 1, sha256: "focus" },
             readOnly: false,
           });
         }
         if (cmd === "read_document_content") {
-          return Promise.resolve(
-            new TextEncoder().encode(args?.id === "doc-a" ? "A" : "B").buffer,
-          );
+          return Promise.resolve(new TextEncoder().encode(args?.id).buffer);
         }
-        if (cmd === "check_target_exists") {
-          return new Promise<boolean>((resolve) => {
-            resolveExistence = resolve;
+        if (cmd === "refresh_external_document") {
+          return new Promise<null>((resolve) => {
+            resolveRefresh = resolve;
           });
         }
         return Promise.reject(new Error(`unexpected invoke ${cmd}`));
@@ -1810,23 +2633,16 @@ describe("App save entry", () => {
     await emitWindowFocus();
     await emitWindowFocus();
     expect(
-      invokeMock.mock.calls.filter((call) => call[0] === "check_target_exists"),
+      invokeMock.mock.calls.filter((call) => call[0] === "refresh_external_document"),
     ).toHaveLength(1);
 
     await act(async () => {
-      container.querySelector<HTMLButtonElement>(".open-button")?.click();
-    });
-    expect(container.querySelector(".document-tab.is-active")?.textContent).toContain(
-      "b.txt",
-    );
-
-    await act(async () => {
-      resolveExistence?.(false);
+      resolveRefresh?.(null);
       await Promise.resolve();
     });
     expect(container.querySelector('[aria-label="File missing on disk"]')).toBeNull();
     expect(container.querySelector(".document-tab.is-active")?.textContent).toContain(
-      "b.txt",
+      "focus.txt",
     );
   });
 
@@ -1849,6 +2665,9 @@ describe("App save entry", () => {
       }
       if (cmd === "read_document_content") {
         return new TextEncoder().encode("Hello").buffer;
+      }
+      if (cmd === "refresh_external_document") {
+        return { documentId: "doc-missing", kind: "missing" };
       }
       if (cmd === "check_target_exists") {
         return false;
@@ -1914,6 +2733,9 @@ describe("App save entry", () => {
       }
       if (cmd === "read_document_content") {
         return new TextEncoder().encode("Hello").buffer;
+      }
+      if (cmd === "refresh_external_document") {
+        return { documentId: "doc-missing", kind: "missing" };
       }
       if (cmd === "check_target_exists") {
         return false;

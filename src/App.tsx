@@ -1,18 +1,20 @@
 import { useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import "./App.css";
 import appIconUrl from "../icon.png";
 import type { CloseRequestedEvent } from "@tauri-apps/api/window";
 import {
   cancelOpen,
   cancelSave,
+  commitExternalMetadata,
   commitOpenedDocument,
   commitSavedAs,
   commitSavedDocument,
-  createNewDocument,
   failOpen,
   failSave,
   isBusy,
   requestSave,
+  requestExternalConflict,
   startLoading,
   updateDocumentContent,
   type DocumentSession,
@@ -49,15 +51,21 @@ import {
   lineEndingDisplayName,
   lineEndingToChoice,
   pickSaveDirectory,
+  prepareExternalConflict,
+  prepareExternalReload,
   prepareSaveAs,
   previewSaveTarget,
   readDocumentContent,
+  refreshExternalDocument,
   reloadFromConflict,
   requestAppExit,
+  retryExternalReload,
   saveAsAt,
   saveDocument,
   selectAndOpenDocument,
   type DocumentCommandError,
+  EXTERNAL_DOCUMENT_CHANGED_EVENT,
+  type ExternalDocumentChanged,
   type EncodingChoice,
   type HealthStatus,
   type KnownDocumentPath,
@@ -77,6 +85,20 @@ import {
 const initialTabs = createInitialTabSession();
 type ConflictOperationStatus = "idle" | "canceling" | "reloading" | "overwriting";
 type FileMissingOperationStatus = "idle" | "keeping" | "discarding";
+type FileMissingTarget = {
+  tabId: string;
+  documentId: string;
+  path: string;
+  displayName: string;
+};
+type ExternalReloadErrorTarget = {
+  tabId: string;
+  documentId: string;
+  path: string;
+  displayName: string;
+  error: DocumentCommandError;
+  status: "idle" | "retrying";
+};
 type SaveAsPanelStatus =
   | "preparing"
   | "idle"
@@ -142,11 +164,15 @@ function App() {
     replacePending: false,
     errorMessage: null,
   });
-  const [fileMissingPending, setFileMissingPending] = useState(false);
+  const [fileMissingPending, setFileMissingPending] =
+    useState<FileMissingTarget | null>(null);
   const [fileMissingOperation, setFileMissingOperation] = useState<{
     status: FileMissingOperationStatus;
     errorMessage: string | null;
   }>({ status: "idle", errorMessage: null });
+  const [externalReloadErrors, setExternalReloadErrors] = useState<
+    Record<string, ExternalReloadErrorTarget>
+  >({});
   const [closeConfirmPending, setCloseConfirmPending] = useState(false);
   const [closeConfirmError, setCloseConfirmError] = useState<string | null>(null);
   const [formatJsonNotice, setFormatJsonNotice] = useState<string | null>(null);
@@ -171,14 +197,10 @@ function App() {
   }>(saveFormat);
   const sessionRef = useRef(session);
   const tabSessionRef = useRef(tabSession);
-  const fileMissingPendingRef = useRef(fileMissingPending);
+  const fileMissingPendingRef = useRef<FileMissingTarget | null>(
+    fileMissingPending,
+  );
   const fileMissingResolvingRef = useRef(false);
-  const targetCheckRevisionRef = useRef(0);
-  const targetCheckInFlightRef = useRef<{
-    revision: number;
-    documentId: string;
-    path: string;
-  } | null>(null);
   const busyRef = useRef(false);
   const closeConfirmPendingRef = useRef(false);
   const closeIntentRef = useRef<CloseIntent | null>(null);
@@ -187,6 +209,8 @@ function App() {
     validDocumentIds: readonly string[];
   } | null>(null);
   const saveAsPanelRevisionRef = useRef(0);
+  const externalReloadsRef = useRef(new Set<string>());
+  const focusRefreshesRef = useRef(new Set<string>());
   const saveFileNameInputRef = useRef<HTMLInputElement>(null);
   sessionRef.current = session;
   tabSessionRef.current = tabSession;
@@ -210,6 +234,117 @@ function App() {
     update: (document: DocumentSession) => DocumentSession,
   ) {
     setTabSession((current) => updateDocumentByTabId(current, tabId, update));
+  }
+
+  function showFileMissing(target: FileMissingTarget) {
+    fileMissingPendingRef.current = target;
+    setFileMissingOperation({ status: "idle", errorMessage: null });
+    setFileMissingPending(target);
+  }
+
+  function showFileMissingForTab(
+    tabId: string,
+    documentId: string,
+    expectedPath?: string,
+    options: { allowBusy?: boolean; allowSaveError?: boolean } = {},
+  ): boolean {
+    if (fileMissingPendingRef.current !== null) {
+      return false;
+    }
+    const tab = tabSessionRef.current.tabs.find(
+      (item) => item.tabId === tabId && item.document.id === documentId,
+    );
+    if (
+      tab === undefined ||
+      tab.document.path === null ||
+      (expectedPath !== undefined && tab.document.path !== expectedPath) ||
+      (!options.allowBusy && isBusy(tab.document)) ||
+      (!options.allowSaveError && tab.document.saveStatus === "error")
+    ) {
+      return false;
+    }
+    showFileMissing({
+      tabId,
+      documentId,
+      path: tab.document.path,
+      displayName: tab.document.displayName,
+    });
+    return true;
+  }
+
+  function clearExternalReloadError(documentId: string) {
+    setExternalReloadErrors((current) => {
+      if (!(documentId in current)) return current;
+      const next = { ...current };
+      delete next[documentId];
+      return next;
+    });
+  }
+
+  function showExternalReloadError(
+    tabId: string,
+    documentId: string,
+    error: DocumentCommandError,
+    expectedPath?: string,
+  ): boolean {
+    const tab = tabSessionRef.current.tabs.find(
+      (item) => item.tabId === tabId && item.document.id === documentId,
+    );
+    if (
+      tab === undefined ||
+      tab.document.path === null ||
+      (expectedPath !== undefined && tab.document.path !== expectedPath) ||
+      tab.document.isDirty ||
+      isBusy(tab.document)
+    ) {
+      clearExternalReloadError(documentId);
+      return false;
+    }
+    const path = tab.document.path;
+    setExternalReloadErrors((current) => ({
+      ...current,
+      [documentId]: {
+        tabId,
+        documentId,
+        path,
+        displayName: tab.document.displayName,
+        error,
+        status: "idle",
+      },
+    }));
+    return true;
+  }
+
+  async function applyExternalReloadReady(
+    tabId: string,
+    documentId: string,
+    ready: Awaited<ReturnType<typeof prepareExternalReload>>,
+  ) {
+    if (ready === null) {
+      updateTabDocument(tabId, (document) =>
+        document.id === documentId ? cancelOpen(document) : document,
+      );
+      return;
+    }
+    if (ready.kind === "metadata") {
+      updateTabDocument(tabId, (document) =>
+        document.id === documentId &&
+        document.openStatus === "loading" &&
+        !document.isDirty
+          ? commitExternalMetadata(document, ready.descriptor)
+          : document,
+      );
+      return;
+    }
+    const buffer = await readDocumentContent(documentId);
+    const content = new TextDecoder().decode(buffer);
+    updateTabDocument(tabId, (document) =>
+      document.id === documentId &&
+      document.openStatus === "loading" &&
+      !document.isDirty
+        ? commitOpenedDocument(document, ready.descriptor, content)
+        : document,
+    );
   }
 
   function updateTabSession(
@@ -240,6 +375,217 @@ function App() {
         documentId: tab.document.id,
         content: tab.document.content,
       }));
+  }
+
+  function handleExternalDocumentChange(payload: ExternalDocumentChanged) {
+    const tab = tabSessionRef.current.tabs.find(
+      (item) => item.document.id === payload.documentId,
+    );
+    if (
+      tab === undefined ||
+      tab.document.path === null ||
+      isBusy(tab.document) ||
+      externalReloadsRef.current.has(payload.documentId)
+    ) {
+      return;
+    }
+
+    const tabId = tab.tabId;
+    if (payload.kind === "missing") {
+      if (
+        tab.document.saveStatus === "error" ||
+        fileMissingPendingRef.current !== null
+      ) {
+        return;
+      }
+      const path = tab.document.path;
+      externalReloadsRef.current.add(payload.documentId);
+      void checkTargetExists(payload.documentId)
+        .then((exists) => {
+          if (exists) {
+            return;
+          }
+          showFileMissingForTab(tabId, payload.documentId, path);
+        })
+        .catch(() => {
+          // 保留当前内容；下次实时事件或聚焦复核可重试缺失确认。
+        })
+        .finally(() => {
+          externalReloadsRef.current.delete(payload.documentId);
+        });
+      return;
+    }
+    if (payload.kind === "reloadFailed") {
+      if (payload.error === undefined) {
+        return;
+      }
+      showExternalReloadError(
+        tabId,
+        payload.documentId,
+        payload.error,
+        tab.document.path,
+      );
+      return;
+    }
+    if (payload.kind === "metadata") {
+      const path = tab.document.path;
+      externalReloadsRef.current.add(payload.documentId);
+      clearExternalReloadError(payload.documentId);
+      void prepareExternalReload(payload.documentId)
+        .then((ready) => {
+          if (ready?.kind !== "metadata") {
+            return;
+          }
+          updateTabDocument(tabId, (document) =>
+            document.id === payload.documentId &&
+            document.path === path &&
+            !isBusy(document)
+              ? commitExternalMetadata(document, ready.descriptor)
+              : document,
+          );
+        })
+        .finally(() => {
+          externalReloadsRef.current.delete(payload.documentId);
+        });
+      return;
+    }
+    if (tab.document.isDirty) {
+      if (payload.kind !== "content") {
+        return;
+      }
+      const snapshot = tab.document.content;
+      externalReloadsRef.current.add(payload.documentId);
+      let accepted = false;
+      flushSync(() => {
+        updateTabSession((current) =>
+          updateDocumentByTabId(current, tabId, (document) => {
+            if (
+              document.id !== payload.documentId ||
+              document.content !== snapshot ||
+              !document.isDirty ||
+              isBusy(document)
+            ) {
+              return document;
+            }
+            accepted = true;
+            return requestExternalConflict(document);
+          }),
+        );
+      });
+      if (!accepted) {
+        externalReloadsRef.current.delete(payload.documentId);
+        return;
+      }
+
+      void prepareExternalConflict(payload.documentId, snapshot)
+        .then((established) => {
+          updateTabDocument(tabId, (document) => {
+            if (
+              document.id !== payload.documentId ||
+              document.content !== snapshot ||
+              document.saveStatus !== "saving"
+            ) {
+              return document;
+            }
+            return established
+              ? failSave(document, {
+                  code: "save-conflict-content-changed",
+                  message: "file changed on disk",
+                })
+              : cancelSave(document);
+          });
+        })
+        .catch(() => {
+          updateTabDocument(tabId, (document) =>
+            document.id === payload.documentId &&
+            document.content === snapshot &&
+            document.saveStatus === "saving"
+              ? cancelSave(document)
+              : document,
+          );
+        })
+        .finally(() => {
+          externalReloadsRef.current.delete(payload.documentId);
+        });
+      return;
+    }
+
+    externalReloadsRef.current.add(payload.documentId);
+    clearExternalReloadError(payload.documentId);
+    let accepted = false;
+    flushSync(() => {
+      updateTabSession((current) =>
+        updateDocumentByTabId(current, tabId, (document) => {
+          if (
+            document.id !== payload.documentId ||
+            document.isDirty ||
+            isBusy(document)
+          ) {
+            return document;
+          }
+          accepted = true;
+          return startLoading(document);
+        }),
+      );
+    });
+    if (!accepted) {
+      externalReloadsRef.current.delete(payload.documentId);
+      return;
+    }
+
+    void prepareExternalReload(payload.documentId)
+      .then((ready) =>
+        applyExternalReloadReady(tabId, payload.documentId, ready),
+      )
+      .catch(() => {
+        updateTabDocument(tabId, (document) =>
+          document.id === payload.documentId &&
+          document.openStatus === "loading"
+            ? cancelOpen(document)
+            : document,
+        );
+      })
+      .finally(() => {
+        externalReloadsRef.current.delete(payload.documentId);
+      });
+  }
+
+  function refreshAllExternalDocuments(cancelled: () => boolean) {
+    for (const tab of tabSessionRef.current.tabs) {
+      const { document } = tab;
+      if (
+        document.path === null ||
+        isBusy(document) ||
+        focusRefreshesRef.current.has(document.id)
+      ) {
+        continue;
+      }
+      const request = {
+        tabId: tab.tabId,
+        documentId: document.id,
+        path: document.path,
+      };
+      focusRefreshesRef.current.add(request.documentId);
+      void refreshExternalDocument(request.documentId)
+        .then((change) => {
+          if (cancelled() || change === null) {
+            return;
+          }
+          const latest = tabSessionRef.current.tabs.find(
+            (item) => item.tabId === request.tabId,
+          );
+          if (
+            latest?.document.id !== request.documentId ||
+            latest.document.path !== request.path
+          ) {
+            return;
+          }
+          handleExternalDocumentChange(change);
+        })
+        .finally(() => {
+          focusRefreshesRef.current.delete(request.documentId);
+        });
+    }
   }
 
   useEffect(() => {
@@ -284,65 +630,7 @@ function App() {
     let unlistenClose: (() => void) | undefined;
     let unlistenExit: (() => void) | undefined;
     let unlistenFocus: (() => void) | undefined;
-
-    const checkCurrentTarget = () => {
-      const current = sessionRef.current;
-      if (
-        current.path === null ||
-        isBusy(current) ||
-        current.saveStatus === "error" ||
-        fileMissingPendingRef.current
-      ) {
-        return;
-      }
-
-      const existing = targetCheckInFlightRef.current;
-      if (
-        existing?.documentId === current.id &&
-        existing.path === current.path
-      ) {
-        return;
-      }
-
-      const revision = targetCheckRevisionRef.current + 1;
-      targetCheckRevisionRef.current = revision;
-      const request = {
-        revision,
-        documentId: current.id,
-        path: current.path,
-      };
-      targetCheckInFlightRef.current = request;
-
-      void checkTargetExists(request.documentId)
-        .then((exists) => {
-          if (
-            cancelled ||
-            targetCheckInFlightRef.current?.revision !== request.revision
-          ) {
-            return;
-          }
-          targetCheckInFlightRef.current = null;
-          const latest = sessionRef.current;
-          if (
-            exists ||
-            latest.id !== request.documentId ||
-            latest.path !== request.path ||
-            isBusy(latest) ||
-            latest.saveStatus === "error" ||
-            fileMissingPendingRef.current
-          ) {
-            return;
-          }
-          fileMissingPendingRef.current = true;
-          setFileMissingOperation({ status: "idle", errorMessage: null });
-          setFileMissingPending(true);
-        })
-        .catch(() => {
-          if (targetCheckInFlightRef.current?.revision === request.revision) {
-            targetCheckInFlightRef.current = null;
-          }
-        });
-    };
+    let unlistenExternalChange: (() => void) | undefined;
 
     (async () => {
       try {
@@ -418,10 +706,20 @@ function App() {
         }
         unlistenExit = stopListeningExit;
 
+        const stopListeningExternalChange = await listen<ExternalDocumentChanged>(
+          EXTERNAL_DOCUMENT_CHANGED_EVENT,
+          ({ payload }) => handleExternalDocumentChange(payload),
+        );
+        if (cancelled) {
+          stopListeningExternalChange();
+          return;
+        }
+        unlistenExternalChange = stopListeningExternalChange;
+
         const stopListeningFocus = await getCurrentWindow().onFocusChanged(
           ({ payload: focused }) => {
             if (focused && !cancelled) {
-              checkCurrentTarget();
+              refreshAllExternalDocuments(() => cancelled);
             }
           },
         );
@@ -437,11 +735,10 @@ function App() {
 
     return () => {
       cancelled = true;
-      targetCheckRevisionRef.current += 1;
-      targetCheckInFlightRef.current = null;
       unlistenClose?.();
       unlistenExit?.();
       unlistenFocus?.();
+      unlistenExternalChange?.();
     };
   }, []);
 
@@ -562,11 +859,12 @@ function App() {
           return;
         }
         if (error.code === "save-conflict-target-missing") {
-          targetCheckRevisionRef.current += 1;
-          targetCheckInFlightRef.current = null;
-          fileMissingPendingRef.current = true;
-          setFileMissingOperation({ status: "idle", errorMessage: null });
-          setFileMissingPending(true);
+          showFileMissingForTab(
+            activeIntent.tabId,
+            activeIntent.documentId,
+            current.path,
+            { allowBusy: true },
+          );
           return;
         }
         setSession((s) => failSave(s, error));
@@ -624,11 +922,11 @@ function App() {
     if (!fileMissingPending || fileMissingResolvingRef.current) {
       return;
     }
-    const documentId = session.id;
+    const target = fileMissingPending;
     fileMissingResolvingRef.current = true;
     setFileMissingOperation({ status: "keeping", errorMessage: null });
     try {
-      await closeDocument(documentId);
+      await closeDocument(target.documentId);
     } catch {
       fileMissingResolvingRef.current = false;
       setFileMissingOperation({
@@ -638,19 +936,20 @@ function App() {
       });
       return;
     }
-    setSession((current) => {
-      if (current.id !== documentId) return current;
-      return {
-        ...current,
-        path: null,
-        isDirty: true,
-        saveStatus: "idle",
-        saveError: null,
-      };
-    });
+    updateTabDocument(target.tabId, (current) =>
+      current.id === target.documentId && current.path === target.path
+        ? {
+            ...current,
+            path: null,
+            isDirty: true,
+            saveStatus: "idle",
+            saveError: null,
+          }
+        : current,
+    );
     fileMissingResolvingRef.current = false;
-    fileMissingPendingRef.current = false;
-    setFileMissingPending(false);
+    fileMissingPendingRef.current = null;
+    setFileMissingPending(null);
     setFileMissingOperation({ status: "idle", errorMessage: null });
   }
 
@@ -658,11 +957,11 @@ function App() {
     if (!fileMissingPending || fileMissingResolvingRef.current) {
       return;
     }
-    const documentId = session.id;
+    const target = fileMissingPending;
     fileMissingResolvingRef.current = true;
     setFileMissingOperation({ status: "discarding", errorMessage: null });
     try {
-      await closeDocument(documentId);
+      await closeDocument(target.documentId);
     } catch {
       fileMissingResolvingRef.current = false;
       setFileMissingOperation({
@@ -672,13 +971,20 @@ function App() {
       });
       return;
     }
-    setSession((current) => {
-      if (current.id !== documentId) return current;
-      return createNewDocument();
+    updateTabSession((current) => {
+      const tab = current.tabs.find((item) => item.tabId === target.tabId);
+      if (
+        tab === undefined ||
+        tab.document.id !== target.documentId ||
+        tab.document.path !== target.path
+      ) {
+        return current;
+      }
+      return closeTabCleanly(current, target.tabId);
     });
     fileMissingResolvingRef.current = false;
-    fileMissingPendingRef.current = false;
-    setFileMissingPending(false);
+    fileMissingPendingRef.current = null;
+    setFileMissingPending(null);
     setFileMissingOperation({ status: "idle", errorMessage: null });
   }
 
@@ -694,7 +1000,88 @@ function App() {
     };
     window.addEventListener("keydown", handleEscape);
     return () => window.removeEventListener("keydown", handleEscape);
-  }, [fileMissingPending, fileMissingOperation.status, session.id]);
+  }, [fileMissingPending, fileMissingOperation.status]);
+
+  async function handleExternalReloadRetry() {
+    const target = externalReloadErrors[session.id];
+    if (target === undefined || target.status !== "idle") {
+      return;
+    }
+    let accepted = false;
+    setExternalReloadErrors((current) => ({
+      ...current,
+      [target.documentId]: { ...target, status: "retrying" },
+    }));
+    flushSync(() => {
+      updateTabSession((current) =>
+        updateDocumentByTabId(current, target.tabId, (document) => {
+          if (
+            document.id !== target.documentId ||
+            document.path !== target.path ||
+            document.isDirty ||
+            isBusy(document)
+          ) {
+            return document;
+          }
+          accepted = true;
+          return startLoading(document);
+        }),
+      );
+    });
+    if (!accepted) {
+      clearExternalReloadError(target.documentId);
+      return;
+    }
+    externalReloadsRef.current.add(target.documentId);
+    try {
+      const result = await retryExternalReload(target.documentId);
+      if (result === null || result.kind === "unchanged") {
+        updateTabDocument(target.tabId, (document) =>
+          document.id === target.documentId ? cancelOpen(document) : document,
+        );
+        clearExternalReloadError(target.documentId);
+        return;
+      }
+      if (result.kind === "missing") {
+        updateTabDocument(target.tabId, (document) =>
+          document.id === target.documentId ? cancelOpen(document) : document,
+        );
+        clearExternalReloadError(target.documentId);
+        showFileMissingForTab(target.tabId, target.documentId, target.path);
+        return;
+      }
+      if (result.kind === "failed") {
+        updateTabDocument(target.tabId, (document) =>
+          document.id === target.documentId ? cancelOpen(document) : document,
+        );
+        showExternalReloadError(
+          target.tabId,
+          target.documentId,
+          result.error,
+          target.path,
+        );
+        return;
+      }
+      await applyExternalReloadReady(
+        target.tabId,
+        target.documentId,
+        result.reload,
+      );
+      clearExternalReloadError(target.documentId);
+    } catch {
+      updateTabDocument(target.tabId, (document) =>
+        document.id === target.documentId ? cancelOpen(document) : document,
+      );
+      showExternalReloadError(
+        target.tabId,
+        target.documentId,
+        { code: "read-failed", message: "external reload retry failed" },
+        target.path,
+      );
+    } finally {
+      externalReloadsRef.current.delete(target.documentId);
+    }
+  }
 
   async function runOpenPipeline(tabId: string) {
     const knownDocuments = knownDocumentPathsForTabs(tabSessionRef.current);
@@ -751,11 +1138,7 @@ function App() {
       }
       if (error.code === "save-conflict-target-missing") {
         // 文件已删除：进入保留/关闭流程，不走通用保存失败。
-        targetCheckRevisionRef.current += 1;
-        targetCheckInFlightRef.current = null;
-        fileMissingPendingRef.current = true;
-        setFileMissingOperation({ status: "idle", errorMessage: null });
-        setFileMissingPending(true);
+        showFileMissingForTab(tabId, id, undefined, { allowBusy: true });
         return;
       }
       updateTabDocument(tabId, (current) => {
@@ -889,11 +1272,12 @@ function App() {
       }
       if (error.code === "save-conflict-target-missing") {
         setSaveAsPanel((value) => ({ ...value, open: false, status: "idle" }));
-        targetCheckRevisionRef.current += 1;
-        targetCheckInFlightRef.current = null;
-        fileMissingPendingRef.current = true;
-        setFileMissingOperation({ status: "idle", errorMessage: null });
-        setFileMissingPending(true);
+        showFileMissingForTab(
+          tabSession.activeTabId,
+          current.id,
+          current.path ?? undefined,
+          { allowBusy: true },
+        );
         return;
       }
       setSession((value) => cancelSave(value));
@@ -986,7 +1370,8 @@ function App() {
     return (
       saveAsPanel.open ||
       conflictPending ||
-      fileMissingPending ||
+      activeExternalReloadError?.status === "retrying" ||
+      fileMissingPending !== null ||
       closeConfirmPending ||
       session.openStatus === "loading" ||
       session.openStatus === "awaiting-discard-confirm"
@@ -1171,6 +1556,17 @@ function App() {
   const conflictPending =
     session.saveStatus === "error" &&
     session.saveError?.code === "save-conflict-content-changed";
+  const activeExternalReloadError = (() => {
+    const target = externalReloadErrors[session.id];
+    if (
+      target === undefined ||
+      target.path !== session.path ||
+      target.tabId !== tabSession.activeTabId
+    ) {
+      return undefined;
+    }
+    return target;
+  })();
 
   async function handleConflictReload() {
     if (!conflictPending || conflictOperation.status !== "idle") {
@@ -1309,14 +1705,16 @@ function App() {
     isBusy(session) ||
     saveAsPanel.open ||
     conflictPending ||
-    fileMissingPending ||
+    activeExternalReloadError?.status === "retrying" ||
+    fileMissingPending !== null ||
     closeConfirmPending;
   busyRef.current = busy;
   const editorLocked =
     session.openStatus === "loading" ||
     session.saveStatus === "saving" ||
     conflictPending ||
-    fileMissingPending ||
+    activeExternalReloadError?.status === "retrying" ||
+    fileMissingPending !== null ||
     closeConfirmPending ||
     saveAsPanel.open;
   const saveFileNameInvalid = invalidSaveFileName(saveAsPanel.fileName);
@@ -1742,6 +2140,26 @@ function App() {
                 </button>
               </div>
             )}
+          {activeExternalReloadError !== undefined &&
+            !session.isDirty &&
+            session.openStatus !== "loading" && (
+              <div className="notice notice-error notice-external-reload" role="alert">
+                <span>
+                  The disk version could not be reloaded.{" "}
+                  {describeOpenError(activeExternalReloadError.error.code)}
+                </span>
+                <button
+                  type="button"
+                  className="notice-action"
+                  onClick={handleExternalReloadRetry}
+                  disabled={activeExternalReloadError.status !== "idle"}
+                >
+                  {activeExternalReloadError.status === "retrying"
+                    ? "Retrying…"
+                    : "Retry"}
+                </button>
+              </div>
+            )}
           {conflictPending && (
             <div className="notice notice-conflict" role="alert">
               <span>
@@ -2033,9 +2451,9 @@ function App() {
         >
           <div className="confirm-dialog">
             <p className="confirm-message">
-              The file "{session.displayName}" no longer exists on disk. Keep
-              the current content in the editor (you will need to save it to a
-              new location), or discard it and start fresh?
+              The file "{fileMissingPending.displayName}" no longer exists on
+              disk. Keep the current content in the editor (you will need to
+              save it to a new location), or discard it and start fresh?
             </p>
             {fileMissingOperation.errorMessage !== null && (
               <p className="notice-conflict-error" role="alert">

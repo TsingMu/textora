@@ -6,6 +6,7 @@ use tauri::{
 };
 
 pub mod document;
+pub mod external_watch;
 pub mod ipc;
 
 use ipc::DocumentStore;
@@ -179,6 +180,11 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(DocumentStore::default())
         .manage(ExitGuard::default())
+        .setup(|app| {
+            let watcher = external_watch::ExternalWatchService::new(app.handle().clone())?;
+            app.manage(watcher);
+            Ok(())
+        })
         .menu(build_app_menu)
         .on_menu_event(|app_handle, event| {
             if event.id().as_ref() == APP_QUIT_MENU_ID {
@@ -189,6 +195,10 @@ pub fn run() {
             health_check,
             ipc::select_and_open_document,
             ipc::read_document_content,
+            ipc::prepare_external_reload,
+            ipc::retry_external_reload,
+            ipc::refresh_external_document,
+            ipc::prepare_external_conflict,
             ipc::save_document,
             ipc::prepare_save_as,
             ipc::pick_save_directory,

@@ -106,6 +106,23 @@ export function commitOpenedDocument(
   };
 }
 
+/** 仅提交外部只读等元数据变化，保持当前文本不变。 */
+export function commitExternalMetadata(
+  document: DocumentSession,
+  descriptor: DocumentDescriptor,
+): DocumentSession {
+  return {
+    ...document,
+    path: descriptor.path,
+    displayName: descriptor.displayName,
+    encoding: descriptor.encoding,
+    lineEnding: descriptor.lineEnding,
+    readOnly: descriptor.readOnly,
+    openStatus: "idle",
+    openErrorCode: null,
+  };
+}
+
 /// 任意打开或保存流程进行中时视为忙碌，禁止并发文件操作。
 export function isBusy(document: DocumentSession): boolean {
   return (
@@ -124,6 +141,16 @@ export function requestSave(document: DocumentSession): DocumentSession {
     isBusy(document) ||
     document.readOnly
   ) {
+    return document;
+  }
+  return { ...document, saveStatus: "saving", saveError: null };
+}
+
+/** 锁住正在把外部变化转换为冲突的脏标签；只读不影响冲突建立。 */
+export function requestExternalConflict(
+  document: DocumentSession,
+): DocumentSession {
+  if (document.path === null || !document.isDirty || isBusy(document)) {
     return document;
   }
   return { ...document, saveStatus: "saving", saveError: null };

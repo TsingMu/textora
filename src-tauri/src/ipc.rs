@@ -52,7 +52,7 @@ pub enum DocumentErrorCode {
 
 /// 跨 IPC 的文档命令错误。`character` 与 `byteOffset` 仅在不可编码字符时填充，供
 /// 上层展示；其余字段为 `None`。`message` 仅供诊断，不向用户呈现。
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DocumentCommandError {
     pub code: DocumentErrorCode,
@@ -73,7 +73,7 @@ impl DocumentCommandError {
         }
     }
 
-    fn from_open_core(err: DocumentError) -> Self {
+    pub(crate) fn from_open_core(err: DocumentError) -> Self {
         match err {
             DocumentError::SizeLimitExceeded { .. } => Self::new(
                 DocumentErrorCode::FileTooLarge,
@@ -193,6 +193,87 @@ struct ConflictState {
     trusted: TrustedDocument,
 }
 
+/// 对关联文档复核磁盘目标后的外部变化分类。只有内容或只读元数据变化会建立可原子提升的重载候选；
+/// 无变化、缺失与重读失败都不修改活动可信状态。
+#[derive(Debug)]
+#[allow(dead_code)]
+pub(crate) enum ExternalChange {
+    /// 字节指纹与只读状态均与可信基线一致：无变化。
+    Unchanged,
+    /// 字节指纹变化（含解码后文本相同但字节不同）；已建立重载候选，待原子提升。
+    ContentChanged,
+    /// 字节指纹相同但只读状态变化；已建立只更新元数据的候选，不替换文本。
+    MetadataChanged,
+    /// 路径目标缺失（删除/移动/符号链接目标消失）。
+    Missing,
+    /// 无法安全重读：读取期间再次变化、超限、无效编码、权限或一般 I/O 错误。携带原始错误，
+    /// 便于后续切片映射到稳定的、不泄露内部路径/指纹的前端错误代码。
+    ReloadFailed(DocumentError),
+}
+
+/// 已建立的外部重载候选。绑定复核时的可信基线指纹/路径，提升时用于过期校验：
+/// 若活动可信状态已变（用户保存/另存为/关闭），候选作废，绝不替换新状态。
+#[derive(Debug, Clone)]
+struct ExternalReloadCandidate {
+    generation: u64,
+    baseline_fingerprint: FileFingerprint,
+    baseline_path: PathBuf,
+    /// 复核得到的新可信元数据（内容变化或只读变化后）。
+    trusted: TrustedDocument,
+    /// 新内容（UTF-8 字节）；`None` 表示仅只读变化，提升时只更新元数据，不替换文本。
+    content: Option<Vec<u8>>,
+}
+
+/// 原子提升外部重载候选后的结果。
+#[cfg(test)]
+#[derive(Debug, PartialEq)]
+enum ExternalReload {
+    /// 内容变化：新描述符与新内容；活动可信元数据已推进到候选。
+    Content {
+        descriptor: DocumentDescriptor,
+        content: String,
+    },
+    /// 仅只读元数据变化：更新后的描述符；内容不变。
+    Metadata { descriptor: DocumentDescriptor },
+}
+
+/// 前端采用外部变化候选后的轻量结果。内容变化的正文继续复用二进制
+/// `read_document_content` 通道，不进入 JSON。
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ExternalReloadReady {
+    Content { descriptor: DocumentDescriptor },
+    Metadata { descriptor: DocumentDescriptor },
+}
+
+/// 用户从实时重载失败提示点击 Retry 后的复核结果。
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ExternalReloadRetry {
+    Ready { reload: ExternalReloadReady },
+    Missing,
+    Failed { error: DocumentCommandError },
+    Unchanged,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ExternalDocumentChangeKind {
+    Content,
+    Metadata,
+    Missing,
+    ReloadFailed,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalDocumentChanged {
+    pub document_id: String,
+    pub kind: ExternalDocumentChangeKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<DocumentCommandError>,
+}
+
 /// 目录授权描述符：前端只持不透明 `id` 与只读 `display_name`，从不接触真实路径。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -268,6 +349,25 @@ struct DocumentEntry {
     /// 当前单文档前端打开入口的过渡标记：候选内容被成功取回时替换整个后端会话，
     /// 避免旧单文档 session 的 active/conflict/grant 留成不可达状态。
     pending_replaces_session: bool,
+    /// 外部文件变化复核建立的重载候选。不替换活动状态；`take_external_reload` 在基线
+    /// 仍匹配时原子提升。基线已变（保存/另存为/关闭）时作废，避免过期结果污染新会话。
+    pending_external_reload: Option<ExternalReloadCandidate>,
+    /// 每次开始外部复核或活动文档状态发生变化时推进。较早开始、较晚完成的复核只有在
+    /// 世代仍匹配时才能发布候选，防止旧磁盘观察覆盖更新的结果。
+    external_check_generation: u64,
+}
+
+impl DocumentEntry {
+    fn invalidate_external_reload(&mut self) {
+        self.external_check_generation = self.external_check_generation.wrapping_add(1);
+        self.pending_external_reload = None;
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ExternalCheck {
+    generation: u64,
+    baseline: TrustedDocument,
 }
 
 /// 多标签会话下的后端文档状态：按文档 id 并发持有多个 `DocumentEntry`。冲突版本与
@@ -315,6 +415,7 @@ impl DocumentStore {
     ) {
         let mut guard = self.inner.lock().expect("document store lock poisoned");
         let entry = guard.documents.entry(id).or_default();
+        entry.invalidate_external_reload();
         entry.pending_content = Some(content);
         entry.pending_trusted = Some(document);
         entry.pending_reload_revision = None;
@@ -354,6 +455,7 @@ impl DocumentStore {
                 .expect("matching pending trusted must exist");
             let replaces_session = entry.pending_replaces_session;
             entry.pending_replaces_session = false;
+            entry.invalidate_external_reload();
             (bytes, trusted, replaces_session)
         };
         if replaces_session {
@@ -389,6 +491,10 @@ impl DocumentStore {
         entry.active.clone()
     }
 
+    pub(crate) fn active_path(&self, id: &str) -> Option<PathBuf> {
+        self.active_for(id).map(|document| document.path)
+    }
+
     fn update_active(&self, id: &str, fingerprint: FileFingerprint, byte_count: u64) {
         let mut guard = self.inner.lock().expect("document store lock poisoned");
         let Some(entry) = guard.documents.get_mut(id) else {
@@ -401,6 +507,7 @@ impl DocumentStore {
             document.fingerprint = fingerprint;
             document.byte_count = byte_count;
             entry.conflict = None;
+            entry.invalidate_external_reload();
         }
     }
 
@@ -412,6 +519,7 @@ impl DocumentStore {
             if entry.active.is_some() {
                 entry.active = Some(document);
                 entry.conflict = None;
+                entry.invalidate_external_reload();
             }
         }
     }
@@ -424,6 +532,7 @@ impl DocumentStore {
         entry.active = Some(document);
         entry.conflict = None;
         entry.pending_save_directory = None;
+        entry.invalidate_external_reload();
         id
     }
 
@@ -441,6 +550,7 @@ impl DocumentStore {
         guard.next_conflict_revision = guard.next_conflict_revision.wrapping_add(1);
         let revision = guard.next_conflict_revision;
         if let Some(entry) = guard.documents.get_mut(id) {
+            entry.invalidate_external_reload();
             entry.conflict = Some(ConflictState {
                 revision,
                 kind,
@@ -448,6 +558,367 @@ impl DocumentStore {
                 trusted,
             });
         }
+    }
+
+    /// 把监听复核建立的内容变化候选转换为既有版本化内容冲突。提升前再次确认磁盘仍是
+    /// 候选快照，并在同一锁内校验活动基线、消费候选和保存前端编辑快照；过期、回退、
+    /// 已关闭或已有其他冲突时返回 false；相同内容冲突已建立时幂等返回 true。
+    fn record_external_conflict(&self, id: &str, snapshot: Vec<u8>) -> bool {
+        // 同一标签在 IPC 往返期间可能收到更新的合并事件；优先追上最新候选，避免较早事件
+        // 因世代过期而吞掉已经发布但被前端租约归并的较新通知。
+        for _ in 0..4 {
+            let candidate = {
+                let guard = self.inner.lock().expect("document store lock poisoned");
+                let Some(entry) = guard.documents.get(id) else {
+                    return false;
+                };
+                if entry
+                    .conflict
+                    .as_ref()
+                    .is_some_and(|conflict| conflict.kind == ConflictKind::ContentChanged)
+                {
+                    return true;
+                }
+                if entry.conflict.is_some()
+                    || entry.pending_overwrite.is_some()
+                    || entry.pending_reload_revision.is_some()
+                {
+                    return false;
+                }
+                let Some(candidate) = entry.pending_external_reload.clone() else {
+                    return false;
+                };
+                if candidate.content.is_none()
+                    || !entry.active.as_ref().is_some_and(|active| {
+                        active.path == candidate.baseline_path
+                            && active.fingerprint == candidate.baseline_fingerprint
+                    })
+                    || entry.external_check_generation != candidate.generation
+                {
+                    return false;
+                }
+                candidate
+            };
+
+            let disk_still_matches = crate::document::open_document(&candidate.baseline_path)
+                .is_ok_and(|opened| {
+                    opened.descriptor.fingerprint == candidate.trusted.fingerprint
+                        && opened.descriptor.byte_count == candidate.trusted.byte_count
+                        && opened.descriptor.encoding == candidate.trusted.encoding
+                        && opened.descriptor.line_ending == candidate.trusted.line_ending
+                        && opened.descriptor.read_only == candidate.trusted.read_only
+                });
+
+            let mut guard = self.inner.lock().expect("document store lock poisoned");
+            let Some(entry) = guard.documents.get(id) else {
+                return false;
+            };
+            if entry
+                .conflict
+                .as_ref()
+                .is_some_and(|conflict| conflict.kind == ConflictKind::ContentChanged)
+            {
+                return true;
+            }
+            if entry.conflict.is_some() {
+                return false;
+            }
+            let current_generation = entry
+                .pending_external_reload
+                .as_ref()
+                .map(|pending| pending.generation);
+            if current_generation.is_some_and(|generation| generation != candidate.generation) {
+                drop(guard);
+                continue;
+            }
+            let valid = disk_still_matches
+                && entry.conflict.is_none()
+                && entry.pending_overwrite.is_none()
+                && entry.pending_reload_revision.is_none()
+                && entry.external_check_generation == candidate.generation
+                && entry
+                    .pending_external_reload
+                    .as_ref()
+                    .is_some_and(|pending| {
+                        pending.generation == candidate.generation && pending.content.is_some()
+                    })
+                && entry.active.as_ref().is_some_and(|active| {
+                    active.path == candidate.baseline_path
+                        && active.fingerprint == candidate.baseline_fingerprint
+                });
+            if !valid {
+                if let Some(entry) = guard.documents.get_mut(id)
+                    && entry
+                        .pending_external_reload
+                        .as_ref()
+                        .is_some_and(|pending| pending.generation == candidate.generation)
+                {
+                    entry.invalidate_external_reload();
+                }
+                return false;
+            }
+
+            guard.next_conflict_revision = guard.next_conflict_revision.wrapping_add(1);
+            let revision = guard.next_conflict_revision;
+            let entry = guard
+                .documents
+                .get_mut(id)
+                .expect("validated external conflict document must exist");
+            let trusted = entry
+                .active
+                .clone()
+                .expect("validated external conflict must have an active baseline");
+            entry.invalidate_external_reload();
+            entry.conflict = Some(ConflictState {
+                revision,
+                kind: ConflictKind::ContentChanged,
+                snapshot,
+                trusted,
+            });
+            return true;
+        }
+        false
+    }
+
+    /// 复核关联文档的磁盘目标并分类外部变化。复用 `open_document` 的指纹、严格编码、50 MiB 上限
+    /// 与读取期间变化/原子替换保护建立一致快照。对内容或只读元数据变化，在对应 entry 中建立可原子
+    /// 提升的重载候选（不替换活动状态）。未知/过期文档 id、文档已关闭或正在强制覆盖时返回 `None`，
+    /// 不修改任何状态。
+    #[allow(dead_code)]
+    pub(crate) fn classify_external_change(&self, id: &str) -> Option<ExternalChange> {
+        let check = self.begin_external_check(id)?;
+        let observation = crate::document::open_document(&check.baseline.path);
+        self.finish_external_check(id, check, observation)
+    }
+
+    pub(crate) fn external_change_signal(&self, id: &str) -> Option<ExternalDocumentChanged> {
+        let (kind, error) = match self.classify_external_change(id)? {
+            ExternalChange::ContentChanged => (ExternalDocumentChangeKind::Content, None),
+            ExternalChange::MetadataChanged => (ExternalDocumentChangeKind::Metadata, None),
+            ExternalChange::Missing => (ExternalDocumentChangeKind::Missing, None),
+            ExternalChange::ReloadFailed(err) => (
+                ExternalDocumentChangeKind::ReloadFailed,
+                Some(DocumentCommandError::from_open_core(err)),
+            ),
+            ExternalChange::Unchanged => return None,
+        };
+        Some(ExternalDocumentChanged {
+            document_id: id.to_owned(),
+            kind,
+            error,
+        })
+    }
+
+    /// 为一次锁外磁盘读取保留单调世代。新复核一旦开始，先前尚未完成的结果即过期；冲突、
+    /// 普通重载或强制覆盖期间不建立外部候选。
+    fn begin_external_check(&self, id: &str) -> Option<ExternalCheck> {
+        let mut guard = self.inner.lock().expect("document store lock poisoned");
+        let entry = guard.documents.get_mut(id)?;
+        if entry.pending_overwrite.is_some()
+            || entry.conflict.is_some()
+            || entry.pending_reload_revision.is_some()
+            || entry.pending_content.is_some()
+            || entry.pending_trusted.is_some()
+        {
+            return None;
+        }
+        let baseline = entry.active.clone()?;
+        entry.external_check_generation = entry.external_check_generation.wrapping_add(1);
+        Some(ExternalCheck {
+            generation: entry.external_check_generation,
+            baseline,
+        })
+    }
+
+    /// 只允许当前文档最近开始的复核发布结果。每个有效结果先替换整个候选槽，因此
+    /// Unchanged/Missing/ReloadFailed 不会留下早先可被错误提升的快照。
+    fn finish_external_check(
+        &self,
+        id: &str,
+        check: ExternalCheck,
+        observation: Result<document::OpenedDocument, DocumentError>,
+    ) -> Option<ExternalChange> {
+        let mut guard = self.inner.lock().expect("document store lock poisoned");
+        let entry = guard.documents.get_mut(id)?;
+        if entry.pending_overwrite.is_some()
+            || entry.conflict.is_some()
+            || entry.pending_reload_revision.is_some()
+            || entry.external_check_generation != check.generation
+        {
+            return None;
+        }
+        let still_valid = entry.active.as_ref().is_some_and(|active| {
+            active.path == check.baseline.path && active.fingerprint == check.baseline.fingerprint
+        });
+        if !still_valid {
+            return None;
+        }
+
+        entry.pending_external_reload = None;
+        let change = match observation {
+            Err(DocumentError::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => {
+                ExternalChange::Missing
+            }
+            Err(err) => ExternalChange::ReloadFailed(err),
+            Ok(opened) => {
+                let descriptor = opened.descriptor;
+                let content_bytes = opened.content.into_bytes();
+                let same_bytes = descriptor.fingerprint == check.baseline.fingerprint;
+                let read_only_changed = descriptor.read_only != check.baseline.read_only;
+                let new_trusted = TrustedDocument {
+                    path: check.baseline.path.clone(),
+                    display_name: check.baseline.display_name.clone(),
+                    encoding: descriptor.encoding,
+                    line_ending: descriptor.line_ending,
+                    fingerprint: descriptor.fingerprint,
+                    byte_count: descriptor.byte_count,
+                    read_only: descriptor.read_only,
+                };
+                if same_bytes {
+                    if !read_only_changed {
+                        ExternalChange::Unchanged
+                    } else {
+                        entry.pending_external_reload = Some(ExternalReloadCandidate {
+                            generation: check.generation,
+                            baseline_fingerprint: check.baseline.fingerprint,
+                            baseline_path: check.baseline.path.clone(),
+                            trusted: new_trusted,
+                            content: None,
+                        });
+                        ExternalChange::MetadataChanged
+                    }
+                } else {
+                    entry.pending_external_reload = Some(ExternalReloadCandidate {
+                        generation: check.generation,
+                        baseline_fingerprint: check.baseline.fingerprint,
+                        baseline_path: check.baseline.path.clone(),
+                        trusted: new_trusted,
+                        content: Some(content_bytes),
+                    });
+                    ExternalChange::ContentChanged
+                }
+            }
+        };
+        Some(change)
+    }
+
+    /// 原子提升已建立的外部重载候选。重新校验候选基线仍与活动可信状态一致；基线已变（过期）、
+    /// 候选不存在、已有冲突或正在强制覆盖时返回 `None`，活动状态保持不变。成功时把活动可信元数据
+    /// 推进到候选、清空候选，并返回新描述符与（仅内容变化时的）新内容。
+    #[allow(dead_code)]
+    fn prepare_external_reload(&self, id: &str) -> Option<ExternalReloadReady> {
+        let candidate = {
+            let mut guard = self.inner.lock().expect("document store lock poisoned");
+            let entry = guard.documents.get_mut(id)?;
+            if entry.pending_overwrite.is_some()
+                || entry.conflict.is_some()
+                || entry.pending_reload_revision.is_some()
+            {
+                entry.invalidate_external_reload();
+                return None;
+            }
+            let candidate = entry.pending_external_reload.clone()?;
+            let active = entry.active.as_ref()?;
+            if active.path != candidate.baseline_path
+                || active.fingerprint != candidate.baseline_fingerprint
+                || entry.external_check_generation != candidate.generation
+            {
+                entry.invalidate_external_reload();
+                return None;
+            }
+            candidate
+        };
+
+        // 分类与调用方决定是否采用候选之间可能跨越异步边界。提升前尽可能晚地重读可信路径，
+        // 只在候选仍对应当前完整磁盘快照时提交，避免把随后到达的外部版本推进为旧指纹。
+        let disk_still_matches = crate::document::open_document(&candidate.baseline_path)
+            .is_ok_and(|opened| {
+                opened.descriptor.fingerprint == candidate.trusted.fingerprint
+                    && opened.descriptor.byte_count == candidate.trusted.byte_count
+                    && opened.descriptor.encoding == candidate.trusted.encoding
+                    && opened.descriptor.line_ending == candidate.trusted.line_ending
+                    && opened.descriptor.read_only == candidate.trusted.read_only
+            });
+
+        let mut guard = self.inner.lock().expect("document store lock poisoned");
+        let entry = guard.documents.get_mut(id)?;
+        let candidate_is_current = entry
+            .pending_external_reload
+            .as_ref()
+            .is_some_and(|pending| pending.generation == candidate.generation)
+            && entry.external_check_generation == candidate.generation;
+        if !disk_still_matches
+            || !candidate_is_current
+            || entry.pending_overwrite.is_some()
+            || entry.conflict.is_some()
+            || entry.pending_reload_revision.is_some()
+            || !entry.active.as_ref().is_some_and(|active| {
+                active.path == candidate.baseline_path
+                    && active.fingerprint == candidate.baseline_fingerprint
+            })
+        {
+            if candidate_is_current {
+                entry.invalidate_external_reload();
+            }
+            return None;
+        }
+        let trusted = candidate.trusted.clone();
+        let content_bytes = candidate.content.clone();
+        let descriptor = trusted.to_descriptor(id, trusted.fingerprint.clone(), trusted.byte_count);
+        entry.invalidate_external_reload();
+        match content_bytes {
+            Some(bytes) => {
+                entry.pending_content = Some(bytes);
+                entry.pending_trusted = Some(trusted);
+                entry.pending_reload_revision = None;
+                entry.pending_replaces_session = false;
+                Some(ExternalReloadReady::Content { descriptor })
+            }
+            None => {
+                entry.active = Some(trusted);
+                Some(ExternalReloadReady::Metadata { descriptor })
+            }
+        }
+    }
+
+    fn retry_external_reload(&self, id: &str) -> Option<ExternalReloadRetry> {
+        match self.classify_external_change(id)? {
+            ExternalChange::ContentChanged | ExternalChange::MetadataChanged => self
+                .prepare_external_reload(id)
+                .map(|reload| ExternalReloadRetry::Ready { reload })
+                .or(Some(ExternalReloadRetry::Unchanged)),
+            ExternalChange::Missing => Some(ExternalReloadRetry::Missing),
+            ExternalChange::ReloadFailed(err) => Some(ExternalReloadRetry::Failed {
+                error: DocumentCommandError::from_open_core(err),
+            }),
+            ExternalChange::Unchanged => Some(ExternalReloadRetry::Unchanged),
+        }
+    }
+
+    #[cfg(test)]
+    fn take_external_reload(&self, id: &str) -> Option<ExternalReload> {
+        match self.prepare_external_reload(id)? {
+            ExternalReloadReady::Content { descriptor } => {
+                let bytes = self.take_content(id)?;
+                Some(ExternalReload::Content {
+                    descriptor,
+                    content: String::from_utf8(bytes).expect("candidate content is valid UTF-8"),
+                })
+            }
+            ExternalReloadReady::Metadata { descriptor } => {
+                Some(ExternalReload::Metadata { descriptor })
+            }
+        }
+    }
+
+    /// 测试辅助：该文档是否挂有未提升的外部重载候选。
+    #[cfg(test)]
+    fn has_pending_external_reload(&self, id: &str) -> bool {
+        let guard = self.inner.lock().expect("document store lock poisoned");
+        guard
+            .documents
+            .get(id)
+            .is_some_and(|entry| entry.pending_external_reload.is_some())
     }
 
     /// 测试辅助：读取但不消费该文档当前冲突。真实解决命令必须在成功或明确取消后才清除
@@ -807,14 +1278,83 @@ pub async fn select_and_open_document(
 pub fn read_document_content(
     id: String,
     state: tauri::State<'_, DocumentStore>,
+    watcher: tauri::State<'_, crate::external_watch::ExternalWatchService>,
 ) -> Result<tauri::ipc::Response, DocumentCommandError> {
     match state.take_content(&id) {
-        Some(bytes) => Ok(tauri::ipc::Response::new(bytes)),
+        Some(bytes) => {
+            if let Some(path) = state.active_path(&id) {
+                watcher.associate(&id, &path);
+            }
+            Ok(tauri::ipc::Response::new(bytes))
+        }
         None => Err(DocumentCommandError::new(
             DocumentErrorCode::ReadFailed,
             "no buffered content is available for the requested document",
         )),
     }
+}
+
+/// 采用最近一次外部变化复核建立的候选。内容变化只返回描述符，并把完整 UTF-8 内容
+/// 暂存到现有二进制读取通道；元数据变化直接原子推进活动描述符。
+#[tauri::command]
+pub fn prepare_external_reload(
+    id: String,
+    state: tauri::State<'_, DocumentStore>,
+) -> Result<Option<ExternalReloadReady>, DocumentCommandError> {
+    Ok(state.prepare_external_reload(&id))
+}
+
+/// 用户从实时重载失败提示点击 Retry 后，重新复核可信目标并尽可能采用新候选。
+#[tauri::command]
+pub fn retry_external_reload(
+    id: String,
+    state: tauri::State<'_, DocumentStore>,
+) -> Result<Option<ExternalReloadRetry>, DocumentCommandError> {
+    Ok(state.retry_external_reload(&id))
+}
+
+/// 聚焦/恢复时按可信文档 ID 复核单个已关联标签，返回与实时监听相同的安全变化信号。
+#[tauri::command]
+pub fn refresh_external_document(
+    id: String,
+    state: tauri::State<'_, DocumentStore>,
+) -> Result<Option<ExternalDocumentChanged>, DocumentCommandError> {
+    Ok(state.external_change_signal(&id))
+}
+
+/// 脏标签采用监听产生的内容变化信号时，把当前完整编辑快照绑定为既有内容冲突。
+/// 文档正文继续使用 Raw body，前端只能通过可信文档 id 指定目标。
+#[tauri::command]
+pub fn prepare_external_conflict(
+    request: tauri::ipc::Request<'_>,
+    state: tauri::State<'_, DocumentStore>,
+) -> Result<bool, DocumentCommandError> {
+    let id = request
+        .headers()
+        .get(DOCUMENT_ID_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| {
+            DocumentCommandError::new(
+                DocumentErrorCode::UnknownDocument,
+                "external conflict request is missing the document id header",
+            )
+        })?;
+    let snapshot = match request.body() {
+        tauri::ipc::InvokeBody::Raw(bytes) => bytes.clone(),
+        _ => {
+            return Err(DocumentCommandError::new(
+                DocumentErrorCode::ReadFailed,
+                "external conflict content must be sent as a raw byte body",
+            ));
+        }
+    };
+    std::str::from_utf8(&snapshot).map_err(|_| {
+        DocumentCommandError::new(
+            DocumentErrorCode::UnsupportedEncoding,
+            "external conflict content is not valid UTF-8",
+        )
+    })?;
+    Ok(state.record_external_conflict(id, snapshot))
 }
 
 /// 把当前内容保存回已打开文档的原路径。内容经 Raw body 传输、文档 id 经
@@ -1085,8 +1625,10 @@ pub async fn check_target_exists(
 pub fn close_document(
     id: String,
     state: tauri::State<'_, DocumentStore>,
+    watcher: tauri::State<'_, crate::external_watch::ExternalWatchService>,
 ) -> Result<(), DocumentCommandError> {
     if state.close_active(&id) {
+        watcher.remove(&id);
         Ok(())
     } else {
         Err(DocumentCommandError::new(
@@ -1509,6 +2051,7 @@ pub fn preview_save_target(
 pub async fn save_document_as_at(
     request: tauri::ipc::Request<'_>,
     state: tauri::State<'_, DocumentStore>,
+    watcher: tauri::State<'_, crate::external_watch::ExternalWatchService>,
 ) -> Result<DocumentDescriptor, DocumentCommandError> {
     let headers = request.headers();
     let id_opt = headers
@@ -1555,7 +2098,7 @@ pub async fn save_document_as_at(
         )
     })?;
 
-    save_document_as_at_inner(
+    let descriptor = save_document_as_at_inner(
         state.inner(),
         id_opt.as_deref(),
         &directory_id,
@@ -1564,7 +2107,11 @@ pub async fn save_document_as_at(
         line_ending,
         content,
     )
-    .await
+    .await?;
+    if let Some(path) = state.active_path(&descriptor.id) {
+        watcher.associate(&descriptor.id, &path);
+    }
+    Ok(descriptor)
 }
 
 async fn save_document_as_at_inner(
@@ -3029,5 +3576,447 @@ mod tests {
         assert_eq!(updated.fingerprint, fp);
         assert!(store.close_active("doc"));
         assert!(store.active_for("doc").is_none());
+    }
+
+    // ---- 外部文件变化分类契约（external-file-change-sync 切片 2）----
+
+    mod external_change {
+        use super::*;
+        use crate::document::test_support::TestDir;
+        use std::os::unix::fs::PermissionsExt;
+
+        fn create_active_from_file(store: &DocumentStore, path: PathBuf, bytes: &[u8]) -> String {
+            std::fs::write(&path, bytes).unwrap();
+            let snapshot = crate::document::analyze(bytes).unwrap();
+            let display_name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let trusted = TrustedDocument {
+                path,
+                display_name,
+                encoding: snapshot.encoding,
+                line_ending: snapshot.line_ending,
+                fingerprint: snapshot.fingerprint,
+                byte_count: snapshot.byte_count,
+                read_only: false,
+            };
+            store.create_active(trusted)
+        }
+
+        #[test]
+        fn unchanged_when_disk_matches_baseline() {
+            let dir = TestDir::new();
+            let store = DocumentStore::default();
+            let path = dir.join("notes.txt");
+            let id = create_active_from_file(&store, path.clone(), b"hello\n");
+            let baseline = store.active_for(&id).unwrap().fingerprint;
+
+            let change = store.classify_external_change(&id).unwrap();
+            assert!(matches!(change, ExternalChange::Unchanged));
+            assert!(!store.has_pending_external_reload(&id));
+            assert_eq!(store.active_for(&id).unwrap().fingerprint, baseline);
+        }
+
+        #[test]
+        fn content_changed_stores_candidate_without_replacing_active() {
+            let dir = TestDir::new();
+            let store = DocumentStore::default();
+            let path = dir.join("notes.txt");
+            let id = create_active_from_file(&store, path.clone(), b"hello\n");
+            let baseline = store.active_for(&id).unwrap().fingerprint;
+
+            std::fs::write(&path, b"hello world\nmore\n").unwrap();
+
+            let change = store.classify_external_change(&id).unwrap();
+            assert!(matches!(change, ExternalChange::ContentChanged));
+            assert_eq!(store.active_for(&id).unwrap().fingerprint, baseline);
+            assert!(store.has_pending_external_reload(&id));
+        }
+
+        #[test]
+        fn external_candidate_becomes_versioned_conflict_with_local_snapshot() {
+            let dir = TestDir::new();
+            let store = DocumentStore::default();
+            let path = dir.join("dirty-conflict.txt");
+            let id = create_active_from_file(&store, path.clone(), b"disk v1\n");
+            let baseline = store.active_for(&id).unwrap().fingerprint;
+            std::fs::write(&path, b"disk v2\n").unwrap();
+
+            store.classify_external_change(&id).unwrap();
+            assert!(store.record_external_conflict(&id, b"local edits\n".to_vec()));
+
+            let conflict = store.content_conflict_for(&id).unwrap();
+            assert_eq!(conflict.snapshot, b"local edits\n");
+            assert_eq!(conflict.trusted.fingerprint, baseline);
+            assert_eq!(store.active_for(&id).unwrap().fingerprint, baseline);
+            assert!(!store.has_pending_external_reload(&id));
+            assert!(store.classify_external_change(&id).is_none());
+        }
+
+        #[test]
+        fn repeated_external_conflict_request_is_idempotent() {
+            let dir = TestDir::new();
+            let store = DocumentStore::default();
+            let path = dir.join("dirty-repeat.txt");
+            let id = create_active_from_file(&store, path.clone(), b"disk v1\n");
+            std::fs::write(&path, b"disk v2\n").unwrap();
+            store.classify_external_change(&id).unwrap();
+
+            assert!(store.record_external_conflict(&id, b"first snapshot\n".to_vec()));
+            let first = store.content_conflict_for(&id).unwrap();
+            assert!(store.record_external_conflict(&id, b"later duplicate\n".to_vec()));
+            let repeated = store.content_conflict_for(&id).unwrap();
+
+            assert_eq!(repeated.revision, first.revision);
+            assert_eq!(repeated.snapshot, b"first snapshot\n");
+        }
+
+        #[test]
+        fn external_conflict_rejects_candidate_after_disk_changes_again() {
+            let dir = TestDir::new();
+            let store = DocumentStore::default();
+            let path = dir.join("dirty-stale.txt");
+            let id = create_active_from_file(&store, path.clone(), b"disk v1\n");
+            std::fs::write(&path, b"disk v2\n").unwrap();
+            store.classify_external_change(&id).unwrap();
+            std::fs::write(&path, b"disk v3\n").unwrap();
+
+            assert!(!store.record_external_conflict(&id, b"local edits\n".to_vec()));
+            assert!(store.content_conflict_for(&id).is_none());
+            assert!(!store.has_pending_external_reload(&id));
+        }
+
+        #[test]
+        fn byte_change_with_same_text_still_content_changed() {
+            let dir = TestDir::new();
+            let store = DocumentStore::default();
+            let path = dir.join("bom.txt");
+            // 基线：无 BOM 的 "a"。
+            let id = create_active_from_file(&store, path.clone(), b"a");
+            // 磁盘改为带 BOM 的 "a"：解码文本相同但字节/指纹变化。
+            std::fs::write(&path, [0xEF, 0xBB, 0xBF, b'a']).unwrap();
+
+            let change = store.classify_external_change(&id).unwrap();
+            assert!(matches!(change, ExternalChange::ContentChanged));
+        }
+
+        #[test]
+        fn metadata_only_readonly_change() {
+            let dir = TestDir::new();
+            let store = DocumentStore::default();
+            let path = dir.join("readonly.txt");
+            let id = create_active_from_file(&store, path.clone(), b"same\n");
+            assert!(!store.active_for(&id).unwrap().read_only);
+
+            let metadata = std::fs::metadata(&path).unwrap();
+            let mut perms = metadata.permissions();
+            perms.set_mode(0o444);
+            std::fs::set_permissions(&path, perms).unwrap();
+
+            let change = store.classify_external_change(&id).unwrap();
+            assert!(matches!(change, ExternalChange::MetadataChanged));
+            // 仅元数据变化：活动状态未推进，候选挂起。
+            assert!(!store.active_for(&id).unwrap().read_only);
+            assert!(store.has_pending_external_reload(&id));
+        }
+
+        #[test]
+        fn reports_missing_without_candidate() {
+            let dir = TestDir::new();
+            let store = DocumentStore::default();
+            let path = dir.join("gone.txt");
+            let id = create_active_from_file(&store, path.clone(), b"data\n");
+            let baseline = store.active_for(&id).unwrap().fingerprint;
+
+            std::fs::remove_file(&path).unwrap();
+
+            let change = store.classify_external_change(&id).unwrap();
+            assert!(matches!(change, ExternalChange::Missing));
+            assert!(!store.has_pending_external_reload(&id));
+            assert_eq!(store.active_for(&id).unwrap().fingerprint, baseline);
+        }
+
+        #[test]
+        fn reports_reload_failure_for_invalid_encoding() {
+            let dir = TestDir::new();
+            let store = DocumentStore::default();
+            let path = dir.join("invalid.txt");
+            let id = create_active_from_file(&store, path.clone(), b"ok\n");
+            let baseline = store.active_for(&id).unwrap().fingerprint;
+
+            std::fs::write(&path, [0xFF]).unwrap();
+
+            let change = store.classify_external_change(&id).unwrap();
+            assert!(matches!(
+                change,
+                ExternalChange::ReloadFailed(DocumentError::InvalidEncoding)
+            ));
+            assert!(!store.has_pending_external_reload(&id));
+            assert_eq!(store.active_for(&id).unwrap().fingerprint, baseline);
+        }
+
+        #[test]
+        fn retry_external_reload_preserves_stable_failure_error() {
+            let dir = TestDir::new();
+            let store = DocumentStore::default();
+            let path = dir.join("retry-invalid.txt");
+            let id = create_active_from_file(&store, path.clone(), b"ok\n");
+            std::fs::write(&path, [0xFF]).unwrap();
+
+            let retry = store.retry_external_reload(&id).unwrap();
+            match retry {
+                ExternalReloadRetry::Failed { error } => {
+                    assert_eq!(error.code, DocumentErrorCode::UnsupportedEncoding);
+                }
+                other => panic!("expected failed retry, got {other:?}"),
+            }
+            assert!(!store.has_pending_external_reload(&id));
+        }
+
+        #[test]
+        fn retry_external_reload_adopts_fixed_content() {
+            let dir = TestDir::new();
+            let store = DocumentStore::default();
+            let path = dir.join("retry-fixed.txt");
+            let id = create_active_from_file(&store, path.clone(), b"v1\n");
+            std::fs::write(&path, b"v2\n").unwrap();
+
+            let retry = store.retry_external_reload(&id).unwrap();
+            match retry {
+                ExternalReloadRetry::Ready {
+                    reload: ExternalReloadReady::Content { descriptor },
+                } => {
+                    assert_eq!(descriptor.id, id);
+                }
+                other => panic!("expected content retry, got {other:?}"),
+            }
+            assert_eq!(store.take_content(&id), Some(b"v2\n".to_vec()));
+        }
+
+        #[test]
+        fn returns_none_for_unknown_id() {
+            let store = DocumentStore::default();
+            assert!(store.classify_external_change("stale-doc").is_none());
+            assert!(store.take_external_reload("stale-doc").is_none());
+        }
+
+        #[test]
+        fn classify_isolates_documents() {
+            let dir = TestDir::new();
+            let store = DocumentStore::default();
+            let path_a = dir.join("a.txt");
+            let path_b = dir.join("b.txt");
+            let id_a = create_active_from_file(&store, path_a.clone(), b"a\n");
+            let id_b = create_active_from_file(&store, path_b.clone(), b"b\n");
+
+            std::fs::write(&path_a, b"a changed\n").unwrap();
+            let change = store.classify_external_change(&id_a).unwrap();
+            assert!(matches!(change, ExternalChange::ContentChanged));
+
+            assert!(store.has_pending_external_reload(&id_a));
+            assert!(!store.has_pending_external_reload(&id_b));
+        }
+
+        #[test]
+        fn take_promotes_content_atomically() {
+            let dir = TestDir::new();
+            let store = DocumentStore::default();
+            let path = dir.join("promote.txt");
+            let id = create_active_from_file(&store, path.clone(), b"one\n");
+            let new_bytes = b"two\nlines\n";
+            std::fs::write(&path, new_bytes).unwrap();
+            let new_fp = FileFingerprint::of(new_bytes);
+
+            store.classify_external_change(&id).unwrap();
+            let reload = store.take_external_reload(&id).unwrap();
+            let expected = crate::document::analyze(new_bytes).unwrap();
+            match reload {
+                ExternalReload::Content {
+                    descriptor,
+                    content,
+                } => {
+                    assert_eq!(descriptor.fingerprint, new_fp);
+                    assert_eq!(descriptor.byte_count, new_bytes.len() as u64);
+                    assert_eq!(content, expected.content);
+                }
+                other => panic!("expected content reload, got {other:?}"),
+            }
+            assert_eq!(store.active_for(&id).unwrap().fingerprint, new_fp);
+            assert!(!store.has_pending_external_reload(&id));
+            assert!(store.take_external_reload(&id).is_none());
+        }
+
+        #[test]
+        fn prepare_keeps_old_baseline_until_binary_content_is_taken() {
+            let dir = TestDir::new();
+            let store = DocumentStore::default();
+            let path = dir.join("binary-promotion.txt");
+            let id = create_active_from_file(&store, path.clone(), b"old\n");
+            let baseline = store.active_for(&id).unwrap().fingerprint;
+            std::fs::write(&path, b"new\n").unwrap();
+            let changed = FileFingerprint::of(b"new\n");
+
+            store.classify_external_change(&id).unwrap();
+            let ready = store.prepare_external_reload(&id).unwrap();
+            assert!(matches!(ready, ExternalReloadReady::Content { .. }));
+            assert_eq!(store.active_for(&id).unwrap().fingerprint, baseline);
+            assert!(store.begin_external_check(&id).is_none());
+
+            assert_eq!(store.take_content(&id).unwrap(), b"new\n");
+            assert_eq!(store.active_for(&id).unwrap().fingerprint, changed);
+        }
+
+        #[test]
+        fn take_promotes_metadata_change() {
+            let dir = TestDir::new();
+            let store = DocumentStore::default();
+            let path = dir.join("meta.txt");
+            let id = create_active_from_file(&store, path.clone(), b"same\n");
+            let metadata = std::fs::metadata(&path).unwrap();
+            let mut perms = metadata.permissions();
+            perms.set_mode(0o444);
+            std::fs::set_permissions(&path, perms).unwrap();
+
+            store.classify_external_change(&id).unwrap();
+            let reload = store.take_external_reload(&id).unwrap();
+            match reload {
+                ExternalReload::Metadata { descriptor } => {
+                    assert!(descriptor.read_only);
+                }
+                other => panic!("expected metadata reload, got {other:?}"),
+            }
+            assert!(store.active_for(&id).unwrap().read_only);
+            assert!(!store.has_pending_external_reload(&id));
+        }
+
+        #[test]
+        fn take_returns_none_when_baseline_changed() {
+            let dir = TestDir::new();
+            let store = DocumentStore::default();
+            let path = dir.join("stale.txt");
+            let id = create_active_from_file(&store, path.clone(), b"v1\n");
+            std::fs::write(&path, b"v2\n").unwrap();
+
+            store.classify_external_change(&id).unwrap();
+            // 模拟用户在候选挂起期间保存：活动指纹推进，候选基线过期。
+            let saved_fp = FileFingerprint::of(b"user saved\n");
+            store.update_active(&id, saved_fp.clone(), 11);
+
+            assert!(store.take_external_reload(&id).is_none());
+            assert_eq!(store.active_for(&id).unwrap().fingerprint, saved_fp);
+            assert!(!store.has_pending_external_reload(&id));
+        }
+
+        #[test]
+        fn later_non_candidate_results_clear_an_older_candidate() {
+            let dir = TestDir::new();
+            let store = DocumentStore::default();
+            let path = dir.join("candidate-lifecycle.txt");
+            let id = create_active_from_file(&store, path.clone(), b"v1\n");
+
+            std::fs::write(&path, b"v2\n").unwrap();
+            assert!(matches!(
+                store.classify_external_change(&id),
+                Some(ExternalChange::ContentChanged)
+            ));
+            assert!(store.has_pending_external_reload(&id));
+
+            std::fs::write(&path, b"v1\n").unwrap();
+            assert!(matches!(
+                store.classify_external_change(&id),
+                Some(ExternalChange::Unchanged)
+            ));
+            assert!(!store.has_pending_external_reload(&id));
+            assert!(store.take_external_reload(&id).is_none());
+
+            std::fs::write(&path, b"v2\n").unwrap();
+            store.classify_external_change(&id).unwrap();
+            std::fs::remove_file(&path).unwrap();
+            assert!(matches!(
+                store.classify_external_change(&id),
+                Some(ExternalChange::Missing)
+            ));
+            assert!(!store.has_pending_external_reload(&id));
+
+            std::fs::write(&path, b"v2\n").unwrap();
+            store.classify_external_change(&id).unwrap();
+            std::fs::write(&path, [0xFF]).unwrap();
+            assert!(matches!(
+                store.classify_external_change(&id),
+                Some(ExternalChange::ReloadFailed(DocumentError::InvalidEncoding))
+            ));
+            assert!(!store.has_pending_external_reload(&id));
+        }
+
+        #[test]
+        fn conflict_invalidates_candidate_and_blocks_promotion() {
+            let dir = TestDir::new();
+            let store = DocumentStore::default();
+            let path = dir.join("conflict.txt");
+            let id = create_active_from_file(&store, path.clone(), b"disk v1\n");
+
+            std::fs::write(&path, b"disk v2\n").unwrap();
+            store.classify_external_change(&id).unwrap();
+            assert!(store.has_pending_external_reload(&id));
+
+            store.record_conflict(
+                &id,
+                ConflictKind::ContentChanged,
+                b"unsaved local edits\n".to_vec(),
+            );
+
+            assert!(!store.has_pending_external_reload(&id));
+            assert!(store.take_external_reload(&id).is_none());
+            assert!(store.content_conflict_for(&id).is_some());
+        }
+
+        #[test]
+        fn promotion_rejects_candidate_when_disk_changes_again() {
+            let dir = TestDir::new();
+            let store = DocumentStore::default();
+            let path = dir.join("changed-again.txt");
+            let id = create_active_from_file(&store, path.clone(), b"v1\n");
+            let baseline = store.active_for(&id).unwrap().fingerprint;
+
+            std::fs::write(&path, b"v2\n").unwrap();
+            store.classify_external_change(&id).unwrap();
+            std::fs::write(&path, b"v3\n").unwrap();
+
+            assert!(store.take_external_reload(&id).is_none());
+            assert!(!store.has_pending_external_reload(&id));
+            assert_eq!(store.active_for(&id).unwrap().fingerprint, baseline);
+        }
+
+        #[test]
+        fn older_check_cannot_overwrite_a_newer_candidate() {
+            let dir = TestDir::new();
+            let store = DocumentStore::default();
+            let path = dir.join("out-of-order.txt");
+            let id = create_active_from_file(&store, path.clone(), b"v1\n");
+
+            let older = store.begin_external_check(&id).unwrap();
+            std::fs::write(&path, b"v2\n").unwrap();
+            let older_observation = document::open_document(&path);
+
+            let newer = store.begin_external_check(&id).unwrap();
+            std::fs::write(&path, b"v3\n").unwrap();
+            let newer_observation = document::open_document(&path);
+
+            assert!(matches!(
+                store.finish_external_check(&id, newer, newer_observation),
+                Some(ExternalChange::ContentChanged)
+            ));
+            assert!(
+                store
+                    .finish_external_check(&id, older, older_observation)
+                    .is_none()
+            );
+
+            match store.take_external_reload(&id).unwrap() {
+                ExternalReload::Content { content, .. } => assert_eq!(content, "v3\n"),
+                other => panic!("expected latest content reload, got {other:?}"),
+            }
+        }
     }
 }

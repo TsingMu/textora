@@ -15,8 +15,12 @@ import {
   lineEndingDisplayName,
   lineEndingToChoice,
   pickSaveDirectory,
+  prepareExternalConflict,
+  prepareExternalReload,
   prepareSaveAs,
   previewSaveTarget,
+  refreshExternalDocument,
+  retryExternalReload,
   saveAsAt,
 } from "./platform";
 
@@ -196,6 +200,41 @@ describe("inline save-as IPC", () => {
         "textora-line-ending": "crlf",
         "textora-document-id": "doc-1",
       },
+    });
+  });
+});
+
+describe("external reload IPC", () => {
+  it("adopts a candidate by document identity only", async () => {
+    invokeMock.mockResolvedValue(null);
+    await prepareExternalReload("doc-1");
+    expect(invokeMock).toHaveBeenCalledWith("prepare_external_reload", { id: "doc-1" });
+  });
+
+  it("retries an external reload by document identity only", async () => {
+    invokeMock.mockResolvedValue({ kind: "unchanged" });
+    await retryExternalReload("doc-1");
+    expect(invokeMock).toHaveBeenCalledWith("retry_external_reload", { id: "doc-1" });
+  });
+
+  it("refreshes an external document by document identity only", async () => {
+    invokeMock.mockResolvedValue(null);
+    await refreshExternalDocument("doc-1");
+    expect(invokeMock).toHaveBeenCalledWith("refresh_external_document", {
+      id: "doc-1",
+    });
+  });
+
+  it("sends a dirty conflict snapshot as raw UTF-8 with only the document id", async () => {
+    invokeMock.mockResolvedValue(true);
+    await prepareExternalConflict("doc-1", "本地修改");
+    const [command, body, options] = invokeMock.mock.calls[0]!;
+    expect(command).toBe("prepare_external_conflict");
+    expect(Array.from(body as Uint8Array)).toEqual(
+      Array.from(new TextEncoder().encode("本地修改")),
+    );
+    expect(options).toEqual({
+      headers: { "textora-document-id": "doc-1" },
     });
   });
 });

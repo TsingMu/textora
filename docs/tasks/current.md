@@ -10,9 +10,99 @@
 
 ## 已承诺待办
 
-暂无其他已承诺待办。
+暂无已承诺待办。
 
 ## 最近完成
+
+### 外部文件变更实时同步集成验收与文档收尾
+
+- **状态**：已完成
+- **开始日期**：2026-08-12
+- **完成日期**：2026-08-12
+- **Feature Spec**：`docs/features/external-file-change-sync.md`
+- **结果**：完成外部文件变更实时同步首版组合验收、release 构建和文档收尾。release `Textora.app` 真实交互确认：干净活动标签在外部直接写入后自动展示新内容，临时文件原子替换能收敛到最终版本；后台标签外部变化后切回显示最新内容；脏标签外部变化进入绑定当前文件的 Reload / Overwrite / Cancel 冲突提示且保留本地编辑；文件被删除后进入 Keep content / Discard；无效 UTF-8 外部版本保留当前内容并显示 Retry，磁盘恢复为合法文本后刷新；只读权限变化更新 Read-only 状态但不替换正文；隐藏/离开应用期间外部变化在重新聚焦时显示最新内容。未新增文本合并、移动跟随、轮询、备份、版本历史、网络/目录树监听、新编码或权限扩大。
+- **验证记录**：`cargo fmt --manifest-path src-tauri/Cargo.toml -- --check`、`cargo check --manifest-path src-tauri/Cargo.toml --all-targets`、`cargo test --manifest-path src-tauri/Cargo.toml`（**148 passed / 0 failed**）、`npm run check`（**279 passed / 0 failed**）、`npm run build`、`npm run tauri -- build` 与 `git diff --check` 通过，并生成 release bundle `/Users/mouqing/codexProjects/textora/src-tauri/target/release/bundle/macos/Textora.app`。macOS release 真实文件交互使用 `/private/tmp/textora-external-sync.Q0b7tj` 临时文件完成上述场景；自身保存抑制、编码/换行描述同步、多标签生命周期、Save As/关闭/过期异步结果、文本相同但字节变化、超限与 I/O 错误路径由 Rust/前端自动化覆盖。
+
+### 接入聚焦恢复兜底复核
+
+- **状态**：已完成
+- **开始日期**：2026-08-12
+- **完成日期**：2026-08-12
+- **Feature Spec**：`docs/features/external-file-change-sync.md`
+- **结果**：新增受限 `refresh_external_document(id)` IPC，聚焦/恢复时以可信文档 ID 对所有已关联且非忙碌标签逐一复核，返回与实时监听相同的安全变化信号；Rust 监听线程也改为复用同一个 `external_change_signal` 映射，避免实时与兜底路径分叉。React 将实时监听处理抽成 `handleExternalDocumentChange`，聚焦复核只负责去重、过期校验和投递信号；内容变化、脏标签冲突、缺失、重载失败和只读 metadata 均复用既有实时路径。重复 focus 事件会按文档去重；标签关闭/另存为/路径变化后的迟到结果会被丢弃。额外修复 missing 二次确认失败时的未处理 rejection，保留内容并允许后续事件或 focus 再试。未运行 release 真实交互，未新增轮询、移动跟随或最终文档收尾。
+- **验证记录**：`cargo fmt --manifest-path src-tauri/Cargo.toml -- --check`、`cargo check --manifest-path src-tauri/Cargo.toml --all-targets`、`cargo test --manifest-path src-tauri/Cargo.toml`（**148 passed / 0 failed**）、`npm run test -- App platform`（**126 passed / 0 failed**）、`npm run typecheck`、`npm run check`（**279 passed / 0 failed**）、`npm run build` 与 `git diff --check` 通过。新增覆盖 refresh IPC 只传文档 ID、聚焦复核全标签、后台干净标签刷新、后台脏标签冲突、重复 focus 去重，以及 missing 二次确认失败可重试的测试；未运行 release 构建或 macOS 真实文件交互。
+
+### 接入实时只读变化同步
+
+- **状态**：已完成
+- **开始日期**：2026-08-11
+- **完成日期**：2026-08-11
+- **Feature Spec**：`docs/features/external-file-change-sync.md`
+- **结果**：将“只读变化与聚焦恢复兜底复核”拆为实时只读变化同步与聚焦恢复兜底复核两项，本切片只交付实时 metadata 路径。React 对 `metadata` 事件改走轻量元数据采用流程：调用既有 `prepare_external_reload(id)` 后只在返回 `metadata` 候选时提交 `commitExternalMetadata`，不进入 loading、不读取正文、不替换文本、不清除脏状态；活动和后台标签都按文档 ID/路径绑定更新。脏标签可同步只读 badge 与保存禁用状态，同时保留本地编辑内容和 Modified；忙碌、过期、路径变化或候选不再是 metadata 时不污染会话。未处理聚焦/睡眠兜底复核、监听失效复核、release 真实交互或最终文档收尾。
+- **验证记录**：`cargo fmt --manifest-path src-tauri/Cargo.toml -- --check`、`cargo check --manifest-path src-tauri/Cargo.toml --all-targets`、`cargo test --manifest-path src-tauri/Cargo.toml`（**148 passed / 0 failed**）、`npm run test -- App documentSession platform`（**141 passed / 0 failed**）、`npm run typecheck`、`npm run check`（**276 passed / 0 failed**）、`npm run build` 与 `git diff --check` 通过。新增覆盖活动标签只读 metadata 不读正文/不进 loading、脏标签同步只读但保留本地内容与 Modified、后台标签只读变化归属的测试；未运行 release 构建或 macOS 真实文件交互。
+
+### 接入实时重载失败保护
+
+- **状态**：已完成
+- **开始日期**：2026-08-11
+- **完成日期**：2026-08-11
+- **Feature Spec**：`docs/features/external-file-change-sync.md`
+- **结果**：监听复核到 `ReloadFailed` 时，Rust 现在以 `reloadFailed` 事件向前端发送稳定 `DocumentCommandError`，不暴露路径、指纹或内部 I/O 文本；新增 `retry_external_reload(id)` 受限 IPC，Retry 会重新复核可信目标，结果收敛为 ready/missing/failed/unchanged。React 将外部重载失败按 `documentId` 记录，提示只在对应标签活动且仍为同一路径、干净且空闲时显示；后台标签失败不会污染当前标签。用户点击 Retry 后目标标签进入 loading，成功则复用既有二进制内容通道采用 content/metadata 候选，仍失败则更新安全错误，目标缺失则转入绑定的缺失 Keep/Discard 流程，过期、变脏、忙碌或路径变化会清理提示且不替换内容。未处理只读变化、聚焦/睡眠兜底、release 真实交互或最终文档收尾。
+- **验证记录**：`cargo fmt --manifest-path src-tauri/Cargo.toml -- --check`、`cargo check --manifest-path src-tauri/Cargo.toml --all-targets`、`cargo test --manifest-path src-tauri/Cargo.toml`（**148 passed / 0 failed**）、`npm run test -- App platform`（**120 passed / 0 failed**）、`npm run typecheck`、`npm run check`（**273 passed / 0 failed**）、`npm run build` 通过。新增覆盖 Retry 仍失败错误码、Retry 修复后采用内容、IPC 只传文档 ID、活动标签失败提示/Retry、后台标签失败归属的测试；未运行 release 构建或 macOS 真实文件交互。
+
+### 接入实时缺失保护
+
+- **状态**：已完成
+- **开始日期**：2026-08-11
+- **完成日期**：2026-08-11
+- **Feature Spec**：`docs/features/external-file-change-sync.md`
+- **结果**：将“实时缺失与重载失败保护”继续拆为实时缺失与重载失败重试两项，本切片只交付稳定缺失事件。Rust 监听线程现在会把 `ExternalChange::Missing` 作为 `missing` 事件通知前端；React 收到后先用既有 `check_target_exists(documentId)` 复核当前可信目标，过滤 Save As、关闭或路径恢复后的迟到事件。缺失提示改为绑定 `tabId`/`documentId`/`path`/`displayName`，活动与后台标签均可进入同一 Keep / Discard 流程；Keep 只解除目标标签路径并保留内容为 Modified，Discard 只关闭目标标签，当前活动标签不会被误改。普通保存、关闭前保存和 Save As 中遇到 target missing 也改用同一绑定提示。未处理超限、编码无效、读取期间再次变化、权限或一般 I/O 重载失败；未处理只读变化、聚焦/睡眠兜底或 release 真实交互。
+- **验证记录**：`cargo fmt --manifest-path src-tauri/Cargo.toml -- --check`、`cargo check --manifest-path src-tauri/Cargo.toml --all-targets`、`cargo test --manifest-path src-tauri/Cargo.toml`（**146 passed / 0 failed**）、`npm run test -- App`（**102 passed / 0 failed**）、`npm run typecheck`、`npm run check`（**270 passed / 0 failed**）、`npm run build` 与 `git diff --check` 通过。新增覆盖活动标签实时缺失、后台标签缺失归属、Keep/Discard 只作用于目标标签、当前目标恢复后忽略迟到 missing 事件的测试；未运行 release 构建或 macOS 真实文件交互。
+
+### 接入脏标签的主动内容冲突
+
+- **状态**：已完成
+- **开始日期**：2026-08-11
+- **完成日期**：2026-08-11
+- **Feature Spec**：`docs/features/external-file-change-sync.md`
+- **结果**：将原“脏标签冲突与缺失/失败保护”按用户行为拆为三个连续小任务，本切片只交付主动内容冲突。新增 `prepare_external_conflict` 受限 IPC：前端以 Raw UTF-8 body 提交事件到达时锁定的完整编辑快照，仅携带后端文档 ID；Rust 对对应内容候选做活动基线、世代与最新磁盘快照复核，在同一临界区消费候选并建立既有版本化 `ContentChanged` 冲突。IPC 往返期间出现更新世代时会追上最新候选，重复请求幂等且不替换首次快照；过期、回退、关闭、Save As 或其他冲突不会建立伪状态。React 在活动或后台脏标签上同步进入互斥保存态，建立成功后复用现有 Reload / Overwrite / Cancel 界面与动作，失败或候选过期则恢复编辑；干净标签自动刷新不回退。未处理路径缺失、重载失败提示、仅只读变化、聚焦/睡眠兜底或 release 真实交互。
+- **验证记录**：`cargo fmt --manifest-path src-tauri/Cargo.toml -- --check`、`cargo check --manifest-path src-tauri/Cargo.toml --all-targets`、`cargo test --manifest-path src-tauri/Cargo.toml`（**146 passed / 0 failed**）、`npm run check`（**267 passed / 0 failed**）、`npm run build` 与 `git diff --check` 通过。新增覆盖活动脏标签、后台脏标签、Raw IPC、冲突快照、候选再次变化、过期解锁、重复幂等及既有取消动作复用的测试；既有重新加载/强制覆盖全套回归通过。
+
+### 接入干净标签的实时监听与自动刷新
+
+- **状态**：已完成
+- **开始日期**：2026-08-11
+- **完成日期**：2026-08-11
+- **Feature Spec**：`docs/features/external-file-change-sync.md`
+- **结果**：新增基于 `notify` 的 Rust 文件监听服务，按后端文档 ID 管理用户路径与符号链接真实目标的父目录，支持共享目录引用计数、关闭释放、Save As 迁移，并把事件风暴以 120 ms 窗口合并后交回 `DocumentStore` 做可信复核。新增受限 `prepare_external_reload(id)` IPC：内容变化只经 JSON 返回描述符，完整正文继续走既有二进制读取通道，且在正文成功取回前不推进活动可信基线；元数据变化不替换文本。React 按文档 ID 更新活动或后台干净标签，处理中同步加租约，脏/忙标签不被覆盖，关闭、身份变化和过期结果不能污染其他会话；自身保存事件由保存后的最终指纹复核为 unchanged。此切片未交付脏标签冲突、缺失/失败提示、聚焦/睡眠兜底或 release 真实交互。
+- **验证记录**：`cargo fmt --manifest-path src-tauri/Cargo.toml -- --check`、`cargo check --manifest-path src-tauri/Cargo.toml --all-targets`、`cargo test --manifest-path src-tauri/Cargo.toml`（**143 passed / 0 failed**）、`npm run check`（**263 passed / 0 failed**）、`npm run build` 与 `git diff --check` 通过。新增覆盖二进制候选分阶段原子提升、干净活动标签刷新、脏标签不采用、后台标签归属及 IPC 参数的测试；未运行 release 构建或 macOS 真实文件交互。
+
+### 修复外部重载候选生命周期与竞态
+
+- **状态**：已完成
+- **开始日期**：2026-08-11
+- **完成日期**：2026-08-11
+- **Feature Spec**：`docs/features/external-file-change-sync.md`
+- **结果**：修复审查发现的四项问题。`DocumentEntry` 新增单调外部复核世代，较早开始、较晚完成的观察不能覆盖较新的候选；每次有效复核先替换整个候选槽，`Unchanged`、`Missing` 与 `ReloadFailed` 会清除旧快照；普通保存、另存为、打开/重载提升和保存冲突等活动状态转换都会使候选失效，已有冲突时分类与提升均拒绝；`take_external_reload` 在提交前再次从后端可信路径建立一致快照，候选之后磁盘再次变化时不推进旧内容或旧指纹。合并了重复的「最近完成」章节。未接入文件监听、前端自动刷新或异常 UI。
+- **验证记录**：新增 4 组确定性回归测试，覆盖 changed→unchanged/missing/failure 连续分类、候选后发生保存冲突、候选后磁盘再次变化和复核乱序完成；`cargo fmt --manifest-path src-tauri/Cargo.toml --check`、`cargo check --manifest-path src-tauri/Cargo.toml --all-targets`、`cargo test --manifest-path src-tauri/Cargo.toml`（**141 passed / 0 failed**）、`npm run check`（**259 passed / 0 failed**）、`npm run build` 与 `git diff --check` 通过。
+
+### 建立已关联文档磁盘变化分类契约
+
+- **状态**：已完成
+- **开始日期**：2026-08-11
+- **完成日期**：2026-08-11
+- **Feature Spec**：`docs/features/external-file-change-sync.md`
+- **结果**：在 `src-tauri/src/ipc.rs` 的 `DocumentStore` 上新增外部文件变化分类与原子重载契约。`ExternalChange` 枚举分类为 `Unchanged`/`ContentChanged`/`MetadataChanged`/`Missing`/`ReloadFailed(DocumentError)`；`classify_external_change(id)` 锁内取可信基线、锁外复用 `crate::document::open_document` 的一致快照（指纹、严格编码、50 MiB 上限、读取期间变化与原子替换保护）、再锁内重新校验基线未被改动后分类并按需挂起 `ExternalReloadCandidate`（绑定基线指纹/路径供过期校验）；`take_external_reload(id)` 在候选仍匹配活动状态与最新磁盘快照且不存在冲突时原子推进活动可信状态并清空候选，返回 `ExternalReload::Content { descriptor, content }` 或 `ExternalReload::Metadata { descriptor }`，过期、冲突、候选缺失或强制覆盖中返回 `None` 不改状态。字节变化但解码文本相同（如追加 BOM）仍判为 `ContentChanged`；只读变化但内容相同判为 `MetadataChanged`；NotFound 映射为 `Missing`，其余读错误进 `ReloadFailed`。未知/过期文档 id、多文档隔离、失败保护（不替换活动状态）均覆盖。未接入持续监听、IPC 命令或前端。
+- **验证记录**：`cargo fmt --manifest-path src-tauri/Cargo.toml --check`、`cargo check --manifest-path src-tauri/Cargo.toml --all-targets`、`cargo test --manifest-path src-tauri/Cargo.toml`（**137 passed / 0 failed**，新增 11 个分类契约用例：unchanged、内容变化不替换活动、字节变文本同、只读元数据变化、缺失、无效编码 ReloadFailed、未知/无候选 id、多文档隔离、内容候选原子提升、元数据候选提升、基线变化过期返回 None；既有保存冲突/打开/多标签测试不回退）；`npm run check` 通过（typecheck + vitest **259 passed / 0 failed**，前端未改）；`git diff --check` 通过。纯后端切片，未运行 release 构建或 macOS 真实交互。
+
+### 确认外部文件变更实时同步规格
+
+- **状态**：已完成
+- **开始日期**：2026-08-11
+- **完成日期**：2026-08-11
+- **Feature Spec**：`docs/features/external-file-change-sync.md`
+- **结果**：确认已保存标签在其他应用修改或原子替换文件后主动安全重读并自动展示最新版本；脏标签绝不静默覆盖，复用现有重新加载、强制覆盖和取消流程；删除、重命名或移走按原路径缺失处理；重载失败保留当前内容并可重试。规格同时明确自身保存事件抑制、事件合并、一致快照、多标签监听生命周期、后台标签、过期结果、符号链接、只读变化及聚焦/睡眠恢复兜底，并拆为磁盘变化分类、干净标签自动刷新、脏标签与异常保护、集成验收四个后续任务。
+- **验证记录**：文档审查；`git diff --check` 通过。本任务未修改生产代码，未运行实现测试、构建或 macOS 交互验收。
 
 ### 部署当前 release 到系统应用目录
 

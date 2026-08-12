@@ -11,6 +11,7 @@ import {
   failSave,
   isBusy,
   requestOpen,
+  requestExternalConflict,
   requestSave,
   startLoading,
   updateDocumentContent,
@@ -64,6 +65,16 @@ describe("document session", () => {
     expect(updateDocumentContent(document, "Hello")).toMatchObject({
       content: "Hello",
       isDirty: true,
+    });
+  });
+
+  it("locks only an opened dirty document while external conflict is established", () => {
+    const dirty = openedDirty();
+    expect(requestExternalConflict(dirty).saveStatus).toBe("saving");
+    expect(requestExternalConflict(createNewDocument())).toEqual(createNewDocument());
+    expect(requestExternalConflict({ ...dirty, isDirty: false })).toEqual({
+      ...dirty,
+      isDirty: false,
     });
   });
 });
