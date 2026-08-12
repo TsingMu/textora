@@ -313,14 +313,12 @@ export function markdownFenceAutoCloseSpec(state: EditorState): TransactionSpec 
 }
 
 /**
- * Enter 自动闭合命令。仅在当前语言为 Markdown 时尝试；命中自动闭合条件则提交事务并返回 true，
- * 否则返回 false 让默认 Enter 接管，保留列块多选与非 Markdown 文档的既有换行行为。
+ * Enter 自动闭合命令。命中 Markdown opening fence 自动闭合条件则提交事务并返回 true，否则返回 false
+ * 让默认 Enter 接管，保留列块多选与普通编辑的既有换行行为。命令不按文件语言提前退出：
+ * 即使当前标签被识别为 Plain Text、JSON 或其他源码语言，只要用户明确输入了 Markdown fence，也按写作辅助补齐。
  */
-export function markdownFenceAutoCloseCommand(language: () => LanguageMode): Command {
+export function markdownFenceAutoCloseCommand(_language: () => LanguageMode): Command {
   return (view) => {
-    if (language() !== "markdown") {
-      return false;
-    }
     const spec = markdownFenceAutoCloseSpec(view.state);
     if (spec === null) {
       return false;
@@ -329,6 +327,21 @@ export function markdownFenceAutoCloseCommand(language: () => LanguageMode): Com
     return true;
   };
 }
+
+/**
+ * 兜底拦截普通换行事务：真实 WebView/Markdown 语言扩展路径中，Enter 有时会先走默认换行而不是命中
+ * 高优先级 keymap。只要换行前状态已经位于未闭合 opening fence 行末，就把该默认换行改写成与命令路径相同
+ * 的自动闭合事务，保证 Markdown 文档、Plain Text 和其他源码语言表现一致。
+ */
+export const markdownFenceAutoCloseFallbackExtension = EditorState.transactionFilter.of(
+  (transaction) => {
+    if (!transaction.isUserEvent("input.newline")) {
+      return transaction;
+    }
+    const spec = markdownFenceAutoCloseSpec(transaction.startState);
+    return spec ?? transaction;
+  },
+);
 
 /**
  * 构造 fenced JSON 显式格式化计划：光标位于闭合 `json` fenced code block 内容区时，用浏览器内建
@@ -457,6 +470,7 @@ export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(
         basicSetup,
         syntaxHighlighting(textoraSyntaxHighlightStyle),
         columnBlockSelectionExtensions,
+        markdownFenceAutoCloseFallbackExtension,
         Prec.high(
           keymap.of([
             { key: "Enter", run: markdownFenceAutoCloseCommand(() => languageRef.current) },

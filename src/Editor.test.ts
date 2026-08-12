@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 
-import { EditorSelection, EditorState, type Extension } from "@codemirror/state";
-import { history, undo } from "@codemirror/commands";
+import { basicSetup } from "codemirror";
+import { Compartment, EditorSelection, EditorState, Prec, type Extension } from "@codemirror/state";
+import { defaultKeymap, history, historyKeymap, undo } from "@codemirror/commands";
 import { forceParsing } from "@codemirror/language";
 import { markdown } from "@codemirror/lang-markdown";
-import { EditorView } from "@codemirror/view";
+import { EditorView, keymap, runScopeHandlers } from "@codemirror/view";
 import { describe, expect, it } from "vitest";
 import {
   columnBlockDeleteCommand,
@@ -17,6 +18,7 @@ import {
   fenceAutoCloseDecisionFromTree,
   formatJsonFencePlan,
   markdownFenceAutoCloseCommand,
+  markdownFenceAutoCloseFallbackExtension,
   markdownFenceAutoCloseSpec,
 } from "./Editor";
 import { languageExtension } from "./languageExtensions";
@@ -461,7 +463,7 @@ describe("markdown fence auto-close", () => {
     }
   });
 
-  it("leaves default Enter intact for non-markdown languages", () => {
+  it("also auto-closes markdown-like fences in plain text documents", () => {
     const host = document.createElement("div");
     document.body.append(host);
     const view = new EditorView({
@@ -474,7 +476,100 @@ describe("markdown fence auto-close", () => {
     });
 
     try {
-      expect(markdownFenceAutoCloseCommand(() => "plain-text")(view)).toBe(false);
+      expect(markdownFenceAutoCloseCommand(() => "plain-text")(view)).toBe(true);
+      expect(view.state.doc.toString()).toBe("```json\n\n```");
+      expect(view.state.selection.main.from).toBe(8);
+      expect(undo(view)).toBe(true);
+      expect(view.state.doc.toString()).toBe("```json");
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it("handles a real Enter key event after a markdown opening fence with an info string", () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const view = new EditorView({
+      parent: host,
+      state: EditorState.create({
+        doc: "```json",
+        selection: EditorSelection.cursor(7),
+        extensions: [
+          basicSetup,
+          Prec.high(
+            keymap.of([
+              { key: "Enter", run: markdownFenceAutoCloseCommand(() => "markdown") },
+            ]),
+          ),
+          new Compartment().of(languageExtension("markdown") ?? []),
+          keymap.of([...defaultKeymap, ...historyKeymap]),
+        ],
+      }),
+    });
+
+    try {
+      const event = new KeyboardEvent("keydown", { key: "Enter" });
+      expect(runScopeHandlers(view, event, "editor")).toBe(true);
+      expect(view.state.doc.toString()).toBe("```json\n\n```");
+      expect(view.state.selection.main.from).toBe(8);
+      expect(undo(view)).toBe(true);
+      expect(view.state.doc.toString()).toBe("```json");
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it("rewrites a default newline transaction after an opening fence in markdown mode", () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const view = new EditorView({
+      parent: host,
+      state: EditorState.create({
+        doc: "```json",
+        selection: EditorSelection.cursor(7),
+        extensions: [
+          history(),
+          markdownFenceAutoCloseFallbackExtension,
+          languageExtension("markdown") ?? [],
+        ],
+      }),
+    });
+
+    try {
+      view.dispatch({
+        changes: { from: 7, insert: "\n" },
+        selection: EditorSelection.cursor(8),
+        userEvent: "input.newline",
+      });
+      expect(view.state.doc.toString()).toBe("```json\n\n```");
+      expect(view.state.selection.main.from).toBe(8);
+      expect(undo(view)).toBe(true);
+      expect(view.state.doc.toString()).toBe("```json");
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it("also auto-closes markdown-like fences in code language documents", () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const view = new EditorView({
+      parent: host,
+      state: EditorState.create({
+        doc: "```json",
+        selection: EditorSelection.cursor(7),
+        extensions: [history()],
+      }),
+    });
+
+    try {
+      expect(markdownFenceAutoCloseCommand(() => "json")(view)).toBe(true);
+      expect(view.state.doc.toString()).toBe("```json\n\n```");
+      expect(view.state.selection.main.from).toBe(8);
+      expect(undo(view)).toBe(true);
       expect(view.state.doc.toString()).toBe("```json");
     } finally {
       view.destroy();

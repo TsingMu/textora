@@ -2,6 +2,8 @@
 
 import { act } from "react";
 import { createRoot } from "react-dom/client";
+import { EditorSelection } from "@codemirror/state";
+import { EditorView } from "@codemirror/view";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // jsdom does not implement Range geometry. CodeMirror schedules text measurement
@@ -5292,6 +5294,30 @@ describe("App Format JSON", () => {
 
     await openMarkdown("# title\n");
     expect(container.querySelector(".format-json-button")).not.toBeNull();
+  });
+
+  it("auto-closes a markdown opening fence with an info string from the app editor", async () => {
+    await act(async () => root.render(<App />));
+    await openMarkdown("```json");
+
+    const editable = container.querySelector<HTMLElement>(".cm-content");
+    expect(editable).not.toBeNull();
+    const view = editable === null ? null : EditorView.findFromDOM(editable);
+    expect(view).not.toBeNull();
+    await act(async () => {
+      view?.dispatch({ selection: EditorSelection.cursor(view.state.doc.length) });
+      editable?.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          code: "Enter",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await Promise.resolve();
+    });
+
+    expect(view?.state.doc.toString()).toBe("```json\n\n```");
   });
 
   it("hides Format JSON while WYSIWYG is active", async () => {

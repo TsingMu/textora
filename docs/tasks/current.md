@@ -14,6 +14,33 @@
 
 ## 最近完成
 
+### 修复 Markdown 文档中 opening fence 自动闭合仍失效
+
+- **状态**：已完成
+- **开始日期**：2026-08-12
+- **完成日期**：2026-08-12
+- **Feature Spec**：`docs/features/markdown-fenced-code-editing.md`
+- **结果**：修复用户确认的 Plain Text 可用但 Markdown 文档仍不可用问题。保留高优先级 Enter keymap，同时新增 `markdownFenceAutoCloseFallbackExtension` 事务兜底：当真实 WebView 或 Markdown 语言扩展路径先产生普通 `input.newline` 事务时，若换行前状态位于未闭合 opening fence 行末，则在提交前改写为自动补齐 closing fence 的同一事务语义。该兜底只在当前行确认为 opening fence 时生效，非 fence 行、已有 closing fence、选区/多光标仍走默认编辑。未实现 <code>```j</code> 语言候选提示，未处理 Preview 同步滚动，未新增格式化器、LSP、网络、Rust IPC 或 WYSIWYG 行为。
+- **验证记录**：`npm run test -- Editor -t "markdown fence auto-close"` 通过（相关 **16 passed / 0 failed**）；`npm run check` 通过（typecheck + vitest **283 passed / 0 failed**）；`npm run tauri -- build` 通过并生成 release `Textora.app`；已覆盖部署到 `/Applications/Textora.app` 并执行本机 ad-hoc 重签名。新增测试覆盖 Markdown 模式中默认换行事务被兜底改写为 <code>```json\n\n```</code>；本轮未完成新的手动键入反引号真实验收，因为 Computer Use 在当前输入法下不能可靠输入反引号，只能验证 exact 文本与自动化默认换行路径。
+
+### 复查并修复已部署应用中 opening fence 自动闭合仍失效
+
+- **状态**：已完成
+- **开始日期**：2026-08-12
+- **完成日期**：2026-08-12
+- **Feature Spec**：`docs/features/markdown-fenced-code-editing.md`
+- **结果**：复查用户反馈的已部署应用仍不自动补齐问题。真实应用确认当编辑器内容确实为 <code>```json</code> 且光标在行末时，上一轮 Markdown/Plain Text 路径可补齐；为覆盖真实标签可能被识别为 JSON 或其他源码语言的场景，自动闭合命令改为不按语言提前退出，而是仅由“当前行是否为未闭合 Markdown opening fence”决定是否接管 Enter。WYSIWYG 仍使用独立编辑器，不受影响；未实现 <code>```j</code> 语言候选提示，未处理 Preview 同步滚动，未新增格式化器、LSP、网络、Rust IPC 或保存链路。
+- **验证记录**：`npm run test -- Editor App -t "auto-close|auto-closes|markdown fence"` 通过（相关 **16 passed / 0 failed**）；`npm run check` 通过（typecheck + vitest **282 passed / 0 failed**）；`npm run tauri -- build` 通过并生成 release `Textora.app`；已覆盖部署到 `/Applications/Textora.app` 并执行本机 ad-hoc 重签名；`codesign --verify --deep --strict /Applications/Textora.app` 通过；部署后真实应用用 Computer Use 验证 exact <code>```json</code> + Return，编辑器内容变为 <code>```json\n\n```</code>；`pgrep -x textora` 返回进程 PID `7681`；`git diff --check` 通过。
+
+### 修复 Markdown opening fence 带 info string 时的自动闭合（需复查）
+
+- **状态**：已完成
+- **开始日期**：2026-08-12
+- **完成日期**：2026-08-12
+- **Feature Spec**：`docs/features/markdown-fenced-code-editing.md`
+- **结果**：修复输入 <code>```json</code> 后按 Enter 未按用户预期补齐 closing fence 的问题。确认 Markdown 模式原有命令链路可用，并将自动闭合扩展到 Plain Text 标签，以覆盖新建/普通文本写作时输入 Markdown fence 的场景；JSON、JavaScript 等代码语言标签仍不接管 Markdown fence Enter。未实现 <code>```j</code> 语言候选提示，未新增语言、格式化器、LSP、网络、Rust IPC、保存链路或 WYSIWYG 行为。
+- **验证记录**：`npm run test -- Editor App -t "auto-close|auto-closes|markdown fence"` 通过（相关 **16 passed / 0 failed**）；`npm run check` 通过（typecheck + vitest **282 passed / 0 failed**）；`npm run build` 通过（Vite 大 chunk 提示仍存在，不影响本修复）；`git diff --check` 通过。新增覆盖真实 App 编辑器中 Markdown info string opening fence 的 Enter 行为、Plain Text 标签自动闭合、代码语言标签不接管，以及既有撤销/选区/多光标边界的回归测试；本任务未运行 Tauri release 构建或 macOS 真实应用点击验收。
+
 ### 外部文件变更实时同步集成验收与文档收尾
 
 - **状态**：已完成
