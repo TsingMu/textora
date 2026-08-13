@@ -6,13 +6,88 @@
 
 ## 进行中
 
-暂无进行中任务。
+### Markdown Preview 同步滚动 macOS 真实应用验收
+
+- **状态**：进行中
+- **开始日期**：2026-08-12
+- **Feature Spec**：`docs/features/markdown-preview-sync-scroll.md`
+- **目标**：在 release `Textora.app` 中人工执行双向同步滚动的真实交互验收，完成后把 Feature Spec 状态改为已完成、勾选剩余验收条件并同步 README。
+- **范围**：长 Markdown 文档下源码→预览、预览→源码双向跟随与无明显抖动/循环；编辑后预览重渲染仍同步；Mermaid block 异步高度变化后安全近似定位；关闭 Preview、进入 WYSIWYG、切到非 Markdown 标签时停止；保存/撤销/脏状态不回退。
+- **非范围**：不新增禁用开关 UI、不持久化滚动位置、不做逐像素同步或目录大纲。
+- **依赖**：双向同步滚动实现、自动化、release 构建与启动确认均已完成。
+- **拆分检查**：本任务只负责真实应用组合验收与文档状态收尾，不新增主要行为；审查修复已作为前置小任务完成。
+- **完成标准**：人工验收通过并记录；Feature Spec 最后一条验收条件勾选、状态改为已完成；README 把本功能归入已完成并标注 macOS 真实应用验收。
+- **当前进度**：执行中。已在真实 release app 验收时发现源码→预览未跟随的风险，并完成两项前端修复：`scrollPreviewToBlock` 改为显式设置预览 pane 的 `scrollTop`，避免依赖 `scrollIntoView` 推断嵌套滚动容器；`Editor` 增加 CodeMirror `viewportChanged` 上报顶部源码行，避免只依赖 DOM `scroll` 事件。`npm run check`、`git diff --check`、`npm run tauri -- build` 均已通过。最新 release app 可启动、Markdown 文件可打开、Preview 可见且 Mermaid 成功渲染；但 Computer Use 在最终复验中未能可靠让源码区继续向下滚动（截图停留顶部），因此 macOS 真实双向滚动人工验收尚不能标记通过，需用户或下一会话用真实鼠标/触控板手动确认源码→预览与预览→源码跟随、无明显抖动/循环。
 
 ## 已承诺待办
 
-暂无已承诺待办。
+### 确认 Markdown opening fence 语言候选提示规格
+
+- **状态**：待开始
+- **Feature Spec**：`docs/features/markdown-fence-language-suggestions.md`
+- **目标**：确认 opening fence 本地语言候选的首版范围、词表与键盘交互决议，并把完整 Feature 拆成可独立验收的后续实现任务。
+- **范围**：核对候选上下文与既有 fence 识别契约；决定 canonical 名称/别名检索策略；决定 Enter、Tab、Escape 与现有 Enter 自动闭合的优先级；选择 CodeMirror 接入方式；确认验收条件与实现拆分。
+- **非范围**：不实现候选词表、弹层、键盘处理或样式，不新增依赖，不修改 Editor/App 生产代码或实现性测试。
+- **依赖**：完成“Markdown Preview 同步滚动 macOS 真实应用验收”，确保当前唯一进行中任务先收尾；已完成 `docs/features/markdown-fenced-code-editing.md` 与 `docs/features/markdown-code-block-highlighting.md`。
+- **拆分检查**：本任务只交付规格决议和后续小任务拆分，不包含实现、完整回归或平台验收；上下文契约、UI 接入和最终集成验收已分别留给后续任务。
+- **实施要点**：优先复用预览实际支持的 fenced language 集合作为单一来源；交互决议必须保持 opening fence 自动闭合可预测、可撤销并安全退化。
+- **完成标准**：Feature Spec 状态改为“已确认”，开放问题形成明确决议；首个实现切片以“待开始”进入 `current.md`；`git diff --check` 通过。
 
 ## 最近完成
+
+### 修复 Markdown Preview 同步滚动审查问题
+
+- **状态**：已完成
+- **开始日期**：2026-08-12
+- **完成日期**：2026-08-12
+- **Feature Spec**：`docs/features/markdown-preview-sync-scroll.md`
+- **结果**：修复代码审查发现的两个问题。`App` 在预览→源码程序滚动后新增下一动画帧兜底复位 `editorProgrammaticScrollRef`，避免目标已在当前位置、滚动被夹住或未产生源码 scroll 事件时，下一次用户主动滚动源码被误吞；对应 App 回归测试覆盖预览→源码请求后，后续源码滚动仍能带动预览。README 合并 `docs/features/markdown-preview-sync-scroll.md` 重复入口，只保留「实现完成、macOS 真实应用验收待执行」这一当前真实状态。
+- **验证记录**：`npm run test -- App -t "scrolls the editor to the source line"` 通过（1 passed / 0 failed）；`npm run check` 通过（typecheck + vitest **310 passed / 0 failed**）；`git diff --check` 通过。未运行 release 构建或 macOS 真实应用人工验收，后者仍为下一项已承诺待办。
+
+### Markdown Preview 同步滚动集成验收与文档收尾
+
+- **状态**：自动化、release 构建与启动确认完成；macOS 真实滚动交互验收待执行
+- **开始日期**：2026-08-12
+- **完成日期**：2026-08-12
+- **Feature Spec**：`docs/features/markdown-preview-sync-scroll.md`
+- **结果**：完成双向同步滚动的组合自动化、release 构建、bundle 与权限校验、release 启动确认与文档收尾。`docs/features/markdown-preview-sync-scroll.md` 状态改为「实现完成，macOS 真实应用验收待执行」，9 条可由自动化/代码/权限确认的验收条件已勾选，最后一条 macOS 真实应用验收条件与「已完成」状态待人工执行后落实；README 文档导航新增本规格条目（同状态）。功能为纯前端本地能力：双向块级锚点映射 + rAF 节流 + 双向程序滚动标记抑制循环；Preview 关闭/WYSIWYG/非 Markdown 经可见性与监听生命周期停止同步。未改保存链路、Rust/capability。
+- **验证记录**：`npm run check` 通过（typecheck + vitest **310 passed / 0 failed**）；`npm run tauri -- build` 通过并生成 release `Textora.app`；bundle 校验 `CFBundleIdentifier`=`com.tsingmu.textora`、`CFBundleExecutable`=`textora`、`CFBundleIconFile`=`icon.icns`；`src-tauri/capabilities/` 自 `63800c3` 起无改动，确认未新增网络、shell、远程页面、Rust IPC、Tauri capability 或宽泛文件权限；release app 可启动；`git diff --check` 通过。macOS 真实 WebView 内双向滚动、抖动/循环视觉判定与 Mermaid 异步高度等真实交互待人工执行（当前自动化环境无法可靠观察 WebView 滚动），逻辑层由自动化确定性覆盖。
+
+### 接入 Markdown 预览到源码同步滚动与边界恢复
+
+- **状态**：已完成
+- **开始日期**：2026-08-12
+- **完成日期**：2026-08-12
+- **Feature Spec**：`docs/features/markdown-preview-sync-scroll.md`
+- **结果**：交付预览→源码方向的同步滚动与双向循环抑制。`src/markdownPreviewSync.ts` 新增 `topPreviewBlockIndex(relativeTops)`（视口顶部块 = 相对偏移 `<= 0` 的最后一个块）与 `previewBlockRelativeTops(pane, content)`（按 live `getBoundingClientRect` 计算，预览重渲染/Mermaid 异步高度变化后的新结构在下次滚动自动反映）。`Editor` 的 `EditorHandle` 新增 `scrollToSourceLine(line)`：把 0-based 行映射到 1-based 并经 `EditorView.scrollIntoView(pos, {y:"start"})` 程序滚动。`App` 新增 `previewPaneRef`、`editorProgrammaticScrollRef` 与 `handlePreviewScroll`（rAF 节流→`topPreviewBlockIndex`→`editorRef.scrollToSourceLine`）；`useEffect` 在预览可见时挂载、关闭/切走时卸载预览滚动监听；`handleEditorScroll` 顶部检查 `editorProgrammaticScrollRef`，`handlePreviewScroll` 顶部检查 `previewProgrammaticScrollRef`，任一方向程序滚动产生的反向事件被复位并跳过，抑制双向循环。Preview 关闭/WYSIWYG/非 Markdown 经 `markdownPreviewVisibleRef` 与监听生命周期停止同步。
+- **验证记录**：`npm run check` 通过（typecheck + vitest **310 passed / 0 failed**，新增 `markdownPreviewSync` 4 用例：`previewBlockRelativeTops` 相对偏移、`topPreviewBlockIndex` 各边界；新增 1 个 App 用例：Markdown Preview 滚动请求源码编辑区滚动到对应源码块；既有双向/映射/Editor 测试不回退）；`npm run build` 通过；`git diff --check` 通过。前端切片，未运行 release 构建或 macOS 真实交互（留给集成验收切片）。
+
+### 接入 Markdown 源码到预览同步滚动
+
+- **状态**：已完成
+- **开始日期**：2026-08-12
+- **完成日期**：2026-08-12
+- **Feature Spec**：`docs/features/markdown-preview-sync-scroll.md`
+- **结果**：交付源码→预览方向的同步滚动。新增 `src/markdownPreviewSync.ts`：`previewBlockIndexForSourceLine(blockMap, sourceLine)` 按 0-based 源码行返回对应预览块序号（首块前回落首块、末块后回落末块）；`scrollPreviewToBlock(container, blockIndex, programmaticRef)` 把容器第 N 个顶层元素 `scrollIntoView({block:"start"})`，并在滚动前置位程序标记、下一动画帧复位（供切片 4 抑制反向循环）。`Editor` 新增可选 `onScroll(topLine)` prop：挂载时在 `view.scrollDOM` 上注册 `scroll` 监听（卸载时移除），按 `lineBlockAtHeight(scrollTop)` 计算顶部可见源码行（0-based，失败回 `null`）回调。`App` 在 Markdown Preview 可见时用 `useMemo` 派生 `markdownBlockMap`；`handleEditorScroll` 经 `requestAnimationFrame` 节流、用 `previewBlockIndexForSourceLine` + `scrollPreviewToBlock` 把预览对应块滚到顶部；Preview 关闭/WYSIWYG/非 Markdown 时通过 `markdownPreviewVisibleRef` 提前返回不滚动；预览重渲染后基于新 `session.content` 的映射重建。程序滚动标记写入 `previewProgrammaticScrollRef`。
+- **验证记录**：`npm run check` 通过（typecheck + vitest **305 passed / 0 failed**，新增 `src/markdownPreviewSync.test.ts` 8 用例：行→块映射各边界、scrollIntoView 调用与 rAF 复位标记、无效序号；新增 2 个 App 用例：Markdown Preview 可见时源码滚动跟随到预览块、非 Markdown 不触发；既有 `markdownBlockMap`/`markdownPreview`/Editor 测试不回退）；`npm run build` 通过；`git diff --check` 通过。前端切片，未运行 release 构建或 macOS 真实交互（双向与边界恢复留给切片 4，集成验收留给切片 5）。
+
+### 建立 Markdown Preview 源码块与预览块映射契约
+
+- **状态**：已完成
+- **开始日期**：2026-08-12
+- **完成日期**：2026-08-12
+- **Feature Spec**：`docs/features/markdown-preview-sync-scroll.md`
+- **结果**：在 `src/markdownPreview.ts` 建立块级映射契约。`renderMarkdownToSafeHtml` 重构为返回 `{ html, blockMap }`：在原 push 点经 `pushBlock(kind, startLine, html)` 并行记录每个块的 `{ index, kind, startLine, endLine }`（序号 = push 前 `blocks.length`，endLine = 当前 `index`），HTML 字符串与渲染顺序完全不变（既有预览测试不回退）。新增导出 `MarkdownBlockKind`（heading/paragraph/fence/list/table/blockquote/hr/mermaid）、`MarkdownBlock` 类型，以及纯函数 `collectMarkdownBlockMap(source)`（= `renderMarkdownToSafeHtml(source).blockMap`，不依赖 Mermaid 异步预览内容即可识别 mermaid 块的源码行范围）。每个块都渲染为单一根元素，序号 ↔ 预览容器顶层元素一一对应，作为后续同步滚动的稳定 DOM 锚点，无需 `data-*` 属性、不改渲染结果。未接入滚动事件、DOM 监听或 Mermaid 安全清洗。
+- **验证记录**：`npm run check` 通过（typecheck + vitest **295 passed / 0 failed**，新增 `src/markdownBlockMap.test.ts` 12 用例：空/纯空白、多行段落、标题+段落、围栏、Mermaid 围栏、无序/任务列表、有序列表、表格、引用、分隔线、混合连续块与序号、相邻围栏；既有 `markdownPreview` 7 用例不回退）；`npm run build` 通过；`git diff --check` 通过。纯前端契约切片，未运行 release 构建或 macOS 真实交互。
+
+### 确认 Markdown Preview 同步滚动规格
+
+- **状态**：已完成
+- **开始日期**：2026-08-12
+- **完成日期**：2026-08-12
+- **Feature Spec**：`docs/features/markdown-preview-sync-scroll.md`
+- **结果**：把同步滚动规格从草案改为已确认。两个开放问题决议为：采用块级锚点映射作为首版主路径——核对 `src/markdownPreview.ts` 的 `renderMarkdownToSafeHtml` 已按行扫描源码并按块（fenced code、标题、分隔线、表格、引用、列表、段落）消费连续源码行，能为每个预览块记录源码行范围并以稳定 DOM 锚点标记，无需退化为纯滚动比例同步；首版不提供禁用同步滚动的 UI 开关。规格以「决议记录」替换「开放问题」，补验证记录。首个实现切片「建立 Markdown Preview 源码块与预览块映射契约」进入已承诺待办。
+- **验证记录**：文档审查与 `git diff --check` 通过；本任务仅修改规划文档，未运行实现测试或构建。
 
 ### 修复 Markdown 文档中 opening fence 自动闭合仍失效
 

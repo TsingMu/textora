@@ -17,6 +17,29 @@ export type MarkdownMermaidBlockPreview = {
   html: string;
 };
 
+/** Markdown 顶层块类型，用于 Preview 同步滚动的块级映射。 */
+export type MarkdownBlockKind =
+  | "heading"
+  | "paragraph"
+  | "fence"
+  | "list"
+  | "table"
+  | "blockquote"
+  | "hr"
+  | "mermaid";
+
+/**
+ * 一个顶层 Markdown 块在源码与预览之间的映射条目。`index` 为预览渲染顺序下的 0-based 序号，
+ * 与预览容器顶层元素顺序一致（每个块都渲染为单一根元素），作为同步滚动的稳定 DOM 锚点；
+ * `startLine`/`endLine` 为源码 0-based 半开行区间。
+ */
+export type MarkdownBlock = {
+  index: number;
+  kind: MarkdownBlockKind;
+  startLine: number;
+  endLine: number;
+};
+
 interface MarkdownPreviewOptions {
   renderer?: MarkdownRenderer;
   mermaidBlocks?: Readonly<Record<number, MarkdownMermaidBlockPreview>>;
@@ -36,7 +59,7 @@ export function renderMarkdownPreview(
         options.renderer?.(source) ??
         renderMarkdownToSafeHtml(source, {
           mermaidBlocks: options.mermaidBlocks,
-        }),
+        }).html,
     };
   } catch (error) {
     const message =
@@ -53,12 +76,29 @@ export function renderMarkdownPreview(
   }
 }
 
+/**
+ * 收集 Markdown 源码的顶层块映射（`docs/features/markdown-preview-sync-scroll.md` 切片 2）。
+ * 纯函数：返回每个块在源码中的 0-based 半开行区间、块类型与预览渲染顺序下的 0-based 序号；
+ * 序号与预览容器顶层元素顺序一致，供后续双向同步滚动作为稳定 DOM 锚点。不读取或写入 DOM、
+ * 不依赖 Mermaid 异步预览结果。
+ */
+export function collectMarkdownBlockMap(source: string): MarkdownBlock[] {
+  return renderMarkdownToSafeHtml(source).blockMap;
+}
+
 function renderMarkdownToSafeHtml(
   source: string,
   options: Pick<MarkdownPreviewOptions, "mermaidBlocks"> = {},
-): string {
+): { html: string; blockMap: MarkdownBlock[] } {
   const lines = source.replace(/\r\n?/g, "\n").split("\n");
   const blocks: string[] = [];
+  const blockMap: MarkdownBlock[] = [];
+  // 在每个分支消费完源码行后调用：先记录块映射（序号 = 当前 blocks 长度，endLine = 当前 index），
+  // 再 push HTML。映射与 HTML 同源同序，保证序号 ↔ 预览顶层元素一一对应，且不改变渲染结果。
+  const pushBlock = (kind: MarkdownBlockKind, startLine: number, html: string) => {
+    blockMap.push({ index: blocks.length, kind, startLine, endLine: index });
+    blocks.push(html);
+  };
   let index = 0;
   let mermaidBlockIndex = 0;
 
@@ -69,6 +109,8 @@ function renderMarkdownToSafeHtml(
       index += 1;
       continue;
     }
+
+    const startLine = index;
 
     const fence = line.match(/^ {0,3}```\s*([^\s`]*)?.*$/);
     if (fence) {
@@ -84,14 +126,20 @@ function renderMarkdownToSafeHtml(
       }
       if (language.trim().toLowerCase() === "mermaid") {
         const preview = options.mermaidBlocks?.[mermaidBlockIndex];
-        blocks.push(renderMermaidCodeBlock(mermaidBlockIndex, preview));
+        pushBlock(
+          "mermaid",
+          startLine,
+          renderMermaidCodeBlock(mermaidBlockIndex, preview),
+        );
         mermaidBlockIndex += 1;
         continue;
       }
       const languageClass = language
         ? ` class="language-${escapeAttribute(language)}"`
         : "";
-      blocks.push(
+      pushBlock(
+        "fence",
+        startLine,
         `<pre><code${languageClass}>${renderHighlightedCodeBlock(
           codeLines.join("\n"),
           language,
@@ -103,21 +151,21 @@ function renderMarkdownToSafeHtml(
     const heading = line.match(/^(#{1,6})\s+(.+?)\s*#*\s*$/);
     if (heading) {
       const level = heading[1].length;
-      blocks.push(`<h${level}>${renderInline(heading[2])}</h${level}>`);
       index += 1;
+      pushBlock("heading", startLine, `<h${level}>${renderInline(heading[2])}</h${level}>`);
       continue;
     }
 
     if (/^ {0,3}([-*_])(?:\s*\1){2,}\s*$/.test(line)) {
-      blocks.push("<hr>");
       index += 1;
+      pushBlock("hr", startLine, "<hr>");
       continue;
     }
 
     if (isTableStart(lines, index)) {
       const table = collectTable(lines, index);
-      blocks.push(renderTable(table.rows));
       index = table.nextIndex;
+      pushBlock("table", startLine, renderTable(table.rows));
       continue;
     }
 
@@ -127,14 +175,18 @@ function renderMarkdownToSafeHtml(
         quoteLines.push((lines[index] ?? "").replace(/^ {0,3}>\s?/, ""));
         index += 1;
       }
-      blocks.push(`<blockquote>${renderParagraphs(quoteLines)}</blockquote>`);
+      pushBlock(
+        "blockquote",
+        startLine,
+        `<blockquote>${renderParagraphs(quoteLines)}</blockquote>`,
+      );
       continue;
     }
 
     const list = collectList(lines, index);
     if (list) {
-      blocks.push(renderList(list.items, list.ordered));
       index = list.nextIndex;
+      pushBlock("list", startLine, renderList(list.items, list.ordered));
       continue;
     }
 
@@ -147,10 +199,14 @@ function renderMarkdownToSafeHtml(
       paragraphLines.push((lines[index] ?? "").trim());
       index += 1;
     }
-    blocks.push(`<p>${renderInline(paragraphLines.join(" "))}</p>`);
+    pushBlock(
+      "paragraph",
+      startLine,
+      `<p>${renderInline(paragraphLines.join(" "))}</p>`,
+    );
   }
 
-  return blocks.join("\n");
+  return { html: blocks.join("\n"), blockMap };
 }
 
 export function collectMarkdownMermaidBlocks(source: string): string[] {

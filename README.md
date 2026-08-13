@@ -28,6 +28,8 @@ Textora 是一款 macOS 个人文本工作台，把 Windows 内网工作中常�
 - `docs/features/markdown-split-preview.md`：已完成的 Markdown 源码与本地预览左右分栏规格
 - `docs/features/markdown-code-block-highlighting.md`：已完成的 Markdown 预览代码块语法着色规格
 - `docs/features/markdown-fenced-code-editing.md`：已完成的 Markdown fenced code block 编辑辅助规格
+- `docs/features/markdown-fence-language-suggestions.md`：草案中的 Markdown opening fence 本地语言候选提示规格
+- `docs/features/markdown-preview-sync-scroll.md`：实现完成、macOS 真实应用验收待执行的 Markdown Preview 左右同步滚动规格
 - `docs/features/markdown-wysiwyg-mode.md`：已完成的 Markdown 所见即所得模式规格
 - `docs/features/mermaid-local-preview.md`：已完成的 Mermaid 本地编辑与预览规格
 - `docs/tasks/current.md`：当前已承诺任务

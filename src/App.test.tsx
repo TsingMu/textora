@@ -3009,6 +3009,198 @@ describe("App Markdown preview", () => {
     expect(container.querySelector(".markdown-wysiwyg-editor")).toBeNull();
   });
 
+  it("syncs the preview to the editor scroll when Markdown preview is visible", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        return {
+          id: "doc-md",
+          path: "/tmp/README.md",
+          displayName: "README.md",
+          byteCount: 64,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 64, sha256: "md" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode("# Title\n\nParagraph here.\n\n- item").buffer;
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    const rafSpy = vi
+      .spyOn(globalThis, "requestAnimationFrame")
+      .mockImplementation((cb: FrameRequestCallback) => {
+        cb(0);
+        return 0;
+      });
+    try {
+      await act(async () => root.render(<App />));
+      await act(async () => {
+        container.querySelector<HTMLButtonElement>(".open-button")?.click();
+      });
+      await act(async () => {
+        container.querySelector<HTMLButtonElement>(".markdown-preview-toggle")?.click();
+      });
+      const previewContent = container.querySelector<HTMLElement>(
+        ".markdown-preview-content",
+      );
+      expect(previewContent).not.toBeNull();
+      const previewPane = container.querySelector<HTMLElement>(
+        ".markdown-preview-pane",
+      );
+      expect(previewPane).not.toBeNull();
+      Object.defineProperty(previewPane!, "scrollTop", {
+        configurable: true,
+        writable: true,
+        value: 0,
+      });
+      vi.spyOn(previewPane!, "getBoundingClientRect").mockReturnValue({
+        top: 0,
+      } as DOMRect);
+      const rectSpies = Array.from(previewContent!.children).map((child) =>
+        vi
+          .spyOn(child as HTMLElement, "getBoundingClientRect")
+          .mockReturnValue({ top: 120 } as DOMRect),
+      );
+
+      const scroller = container.querySelector<HTMLElement>(".cm-scroller");
+      expect(scroller).not.toBeNull();
+      await act(async () => {
+        scroller!.scrollTop = 40;
+        scroller!.dispatchEvent(new Event("scroll"));
+      });
+
+      // 源码→预览跟随：预览某个顶层块被滚动到顶部（具体块取决于 CodeMirror 的行高估算）。
+      expect(previewPane!.scrollTop).toBeGreaterThan(0);
+      for (const spy of rectSpies) {
+        spy.mockRestore();
+      }
+    } finally {
+      rafSpy.mockRestore();
+    }
+  });
+
+  it("does not sync the preview for a non-Markdown document", async () => {
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(Element.prototype, "scrollIntoView", {
+      configurable: true,
+      writable: true,
+      value: scrollIntoView,
+    });
+    const rafSpy = vi
+      .spyOn(globalThis, "requestAnimationFrame")
+      .mockImplementation((cb: FrameRequestCallback) => {
+        cb(0);
+        return 0;
+      });
+    try {
+      await act(async () => root.render(<App />));
+      // 默认 Untitled 为纯文本：无 Preview，同步应被跳过。
+      expect(container.querySelector(".markdown-preview-content")).toBeNull();
+      scrollIntoView.mockClear();
+
+      const scroller = container.querySelector<HTMLElement>(".cm-scroller");
+      expect(scroller).not.toBeNull();
+      await act(async () => {
+        scroller!.scrollTop = 40;
+        scroller!.dispatchEvent(new Event("scroll"));
+      });
+
+      expect(scrollIntoView).not.toHaveBeenCalled();
+    } finally {
+      rafSpy.mockRestore();
+      delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+    }
+  });
+
+  it("scrolls the editor to the source line when the preview is scrolled", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        return {
+          id: "doc-md",
+          path: "/tmp/README.md",
+          displayName: "README.md",
+          byteCount: 64,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 64, sha256: "md" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode("# Title\n\nParagraph here.\n\n- item").buffer;
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    const rafSpy = vi
+      .spyOn(globalThis, "requestAnimationFrame")
+      .mockImplementation((cb: FrameRequestCallback) => {
+        cb(0);
+        return 0;
+      });
+    const cmScrollSpy = vi.spyOn(EditorView, "scrollIntoView");
+    try {
+      await act(async () => root.render(<App />));
+      await act(async () => {
+        container.querySelector<HTMLButtonElement>(".open-button")?.click();
+      });
+      await act(async () => {
+        container.querySelector<HTMLButtonElement>(".markdown-preview-toggle")?.click();
+      });
+      const pane = container.querySelector<HTMLElement>(".markdown-preview-pane");
+      expect(pane).not.toBeNull();
+      cmScrollSpy.mockClear();
+
+      await act(async () => {
+        pane!.dispatchEvent(new Event("scroll"));
+      });
+
+      // 预览→源码跟随：源码编辑区被请求滚动到对应源码块。
+      expect(cmScrollSpy).toHaveBeenCalled();
+      Object.defineProperty(pane!, "scrollTop", {
+        configurable: true,
+        writable: true,
+        value: 0,
+      });
+      vi.spyOn(pane!, "getBoundingClientRect").mockReturnValue({ top: 0 } as DOMRect);
+      const previewContent = container.querySelector<HTMLElement>(
+        ".markdown-preview-content",
+      );
+      expect(previewContent).not.toBeNull();
+      const rectSpies = Array.from(previewContent!.children).map((child) =>
+        vi
+          .spyOn(child as HTMLElement, "getBoundingClientRect")
+          .mockReturnValue({ top: 120 } as DOMRect),
+      );
+
+      const scroller = container.querySelector<HTMLElement>(".cm-scroller");
+      expect(scroller).not.toBeNull();
+      await act(async () => {
+        scroller!.scrollTop = 40;
+        scroller!.dispatchEvent(new Event("scroll"));
+      });
+
+      // 若预览→源码没有实际产生源码 scroll 事件，程序滚动标记也应在下一帧兜底复位；
+      // 后续用户主动滚动源码时，源码→预览同步不能被误吞。
+      expect(pane!.scrollTop).toBeGreaterThan(0);
+      for (const spy of rectSpies) {
+        spy.mockRestore();
+      }
+    } finally {
+      rafSpy.mockRestore();
+      cmScrollSpy.mockRestore();
+    }
+  });
+
   it("edits Markdown through WYSIWYG and saves Markdown source text", async () => {
     let savedContent = "";
     invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import "./App.css";
 import appIconUrl from "../icon.png";
@@ -73,10 +73,18 @@ import {
   type SaveDirectoryGrant,
 } from "./platform";
 import {
+  collectMarkdownBlockMap,
   collectMarkdownMermaidBlocks,
   renderMarkdownPreview,
+  type MarkdownBlock,
   type MarkdownMermaidBlockPreview,
 } from "./markdownPreview";
+import {
+  previewBlockIndexForSourceLine,
+  previewBlockRelativeTops,
+  scrollPreviewToBlock,
+  topPreviewBlockIndex,
+} from "./markdownPreviewSync";
 import {
   renderMermaidPreview,
   type MermaidPreviewResult,
@@ -211,6 +219,15 @@ function App() {
   const saveAsPanelRevisionRef = useRef(0);
   const externalReloadsRef = useRef(new Set<string>());
   const focusRefreshesRef = useRef(new Set<string>());
+  const previewContentRef = useRef<HTMLDivElement>(null);
+  const previewPaneRef = useRef<HTMLElement>(null);
+  const previewProgrammaticScrollRef = useRef(false);
+  const editorProgrammaticScrollRef = useRef(false);
+  const previewScrollRafRef = useRef<number | null>(null);
+  const editorScrollRafRef = useRef<number | null>(null);
+  const pendingPreviewScrollLineRef = useRef<number | null>(null);
+  const markdownBlockMapRef = useRef<readonly MarkdownBlock[]>([]);
+  const markdownPreviewVisibleRef = useRef(false);
   const saveFileNameInputRef = useRef<HTMLInputElement>(null);
   sessionRef.current = session;
   tabSessionRef.current = tabSession;
@@ -1464,6 +1481,75 @@ function App() {
     editorRef.current?.fillColumnBlockSequence();
   }
 
+  // 源码→预览同步滚动：仅在 Markdown Preview 分栏可见时，按块映射把预览容器对应块滚到顶部。
+  // 通过 rAF 合并连续滚动事件；程序滚动预览时打标记，供后续预览→源码方向抑制反向循环。
+  function handleEditorScroll(topLine: number | null) {
+    // 预览→源码程序滚动触发的源码滚动：忽略并复位，避免循环。
+    if (editorProgrammaticScrollRef.current) {
+      editorProgrammaticScrollRef.current = false;
+      return;
+    }
+    if (!markdownPreviewVisibleRef.current || topLine === null) {
+      return;
+    }
+    pendingPreviewScrollLineRef.current = topLine;
+    if (previewScrollRafRef.current !== null) {
+      return;
+    }
+    previewScrollRafRef.current = requestAnimationFrame(() => {
+      previewScrollRafRef.current = null;
+      const pane = previewPaneRef.current;
+      const content = previewContentRef.current;
+      const line = pendingPreviewScrollLineRef.current;
+      if (pane === null || content === null || line === null) {
+        return;
+      }
+      const blockIndex = previewBlockIndexForSourceLine(
+        markdownBlockMapRef.current,
+        line,
+      );
+      if (blockIndex === null) {
+        return;
+      }
+      scrollPreviewToBlock(pane, content, blockIndex, previewProgrammaticScrollRef);
+    });
+  }
+
+  // 预览→源码同步滚动：仅在 Markdown Preview 可见时，把视口顶部预览块映射回源码行并程序滚动源码。
+  // 通过 rAF 合并连续滚动事件；源码→预览程序滚动触发的预览滚动被 previewProgrammaticScrollRef 跳过。
+  function handlePreviewScroll() {
+    if (!markdownPreviewVisibleRef.current) {
+      return;
+    }
+    if (previewProgrammaticScrollRef.current) {
+      previewProgrammaticScrollRef.current = false;
+      return;
+    }
+    if (editorScrollRafRef.current !== null) {
+      return;
+    }
+    editorScrollRafRef.current = requestAnimationFrame(() => {
+      editorScrollRafRef.current = null;
+      const pane = previewPaneRef.current;
+      const content = previewContentRef.current;
+      if (pane === null || content === null) {
+        return;
+      }
+      const blockIndex = topPreviewBlockIndex(
+        previewBlockRelativeTops(pane, content),
+      );
+      const blockMap = markdownBlockMapRef.current;
+      if (blockIndex === null || blockIndex >= blockMap.length) {
+        return;
+      }
+      editorProgrammaticScrollRef.current = true;
+      editorRef.current?.scrollToSourceLine(blockMap[blockIndex].startLine);
+      requestAnimationFrame(() => {
+        editorProgrammaticScrollRef.current = false;
+      });
+    });
+  }
+
   function handleFormatJsonClick() {
     if (!canEdit || session.readOnly) {
       return;
@@ -1743,6 +1829,23 @@ function App() {
             : undefined,
       })
     : null;
+  // 源码块映射随活动标签源码派生；仅用于源码→预览同步滚动。
+  const markdownBlockMap = useMemo(
+    () => (markdownPreviewVisible ? collectMarkdownBlockMap(session.content) : []),
+    [markdownPreviewVisible, session.content],
+  );
+  markdownBlockMapRef.current = markdownBlockMap;
+  markdownPreviewVisibleRef.current = markdownPreviewVisible;
+
+  // Preview 出现时挂载预览滚动监听，关闭/切走时卸载；同一 aside 元素在内容更新时保持。
+  useEffect(() => {
+    const pane = previewPaneRef.current;
+    if (pane === null || !markdownPreviewVisible) {
+      return;
+    }
+    pane.addEventListener("scroll", handlePreviewScroll, { passive: true });
+    return () => pane.removeEventListener("scroll", handlePreviewScroll);
+  }, [markdownPreviewVisible, markdownPreview]);
   const mermaidPreviewOpen = activeTab?.mermaidPreviewOpen ?? false;
   const mermaidPreviewVisible =
     activeLanguage === "mermaid" && mermaidPreviewOpen;
@@ -2072,17 +2175,20 @@ function App() {
                 onChange={(content) => {
                   setSession((current) => updateDocumentContent(current, content));
                 }}
+                onScroll={handleEditorScroll}
               />
             </div>
           )}
           {markdownPreviewVisible && markdownPreview !== null && (
             <aside
+              ref={previewPaneRef}
               className={`markdown-preview-pane ${
                 markdownPreview.status === "error" ? "is-error" : ""
               }`}
               aria-label="Markdown preview"
             >
               <div
+                ref={previewContentRef}
                 className="markdown-preview-content"
                 dangerouslySetInnerHTML={{ __html: markdownPreview.html }}
               />

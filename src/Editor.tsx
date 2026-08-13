@@ -28,11 +28,15 @@ type EditorProps = {
   disabled?: boolean;
   language: LanguageMode;
   onChange: (content: string) => void;
+  /** 源码区主动滚动时回调当前顶部可见源码行（0-based）；无法确定时为 `null`。 */
+  onScroll?: (topLine: number | null) => void;
 };
 
 export type EditorHandle = {
   fillColumnBlockSequence: () => boolean;
   formatJsonFence: () => JsonFenceFormatResult | { kind: "unavailable" };
+  /** 程序滚动源码编辑区到指定 0-based 行的起始位置（预览→源码同步滚动使用）。 */
+  scrollToSourceLine: (line: number) => void;
 };
 
 type ColumnBlockDeleteDirection = "backward" | "forward";
@@ -424,11 +428,12 @@ export const textoraSyntaxHighlightStyle = HighlightStyle.define([
 ]);
 
 export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(
-  { content, disabled = false, language, onChange },
+  { content, disabled = false, language, onChange, onScroll },
   ref,
 ) {
   const hostRef = useRef<HTMLDivElement>(null);
   const onChangeRef = useRef(onChange);
+  const onScrollRef = useRef(onScroll);
   const viewRef = useRef<EditorView | null>(null);
   const isSyncingContentRef = useRef(false);
   const availabilityRef = useRef(new Compartment());
@@ -436,6 +441,7 @@ export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(
   const languageRef = useRef(language);
 
   onChangeRef.current = onChange;
+  onScrollRef.current = onScroll;
   languageRef.current = language;
 
   useImperativeHandle(ref, () => ({
@@ -456,6 +462,18 @@ export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(
         view.dispatch(result.spec);
       }
       return result;
+    },
+    scrollToSourceLine(line: number) {
+      const view = viewRef.current;
+      if (view === null) {
+        return;
+      }
+      const doc = view.state.doc;
+      const lineNumber = Math.max(1, Math.min(doc.lines, line + 1));
+      const pos = doc.line(lineNumber).from;
+      view.dispatch({
+        effects: EditorView.scrollIntoView(pos, { y: "start" }),
+      });
     },
   }));
 
@@ -491,6 +509,10 @@ export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(
           if (update.docChanged && !isSyncingContentRef.current) {
             onChangeRef.current(update.state.doc.toString());
           }
+          if (update.viewportChanged) {
+            const topLine = update.state.doc.lineAt(update.view.viewport.from).number - 1;
+            onScrollRef.current?.(topLine);
+          }
         }),
         EditorView.theme({
           "&": { height: "100%" },
@@ -512,7 +534,22 @@ export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(
     const view = new EditorView({ state, parent: hostRef.current });
     viewRef.current = view;
 
+    // 源码区主动滚动时计算顶部可见源码行（0-based）并回调；节流交给调用方（App 的 rAF）。
+    const handleScroll = () => {
+      let topLine: number | null = null;
+      try {
+        const block = view.lineBlockAtHeight(view.scrollDOM.scrollTop);
+        const line = view.state.doc.lineAt(Math.max(0, block.from));
+        topLine = line.number - 1;
+      } catch {
+        topLine = null;
+      }
+      onScrollRef.current?.(topLine);
+    };
+    view.scrollDOM.addEventListener("scroll", handleScroll, { passive: true });
+
     return () => {
+      view.scrollDOM.removeEventListener("scroll", handleScroll);
       viewRef.current = null;
       view.destroy();
     };
