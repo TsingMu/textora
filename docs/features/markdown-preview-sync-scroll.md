@@ -1,6 +1,6 @@
 # Markdown Preview 左右同步滚动
 
-> 状态：实现完成，macOS 真实应用验收待执行（2026-08-12）
+> 状态：已完成（2026-08-13）
 
 ## 背景与目标
 
@@ -63,7 +63,7 @@ Textora 已支持 Markdown 源码与本地预览左右分栏。用户在长文�
 - [x] 大文档滚动时界面保持可用；无法可靠映射时安全退化，不抛错、不阻塞保存。
 - [x] 功能不新增网络、shell、远程页面、Rust IPC、Tauri capability 或宽泛文件权限。
 - [x] 自动化测试覆盖源码→预览、预览→源码、循环抑制、标签/模式边界和预览重渲染后的同步恢复。
-- [ ] macOS release 真实应用验收覆盖长 Markdown 文档双向滚动、编辑后继续同步、Mermaid block、关闭 Preview/WYSIWYG 边界。
+- [x] macOS release 真实应用验收覆盖长 Markdown 文档双向滚动、编辑后继续同步、Mermaid block、关闭 Preview/WYSIWYG 边界。
 
 ## 依赖与约束
 
@@ -91,4 +91,4 @@ Textora 已支持 Markdown 源码与本地预览左右分栏。用户在长文�
 - 2026-08-12 生成草案规格；本任务只修改规划文档，未运行实现测试、构建或 macOS 真实应用验收。
 - 2026-08-12 确认规格。核对既有 `src/markdownPreview.ts` 渲染层：其按行扫描源码并按块消费连续源码行（fenced code、标题、分隔线、表格、引用、列表、段落均能记录各自源码行范围），因此块级源码→预览锚点映射在首版即可实现，决议以块级锚点为主路径，纯滚动比例仅作个别结构的近似回退；首版不提供禁用开关。本任务仅修改规划文档，未运行实现测试或构建；`git diff --check` 通过。
 - 2026-08-12 实现完成，自动化与 release 构建通过，macOS 真实应用交互验收**尚未执行**。逻辑层自动化覆盖：`src/markdownBlockMap.test.ts`（块映射，12 用例）、`src/markdownPreviewSync.test.ts`（源码行→块、视口顶部块、相对偏移、scrollIntoView 与程序标记复位，12 用例）、`src/Editor.test.tsx` 与 `src/App.test.tsx`（源码→预览、预览→源码、非 Markdown 边界集成用例）。`npm run check` 通过（typecheck + vitest **310 passed / 0 failed**）；`npm run tauri -- build` 通过并生成 release `Textora.app`；bundle 校验 `CFBundleIdentifier`=`com.tsingmu.textora`、`CFBundleExecutable`=`textora`、`CFBundleIconFile`=`icon.icns`；`src-tauri/capabilities/` 自 `63800c3` 起无改动，确认未新增网络、shell、远程页面、Rust IPC、Tauri capability 或宽泛文件权限；release app 可启动。保存链路、撤销、脏状态与多标签隔离未改，由既有自动化回归覆盖。
-- macOS 真实应用交互验收（在 release `Textora.app` 中人工执行长 Markdown 文档双向滚动、编辑后继续同步、Mermaid block 异步高度、关闭 Preview/WYSIWYG/非 Markdown 边界、抖动/循环抑制的视觉判定）尚未执行：当前自动化环境无法可靠观察 WebView 滚动与视觉抖动。完成该项后，方可把上一条验收条件勾选并把状态改为「已完成」。
+- 2026-08-13 完成 macOS release `Textora.app` 真实应用交互验收。使用包含标题、段落、列表、表格、JSON fence 与 Mermaid fence 的长 Markdown 临时文档：源码区取得焦点后 Page Down，预览跟随到第三节与 Mermaid 区域；预览区取得焦点后 Page Down，源码跟随到 Mermaid、第五节和第六节附近；源码编辑触发预览重渲染后再次 Page Up，双向映射继续工作；Mermaid 已从 loading 状态完成本地渲染，异步高度变化后仍能继续近似定位；关闭 Preview、进入 WYSIWYG、切到 Plain Text 标签后 Preview 均不再挂载或参与同步。交互过程中未观察到明显双向抖动、循环滚动或滚动侧被反复抢回。编辑内容随后撤销，临时验收文件未保存并已清理。

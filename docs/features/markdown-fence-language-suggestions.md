@@ -1,6 +1,6 @@
 # Markdown opening fence 语言候选提示
 
-> 状态：草案
+> 状态：已确认（2026-08-13）
 
 ## 背景与目标
 
@@ -41,7 +41,7 @@ Textora 已支持 Markdown fenced code block 自动闭合、本地预览语法�
 - Markdown 源码是唯一权威数据源；候选集合、过滤结果和弹层状态均为可重建派生状态。
 - opening fence 识别复用既有 fenced context 规则：反引号或波浪号至少 3 个、行首最多 3 个空格，且当前行不能位于另一个未闭合 fence 内。
 - 只有光标位于 opening fence 首个 info token 内或其末尾时才展示候选；第二个 token、closing fence、代码内容或普通文本中的相似字符不得触发。
-- 过滤无结果时关闭候选或显示空结果均可在规格确认时决定，但不得阻塞输入或改写源码。
+- 过滤无结果时关闭候选，不显示空弹层，不得阻塞输入或改写源码。
 - 候选确认必须形成普通 CodeMirror 编辑事务，正确进入撤销历史和既有 `onChange`/脏状态/保存链路；一次撤销恢复确认前的 token。
 - Escape 只关闭候选，不修改文档；候选已关闭时保持 CodeMirror 既有 Escape 行为。
 - 只读、加载、保存、冲突处理、关闭确认或另存为面板阻止编辑时，不展示或确认候选。
@@ -67,17 +67,18 @@ Textora 已支持 Markdown fenced code block 自动闭合、本地预览语法�
 - 依赖已完成的 `docs/features/markdown-fenced-code-editing.md`、`docs/features/markdown-code-block-highlighting.md`、`docs/features/markdown-split-preview.md` 与 `docs/features/markdown-wysiwyg-mode.md`。
 - 候选词表应与 `src/markdownCodeHighlight.ts` 实际支持的 info token/语言集合保持单一契约，避免 UI 推荐预览无法识别的语言。
 - 遵守 `docs/ARCHITECTURE.md`：文本文档是权威数据源，格式增强失败不得阻止普通编辑或保存。
-- 本功能应复用 CodeMirror 编辑事务和本地 UI 能力；是否引入 CodeMirror 官方 autocomplete 包需在规格确认时基于现有依赖与实现复杂度决定，不因草案自动新增依赖。
+- 本功能复用 CodeMirror 编辑事务与官方 `@codemirror/autocomplete` 能力；实现切片应把当前已被现有语言包间接安装的同版本包声明为直接依赖，不自建候选弹层基础设施。
 
-## 开放问题
+## 决议记录
 
-- 候选列表只展示稳定的 canonical 名称（如 `javascript`、`typescript`、`shell`），还是同时展示 `js`、`ts`、`bash` 等当前预览已接受的别名？首版建议只插入 canonical 名称，但别名前缀可用于检索对应 canonical 候选。
-- 候选打开且有选中项时，Enter 应立即确认候选，还是优先执行既有 fence 自动闭合？首版建议 Enter 确认候选、随后再次 Enter 自动闭合；Tab 始终确认，Escape 后 Enter 始终执行自动闭合。
-- 使用现有 CodeMirror 依赖自建最小候选弹层，还是引入官方 `@codemirror/autocomplete`？确认时应比较 macOS WebKit 定位、键盘事件优先级、无障碍语义与新增依赖成本。
+- 2026-08-13 确认首版词表：候选只展示并插入 canonical 名称 `javascript`、`typescript`、`json`、`html`、`css`、`rust`、`python`、`java`、`shell`、`sql`、`toml`、`yaml`、`markdown`、`mermaid`。`js`、`jsx`、`ts`、`tsx`、`bash`、`py`、`rs`、`yml`、`md` 等既有预览别名只参与检索并指向相应 canonical 候选，不作为重复列表项；词表与预览语言解析共用单一导出契约。
+- 2026-08-13 确认键盘优先级：候选打开且存在选中项时，Enter 或 Tab 只确认候选；用户再次按 Enter 时执行既有 opening fence 自动闭合。Escape 只关闭候选，随后 Enter 直接自动闭合当前已输入前缀；候选未打开或无匹配项时，Enter 保持既有自动闭合/普通换行行为。
+- 2026-08-13 确认接入方式：使用官方 `@codemirror/autocomplete`，由其负责光标附近定位、选择状态、键盘导航和可访问性基础语义；实现时将当前依赖树已有的兼容版本声明为项目直接依赖。Textora 只提供受限 Markdown opening fence completion source、候选目录和必要主题，不自建通用弹层状态机。
+- 2026-08-13 确认空结果行为：前缀无匹配项时关闭候选并退化为普通输入，不显示空弹层。
 
 ## 建议实现拆分
 
-1. **确认语言候选规格与交互决议**：确定词表/别名策略、Enter/Tab/Escape 语义和 CodeMirror 接入方式；不修改生产代码。
+1. **确认语言候选规格与交互决议**（已完成）：确定词表/别名策略、Enter/Tab/Escape 语义和 CodeMirror 接入方式；不修改生产代码。
 2. **建立 opening fence 候选上下文与词表契约**：形成可测试的 opening fence token 范围、过滤和插入计划；不渲染弹层。
 3. **接入候选弹层与键盘交互**：在 Markdown 源码编辑器接入显示、过滤、选择、确认、取消和撤销；处理 Preview/WYSIWYG、只读/忙碌与标签切换边界。
 4. **语言候选集成验收与文档收尾**：执行完整自动化、构建、macOS release 真实应用验收和文档状态更新；只做必要小修，不新增主要行为。
@@ -85,3 +86,4 @@ Textora 已支持 Markdown fenced code block 自动闭合、本地预览语法�
 ## 验证记录
 
 - 2026-08-13 形成草案并完成与现有 fenced 编辑、高亮语言集合、Markdown 模式边界和任务颗粒度的文档核对；本轮仅规划，未修改实现代码，未运行实现测试或构建。
+- 2026-08-13 确认规格。核对 `src/markdownCodeHighlight.ts` 的既有 info token 映射、`src/languageRecognition.ts` 的语言集合、`src/Editor.tsx` 的高优先级 Enter 自动闭合 keymap，以及依赖树中由多个现有 CodeMirror 包共同使用的 `@codemirror/autocomplete@6.20.3`。据此确认 canonical 展示/别名检索、候选优先确认后再次 Enter 自动闭合、官方 autocomplete 接入和无结果关闭四项决议；本任务只修改规划文档，未修改生产代码、实现性测试或依赖，未运行测试或构建。

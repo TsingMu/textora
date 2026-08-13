@@ -6,34 +6,41 @@
 
 ## 进行中
 
-### Markdown Preview 同步滚动 macOS 真实应用验收
-
-- **状态**：进行中
-- **开始日期**：2026-08-12
-- **Feature Spec**：`docs/features/markdown-preview-sync-scroll.md`
-- **目标**：在 release `Textora.app` 中人工执行双向同步滚动的真实交互验收，完成后把 Feature Spec 状态改为已完成、勾选剩余验收条件并同步 README。
-- **范围**：长 Markdown 文档下源码→预览、预览→源码双向跟随与无明显抖动/循环；编辑后预览重渲染仍同步；Mermaid block 异步高度变化后安全近似定位；关闭 Preview、进入 WYSIWYG、切到非 Markdown 标签时停止；保存/撤销/脏状态不回退。
-- **非范围**：不新增禁用开关 UI、不持久化滚动位置、不做逐像素同步或目录大纲。
-- **依赖**：双向同步滚动实现、自动化、release 构建与启动确认均已完成。
-- **拆分检查**：本任务只负责真实应用组合验收与文档状态收尾，不新增主要行为；审查修复已作为前置小任务完成。
-- **完成标准**：人工验收通过并记录；Feature Spec 最后一条验收条件勾选、状态改为已完成；README 把本功能归入已完成并标注 macOS 真实应用验收。
-- **当前进度**：执行中。已在真实 release app 验收时发现源码→预览未跟随的风险，并完成两项前端修复：`scrollPreviewToBlock` 改为显式设置预览 pane 的 `scrollTop`，避免依赖 `scrollIntoView` 推断嵌套滚动容器；`Editor` 增加 CodeMirror `viewportChanged` 上报顶部源码行，避免只依赖 DOM `scroll` 事件。`npm run check`、`git diff --check`、`npm run tauri -- build` 均已通过。最新 release app 可启动、Markdown 文件可打开、Preview 可见且 Mermaid 成功渲染；但 Computer Use 在最终复验中未能可靠让源码区继续向下滚动（截图停留顶部），因此 macOS 真实双向滚动人工验收尚不能标记通过，需用户或下一会话用真实鼠标/触控板手动确认源码→预览与预览→源码跟随、无明显抖动/循环。
+暂无进行中任务。
 
 ## 已承诺待办
 
-### 确认 Markdown opening fence 语言候选提示规格
+### 建立 Markdown opening fence 候选上下文与词表契约
 
 - **状态**：待开始
 - **Feature Spec**：`docs/features/markdown-fence-language-suggestions.md`
-- **目标**：确认 opening fence 本地语言候选的首版范围、词表与键盘交互决议，并把完整 Feature 拆成可独立验收的后续实现任务。
-- **范围**：核对候选上下文与既有 fence 识别契约；决定 canonical 名称/别名检索策略；决定 Enter、Tab、Escape 与现有 Enter 自动闭合的优先级；选择 CodeMirror 接入方式；确认验收条件与实现拆分。
-- **非范围**：不实现候选词表、弹层、键盘处理或样式，不新增依赖，不修改 Editor/App 生产代码或实现性测试。
-- **依赖**：完成“Markdown Preview 同步滚动 macOS 真实应用验收”，确保当前唯一进行中任务先收尾；已完成 `docs/features/markdown-fenced-code-editing.md` 与 `docs/features/markdown-code-block-highlighting.md`。
-- **拆分检查**：本任务只交付规格决议和后续小任务拆分，不包含实现、完整回归或平台验收；上下文契约、UI 接入和最终集成验收已分别留给后续任务。
-- **实施要点**：优先复用预览实际支持的 fenced language 集合作为单一来源；交互决议必须保持 opening fence 自动闭合可预测、可撤销并安全退化。
-- **完成标准**：Feature Spec 状态改为“已确认”，开放问题形成明确决议；首个实现切片以“待开始”进入 `current.md`；`git diff --check` 通过。
+- **目标**：形成可由后续 CodeMirror completion source 直接消费的纯函数契约：识别有效 opening fence 首个 info token、返回替换范围，并按前缀生成去重的 canonical 语言候选。
+- **范围**：反引号/波浪号至少 3 个、0–3 个前导空格、当前行不位于其他未闭合 fence 内；光标位于首个 token 内或末尾；canonical 名称与别名检索共用预览语言目录；大小写不敏感前缀过滤；无匹配返回空；生成只替换首个 token 的插入计划。
+- **非范围**：不接入 `@codemirror/autocomplete` UI，不处理键盘导航、Enter/Tab/Escape 优先级、主题样式、React 状态、Preview/WYSIWYG 切换或 macOS 真实应用验收。
+- **依赖**：已确认 `docs/features/markdown-fence-language-suggestions.md`；复用既有 `markdownFenceContext` 与 `markdownCodeHighlight` 语言解析边界。
+- **拆分检查**：本任务只交付纯上下文、词表和插入计划契约及其确定性测试，完成后尚无用户可见弹层；UI 接入与最终集成验收分别留给后续任务。
+- **实施要点**：从预览语言映射导出单一候选目录，避免复制两套语言/别名表；保持 Mermaid 的本地预览身份和 Markdown 代码高亮语言均可推荐；所有失败返回空结果并不修改文档。
+- **完成标准**：自动化覆盖 canonical/别名过滤、token 替换范围、反引号/波浪号、缩进、closing/content/嵌套 fence、第二 token、光标移动和空结果；`npm run check`、`npm run build`、`git diff --check` 通过。
 
 ## 最近完成
+
+### 确认 Markdown opening fence 语言候选提示规格
+
+- **状态**：已完成
+- **开始日期**：2026-08-13
+- **完成日期**：2026-08-13
+- **Feature Spec**：`docs/features/markdown-fence-language-suggestions.md`
+- **结果**：确认首版只展示/插入 canonical 语言名称，既有别名只参与检索；候选打开时 Enter/Tab 先确认、再次 Enter 执行 opening fence 自动闭合，Escape 关闭后 Enter 直接走既有行为；无匹配关闭候选；采用官方 `@codemirror/autocomplete`，后续实现声明直接依赖并提供受限 completion source。Feature 拆为纯上下文/词表契约、候选 UI/键盘接入、集成验收三个后续任务，首个实现切片已进入待办。
+- **验证记录**：核对 `src/markdownCodeHighlight.ts`、`src/languageRecognition.ts`、`src/Editor.tsx` 与 `npm ls @codemirror/autocomplete --depth=2`；确认依赖树当前统一使用 `@codemirror/autocomplete@6.20.3`。本任务仅修改规划文档，未修改实现代码、实现性测试或依赖，未运行测试或构建；`git diff --check` 通过。
+
+### Markdown Preview 同步滚动 macOS 真实应用验收
+
+- **状态**：已完成
+- **开始日期**：2026-08-12
+- **完成日期**：2026-08-13
+- **Feature Spec**：`docs/features/markdown-preview-sync-scroll.md`
+- **结果**：在 release `Textora.app` 中完成长 Markdown 文档真实交互验收：源码→预览、预览→源码、编辑后重新同步、Mermaid 异步渲染后定位均工作；关闭 Preview、进入 WYSIWYG、切到 Plain Text 标签后同步停止；未观察到明显抖动或循环。Feature Spec 状态改为已完成，README 与 backlog 同步收尾。
+- **验证记录**：真实 release app 使用标题、段落、列表、表格、JSON fence 与 Mermaid fence 的临时文档执行 Page Down/Page Up 双向滚动；截图观察左右对应区域共同变化，Mermaid 完成本地渲染；编辑触发预览重渲染后再次滚动仍同步；Preview/WYSIWYG/非 Markdown 边界通过。临时验收文件未保存并已清理。本轮未重跑自动化或构建，沿用前置任务已通过的 `npm run check`（310 tests）和 `npm run tauri -- build` 记录。
 
 ### 修复 Markdown Preview 同步滚动审查问题
 
