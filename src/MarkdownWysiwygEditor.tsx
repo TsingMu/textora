@@ -12,6 +12,7 @@ import {
   type MarkdownTaskState,
   type MarkdownWysiwygBlock,
 } from "./markdownWysiwyg";
+import { MarkdownWysiwygInlineEditor } from "./MarkdownWysiwygInlineEditor";
 
 type MarkdownWysiwygEditorProps = {
   content: string;
@@ -70,24 +71,26 @@ function MarkdownWysiwygBlockEditor({
   switch (block.type) {
     case "heading":
       return (
-        <AutoGrowTextarea
-          className={`markdown-wysiwyg-heading is-h${block.level}`}
-          value={block.text}
-          singleLine
-          disabled={disabled}
-          aria-label={`Heading level ${block.level}`}
-          onChange={(text) => onChange({ ...block, text })}
-        />
+        <div className={`markdown-wysiwyg-heading is-h${block.level}`}>
+          <MarkdownWysiwygInlineEditor
+            source={block.text}
+            disabled={disabled}
+            ariaLabel={`Heading level ${block.level}`}
+            singleLine
+            onChange={(text) => onChange({ ...block, text })}
+          />
+        </div>
       );
     case "paragraph":
       return (
-        <AutoGrowTextarea
-          className="markdown-wysiwyg-paragraph"
-          value={block.text}
-          disabled={disabled}
-          aria-label="Paragraph"
-          onChange={(text) => onChange({ ...block, text })}
-        />
+        <div className="markdown-wysiwyg-paragraph">
+          <MarkdownWysiwygInlineEditor
+            source={block.text}
+            disabled={disabled}
+            ariaLabel="Paragraph"
+            onChange={(text) => onChange({ ...block, text })}
+          />
+        </div>
       );
     case "list":
       return (
@@ -124,32 +127,34 @@ function MarkdownWysiwygBlockEditor({
                   }}
                 />
               )}
-              <AutoGrowTextarea
-                className="markdown-wysiwyg-list-text"
-                value={item.text}
-                singleLine
-                disabled={disabled}
-                aria-label={`List item ${index + 1}`}
-                onChange={(text) => {
-                  const items = block.items.map((current, itemIndex) =>
-                    itemIndex === index ? { ...current, text } : current,
-                  );
-                  onChange({ ...block, items });
-                }}
-              />
+              <div className="markdown-wysiwyg-list-text">
+                <MarkdownWysiwygInlineEditor
+                  source={item.text}
+                  disabled={disabled}
+                  ariaLabel={`List item ${index + 1}`}
+                  singleLine
+                  onChange={(text) => {
+                    const items = block.items.map((current, itemIndex) =>
+                      itemIndex === index ? { ...current, text } : current,
+                    );
+                    onChange({ ...block, items });
+                  }}
+                />
+              </div>
             </div>
           ))}
         </div>
       );
     case "blockquote":
       return (
-        <AutoGrowTextarea
-          className="markdown-wysiwyg-blockquote"
-          value={block.text}
-          disabled={disabled}
-          aria-label="Block quote"
-          onChange={(text) => onChange({ ...block, text })}
-        />
+        <div className="markdown-wysiwyg-blockquote">
+          <MarkdownWysiwygInlineEditor
+            source={block.text}
+            disabled={disabled}
+            ariaLabel="Block quote"
+            onChange={(text) => onChange({ ...block, text })}
+          />
+        </div>
       );
     case "code":
       return (

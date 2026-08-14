@@ -18,4 +18,4 @@
 - 列标尺、光标位置显示和自动换行等查看偏好采用全局设置并持久化到应用重启后；未保存标签的文档格式选择属于标签临时状态，不纳入全局默认。
 - 将 Markdown 源码工具栏现有的 `Format JSON` 改为通用 `Format`。用户点击后，根据光标所在闭合 fenced code block 的语言标记自动选择格式化器，并且只格式化该代码块，不批量修改文档内其他代码块。首期保留 JSON，并扩展支持 JavaScript、TypeScript、YAML、SQL、Java、Python 与 Shell；无法识别语言、语言暂不支持、代码块未闭合或内容语法无效时，应提示原因且不得修改源码。继续沿用显式触发、单次事务和一次撤销恢复的安全边界，不在输入、粘贴或保存时自动格式化；进入 Feature Spec 时需确定各语言标记及别名、格式化风格、本地格式化器与依赖方案，以及 Preview 左侧源码和 WYSIWYG 的模式边界。
 
-外部文件变更实时同步、多标签会话、列块编辑、代码文本识别及最小语法高亮、Markdown 源码与本地预览左右分栏及同步滚动、Mermaid 本地编辑与预览、Markdown 预览代码块语法着色、Markdown 所见即所得模式、Markdown fenced code block 编辑辅助和 opening fence 本地语言候选提示均已完成；其余候选仍不代表已承诺计划。
+外部文件变更实时同步、多标签会话、列块编辑、代码文本识别及最小语法高亮、Markdown 源码与本地预览左右分栏及同步滚动、Mermaid 本地编辑与预览、Markdown 预览代码块语法着色、Markdown 所见即所得模式及常用内联格式编辑、Markdown fenced code block 编辑辅助和 opening fence 本地语言候选提示均已完成；其余候选仍不代表已承诺计划。

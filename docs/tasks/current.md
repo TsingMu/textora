@@ -6,13 +6,83 @@
 
 ## 进行中
 
-暂无进行中任务。
+（无）
 
 ## 已承诺待办
 
-暂无已承诺待办。
-
 ## 最近完成
+
+### Markdown WYSIWYG 内联格式审查修复集成验收
+
+- **状态**：已完成
+- **开始日期**：2026-08-14
+- **完成日期**：2026-08-14
+- **Feature Spec**：`docs/features/markdown-wysiwyg-inline-formatting.md`
+- **结果**：完成全部审查修复的组合回归、release 构建、bundle/权限核验和文档同步。基础 WYSIWYG 规格中的内联格式“草案/候选”历史说明已改为已交付扩展；内联格式规格补充审查修复验证记录。未新增依赖、Rust IPC、Tauri capability 或文件权限。
+- **验证记录**：`npm run check` 复验通过（typecheck + vitest **414 passed / 0 failed**）；`npm run build` 通过；`npm run tauri -- build` 通过并生成 `/Users/mouqing/codexProjects/textora/src-tauri/target/release/bundle/macos/Textora.app`；bundle `CFBundleIdentifier`=`com.tsingmu.textora`、`CFBundleExecutable`=`textora`、`LSMinimumSystemVersion`=`13.0`，package、lockfile 与 capability 无改动。release 应用成功启动且 WebView 为 `tauri://localhost`；尝试打开临时 Markdown 做多行真实编辑复验时，macOS 文件面板辅助功能索引漂移，未能安全选中目标文件，因此未声称该 UI 编辑场景通过，临时文件已清理；行为由组件与四类块自动化覆盖。`git diff --check` 通过。
+
+### 恢复 WYSIWYG 段落与引用多行编辑
+
+- **状态**：已完成
+- **开始日期**：2026-08-14
+- **完成日期**：2026-08-14
+- **Feature Spec**：`docs/features/markdown-wysiwyg-inline-formatting.md`
+- **结果**：为内联编辑器增加按块配置的单行/多行策略：标题与列表项继续拦截非 IME 组合态 Enter，并在输入和纯文本粘贴时折叠换行；普通段落与引用恢复 Enter 和多行纯文本粘贴，CRLF/CR 统一规范化为 LF 后按既有块序列化规则回写。新增组件级 Enter、IME、单行/多行输入及粘贴测试，以及标题、段落、列表、引用四类块接入回归。未改 Markdown 块解析范围、格式命令或富文本粘贴。
+- **验证记录**：定向组件测试通过（**26 passed / 0 failed**）；`npm run check` 复验通过（typecheck + vitest **414 passed / 0 failed**）；首次全量运行仅命中已记录的 `Editor.test.ts` opening-fence 即时语法树偶发时序失败，相关用例单独复验通过，随后全量复验通过；`npm run build` 通过；`git diff --check` 通过。
+
+### 修复 Markdown WYSIWYG 内联数据契约审查问题
+
+- **状态**：已完成
+- **开始日期**：2026-08-14
+- **完成日期**：2026-08-14
+- **Feature Spec**：`docs/features/markdown-wysiwyg-inline-formatting.md`
+- **结果**：修复链接标签编辑后出现右方括号时未转义导致链接结构失效；嵌套检测只在存在完整受支持构造时退化，普通 `~`、`_`、`[`、`*` 字符不再误伤格式片段；下划线边界改为 Unicode 字母、数字与组合标记；code span 内反斜杠保持字面，不再错误跳过其后的闭合反引号。新增纯函数与组件回归测试，未改块级编辑策略、Rust/Tauri 或 capability。
+- **验证记录**：定向内联测试通过（**26 passed / 0 failed**）；`npm run check` 通过（typecheck + vitest **410 passed / 0 failed**）；`npm run build` 通过；`git diff --check` 通过。
+
+### Markdown WYSIWYG 内联格式集成验收与文档收尾
+
+- **状态**：已完成
+- **开始日期**：2026-08-14
+- **完成日期**：2026-08-14
+- **Feature Spec**：`docs/features/markdown-wysiwyg-inline-formatting.md`
+- **结果**：完成组合回归、release 构建、bundle/权限校验、真实应用验收和文档收尾。验收中修正两处规格偏差：嵌套内联结构现整体退化为字面源码；带 title 或未转义空白目标的链接不再被误识别为首期可编辑链接。新增失败退化与纯文本粘贴回归。Feature Spec 全部验收条件已勾选并改为已完成，README 与 backlog 同步。
+- **验证记录**：`npm run check` 通过（typecheck + vitest **406 passed / 0 failed**）；`npm run build` 通过；`npm run tauri -- build` 通过并生成 `/Users/mouqing/codexProjects/textora/src-tauri/target/release/bundle/macos/Textora.app`；bundle `CFBundleIdentifier`=`com.tsingmu.textora`、`LSMinimumSystemVersion`=`13.0`，capability 无新增。macOS release 真实验收覆盖五类格式显示、规格示例、嵌套/title 链接字面退化、已有粗体片段编辑、原生撤销、源码/Preview 切换、UTF-8 Markdown 保存及链接点击不导航；WebView 保持 `tauri://localhost`，验收临时文件已清理。辅助功能接口不能构造跨独立编辑片段拖拽选区，该边界由数据保留与组件测试覆盖。`git diff --check` 通过。
+
+### 把内联片段编辑接入 WYSIWYG 结构化文本块
+
+- **状态**：已完成
+- **开始日期**：2026-08-14
+- **完成日期**：2026-08-14
+- **Feature Spec**：`docs/features/markdown-wysiwyg-inline-formatting.md`
+- **结果**：`MarkdownWysiwygEditor.tsx` 的标题（各级）、普通段落、引用与无序/有序/任务列表项文本改由 `MarkdownWysiwygInlineEditor` 接管：块级容器（保留原 `markdown-wysiwyg-heading/paragraph/blockquote/list-text` 布局样式）内嵌内联编辑器，隐藏语法标记、按样式显示五类格式并可编辑可见文字；编辑经单次回写进入既有脏状态、保存与关闭保护链路。长文本软换行改由块容器自然换行（内联 span 流式布局），不再依赖 AutoGrowTextarea 测高。fenced code block、代码语言标记与源码岛仍为字面 `AutoGrowTextarea`，不解析内联格式。`.wysiwyg-inline-bold` 改 `font-weight: bolder` 以在标题内保持相对粗细。未新增格式命令、链接目标编辑、依赖或 Rust/Tauri/capability。
+- **验证记录**：`npm run check` 通过（typecheck + vitest **404 passed / 0 failed**；重写 `MarkdownWysiwygEditor` 测试为新架构：四类结构化块的内联格式显示、标题/列表项内联编辑回写、code-language 单行清洗、disabled 锁定（内联 span `contenteditable=false` + textarea disabled）、fenced code/源码岛仍字面；`AutoGrowTextarea` 尺寸行为测试改指向仍使用它的 `.markdown-wysiwyg-code`（mount 测高、值变化重测、首次 RO 通知重测、宽度变化不循环、边框补正）；App 测试的 WYSIWYG 编辑改为经内联 span，新增列表项 `**状态**` 粗体显示/编辑/保存与 `` `docs/tasks/current.md` `` 行内代码的集成用例；既有 Preview/WYSIWYG 互斥、多标签隔离、只读锁定用例不回退）；`npm run build` 通过；`git diff --check` 通过。说明：撤销行为保持为原生控件级（contentEditable/textarea 的浏览器撤销），WYSIWYG 无文档级撤销机制，jsdom 无法自动化验证原生撤销。
+
+### 建立可编辑内联片段组件
+
+- **状态**：已完成
+- **开始日期**：2026-08-14
+- **完成日期**：2026-08-14
+- **Feature Spec**：`docs/features/markdown-wysiwyg-inline-formatting.md`
+- **结果**：新增 `src/MarkdownWysiwygInlineEditor.tsx`，独立显示并编辑内联格式片段。组件用任务 1 的 `parseInline` 把源码拆成节点，逐节点渲染 `plaintext-only` 的可编辑内联 `<span>`（粗体/斜体/删除线/行内代码/链接各有样式类，标记隐藏）；编辑经 `onChange` 单次回写 `serializeInline` 的 Markdown。可见文字与原始源码用 `unescapeRaw`/`escapeInlineText` 互转（code span 内容为字面、不转义），换行统一经 `stripNewlines` 清洗以保持内联单行；Enter 在 IME 非组合态时拦截，`insertParagraph`/`insertLineBreak` 阻止，粘贴强制纯文本并剥换行；链接渲染为无 `href` 的 `<span>`（非导航）。`disabled` 时所有片段 `contenteditable=false`。未编辑片段逐字符保留原源码（文本节点 verbatim 往返）；编辑片段空内容时由 `serializeInline` 删除该格式标记且不影响相邻文本。`App.css` 增加最小内联格式样式。未接入主界面、未替换现有块控件、未新增依赖/Rust/Tauri/capability。
+- **验证记录**：`npm run check` 通过（typecheck + vitest **406 passed / 0 failed**，新增 `MarkdownWysiwygInlineEditor` 8 用例：五类格式标记隐藏显示、编辑单次回写、清空片段保留相邻文本、换行剥除保持单行源码、编辑纯文本经 `escapeInlineText` 最小转义、`disabled` 全片段锁定、非禁用时为 `plaintext-only`、链接为无 `href` 非导航 span）；`npm run build` 通过；`git diff --check` 通过。注：全量运行中 `Editor.test.ts` 的「opening fence EOF 语法树即时判定」偶发一次时序失败，单独与重跑均通过，与本次改动无关。
+
+### 建立 Markdown WYSIWYG 内联格式解析与源码往返契约
+
+- **状态**：已完成
+- **开始日期**：2026-08-14
+- **完成日期**：2026-08-14
+- **Feature Spec**：`docs/features/markdown-wysiwyg-inline-formatting.md`
+- **结果**：新增 `src/markdownWysiwygInline.ts`，交付纯前端内联节点模型（`InlineNode`：text/bold/italic/strike/code/link）与确定性接口 `parseInline(source)`、`serializeInline(nodes)` 及编辑用的 `escapeInlineText(text)`。解析为单遍扫描，按 code span、链接、删除线、粗体（`**`/`__`）、斜体（`*`/`_`）顺序识别；`_` 系列加 intraword 守卫避免误伤 `snake_case`；不完整、未闭合、空内容或边界不确定的标记整体退化为字面文本节点，不丢字符、不猜测修复。序列化逐字符保留原分隔符（`**`/`__`/`*`/`_`）、code span 原反引号长度与链接目标；已编辑片段安全规则：text 节点逐字输出保证往返，code span 在内容含更长反引号时按 `max(原长度, 最长反引号串+1)` 扩展边界，空内容格式片段（含空链接标签）整体删除不影响相邻文本；`escapeInlineText` 转义会启动内联构造的字符（`` \ ` * _ ~ [ ``）供后续组件把用户输入安全写回。未接入 React/主界面，未新增依赖、Rust/Tauri/capability。
+- **验证记录**：`npm run check` 通过（typecheck + vitest **398 passed / 0 failed**，新增 `markdownWysiwygInline` 12 用例：五类格式解析与往返、相邻片段独立、不解释片段内嵌套、反斜杠转义保留、未闭合/不完整/空标记退化为字面源码、`__`/`_` 分隔符与链接目标逐字保留、`snake_case` 不误判、规格示例与混合串往返、空片段删除、code span 反引号冲突边界扩展、`escapeInlineText` 转义集合并回解析为单一文本节点）；`npm run build` 通过；`git diff --check` 通过。注：全量运行中 `Editor.test.ts` 的「opening fence EOF 语法树即时判定」偶发一次时序失败，单独与重跑均通过，与本次改动无关（本次仅新增独立模块）。
+
+### 确认 Markdown WYSIWYG 内联格式交互与源码往返规则
+
+- **状态**：已完成
+- **开始日期**：2026-08-14
+- **完成日期**：2026-08-14
+- **Feature Spec**：`docs/features/markdown-wysiwyg-inline-formatting.md`
+- **结果**：规格由草案改为已确认。首期只显示并编辑已有格式片段，不提供创建、移除或切换格式的命令；允许相邻格式但不解释嵌套或交叉结构，inline code 为叶节点，歧义输入按字面源码安全退化；链接以无 `href` 的非导航样式显示，只编辑标签并逐字符保留目标；未编辑片段逐字符保留，编辑片段优先沿用原分隔符，仅做保持可见文字所需的最小转义或 code span 边界调整。后续拆为纯数据契约、独立可编辑组件、主界面接入和集成验收四个单向依赖任务，首个实现切片已进入待办。
+- **验证记录**：复核 `README.md`、产品、架构、决策、WYSIWYG 基础规格、任务模板、现有 `markdownWysiwyg`/`MarkdownWysiwygEditor` 边界与依赖；`git diff --check` 通过，新增规格文件的独立 whitespace 检查无报错。仅修改规划文档，未运行测试或构建。
 
 ### Markdown WYSIWYG 长文本软换行 macOS 窄窗口视觉验收
 

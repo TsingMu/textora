@@ -654,6 +654,42 @@ textarea {
   border-top: 2px solid #e3dbcf;
 }
 
+.wysiwyg-inline-run {
+  display: inline;
+}
+
+.wysiwyg-inline-run > span {
+  outline: none;
+  border-radius: 3px;
+  caret-color: var(--accent);
+}
+
+.wysiwyg-inline-run > span:focus {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.wysiwyg-inline-bold {
+  font-weight: bolder;
+}
+
+.wysiwyg-inline-italic {
+  font-style: italic;
+}
+
+.wysiwyg-inline-strike {
+  text-decoration: line-through;
+}
+
+.wysiwyg-inline-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.wysiwyg-inline-link {
+  text-decoration: underline;
+  color: var(--accent);
+  cursor: text;
+}
+
 .statusbar {
   display: flex;
   align-items: center;

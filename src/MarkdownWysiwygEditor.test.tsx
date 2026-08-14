@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, useState } from "react";
+import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -16,6 +16,11 @@ function setValueOnTextarea(
   )?.set;
   setter?.call(textarea, value);
   textarea.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function inputInline(span: Element, text: string): void {
+  span.textContent = text;
+  span.dispatchEvent(new InputEvent("input", { bubbles: true }));
 }
 
 describe("MarkdownWysiwygEditor", () => {
@@ -38,7 +43,42 @@ describe("MarkdownWysiwygEditor", () => {
     container.remove();
   });
 
-  it("edits heading blocks and emits Markdown source", async () => {
+  it("renders inline-formatted fragments inside the structured text blocks", async () => {
+    await act(async () => {
+      root.render(
+        <MarkdownWysiwygEditor
+          content={
+            "# **Title**\n\nplain _em_ text\n\n- `item`\n\n> ~~quote~~\n\n```js\ncode\n```"
+          }
+          onChange={vi.fn()}
+        />,
+      );
+    });
+
+    expect(
+      container.querySelector(".markdown-wysiwyg-heading .wysiwyg-inline-bold")
+        ?.textContent,
+    ).toBe("Title");
+    expect(
+      container.querySelector(".markdown-wysiwyg-paragraph .wysiwyg-inline-italic")
+        ?.textContent,
+    ).toBe("em");
+    expect(
+      container.querySelector(".markdown-wysiwyg-list-text .wysiwyg-inline-code")
+        ?.textContent,
+    ).toBe("item");
+    expect(
+      container.querySelector(".markdown-wysiwyg-blockquote .wysiwyg-inline-strike")
+        ?.textContent,
+    ).toBe("quote");
+    // fenced code stays a literal textarea, not inline-formatted.
+    expect(
+      container.querySelector<HTMLTextAreaElement>(".markdown-wysiwyg-code")
+        ?.value,
+    ).toBe("code");
+  });
+
+  it("edits an inline heading fragment and emits Markdown source", async () => {
     const onChange = vi.fn();
     await act(async () => {
       root.render(
@@ -46,26 +86,92 @@ describe("MarkdownWysiwygEditor", () => {
       );
     });
 
-    const heading = container.querySelector<HTMLTextAreaElement>(
-      ".markdown-wysiwyg-heading",
+    const headingText = container.querySelector(
+      ".markdown-wysiwyg-heading .wysiwyg-inline-text",
     );
-    expect(heading).not.toBeNull();
-    expect(heading?.tagName).toBe("TEXTAREA");
+    expect(headingText).not.toBeNull();
 
     await act(async () => {
-      if (heading === null) throw new Error("missing heading");
-      setValueOnTextarea(heading, "Edited");
+      if (headingText === null) throw new Error("missing heading text span");
+      inputInline(headingText, "Edited");
     });
 
     expect(onChange).toHaveBeenLastCalledWith("# Edited");
   });
 
-  it("keeps source islands editable without executing or dropping source", async () => {
+  it("edits list item text via the inline editor and keeps other items", async () => {
     const onChange = vi.fn();
     await act(async () => {
       root.render(
         <MarkdownWysiwygEditor
-          content={'```mermaid\nflowchart TD\nA-->B\n```'}
+          content={"- one\n- two"}
+          onChange={onChange}
+        />,
+      );
+    });
+
+    const itemSpans = container.querySelectorAll(
+      ".markdown-wysiwyg-list-text .wysiwyg-inline-text",
+    );
+    await act(async () => {
+      inputInline(itemSpans[1] as Element, "TWO");
+    });
+
+    expect(onChange).toHaveBeenLastCalledWith("- one\n- TWO");
+  });
+
+  it("allows multiline paragraphs and block quotes while keeping headings and lists single-line", async () => {
+    const onChange = vi.fn();
+    const content = "# heading\n\nparagraph\n\n- item\n\n> quote";
+    await act(async () => {
+      root.render(
+        <MarkdownWysiwygEditor content={content} onChange={onChange} />,
+      );
+    });
+
+    const heading = container.querySelector(
+      ".markdown-wysiwyg-heading .wysiwyg-inline-text",
+    );
+    const paragraph = container.querySelector(
+      ".markdown-wysiwyg-paragraph .wysiwyg-inline-text",
+    );
+    const listItem = container.querySelector(
+      ".markdown-wysiwyg-list-text .wysiwyg-inline-text",
+    );
+    const quote = container.querySelector(
+      ".markdown-wysiwyg-blockquote .wysiwyg-inline-text",
+    );
+    if (!heading || !paragraph || !listItem || !quote) {
+      throw new Error("missing structured inline editor");
+    }
+
+    await act(async () => inputInline(heading, "line one\nline two"));
+    expect(onChange).toHaveBeenLastCalledWith(
+      "# line one line two\n\nparagraph\n\n- item\n\n> quote",
+    );
+
+    await act(async () => inputInline(paragraph, "line one\nline two"));
+    expect(onChange).toHaveBeenLastCalledWith(
+      "# heading\n\nline one\nline two\n\n- item\n\n> quote",
+    );
+
+    await act(async () => inputInline(listItem, "line one\nline two"));
+    expect(onChange).toHaveBeenLastCalledWith(
+      "# heading\n\nparagraph\n\n- line one line two\n\n> quote",
+    );
+
+    await act(async () => inputInline(quote, "line one\nline two"));
+    expect(onChange).toHaveBeenLastCalledWith(
+      "# heading\n\nparagraph\n\n- item\n\n> line one\n> line two",
+    );
+  });
+
+  it("keeps fenced code and source islands as literal editable textareas", async () => {
+    const onChange = vi.fn();
+    await act(async () => {
+      root.render(
+        <MarkdownWysiwygEditor
+          content={"```mermaid\nflowchart TD\nA-->B\n```"}
           onChange={onChange}
         />,
       );
@@ -75,7 +181,6 @@ describe("MarkdownWysiwygEditor", () => {
       ".markdown-wysiwyg-source-island",
     );
     expect(island).not.toBeNull();
-    expect(island?.tagName).toBe("TEXTAREA");
 
     await act(async () => {
       if (island === null) throw new Error("missing source island");
@@ -87,206 +192,65 @@ describe("MarkdownWysiwygEditor", () => {
     );
   });
 
-  it("renders list item text as a wrapping textarea and keeps long text on one source line", async () => {
-    const longChinese =
-      "这是一个非常非常非常非常非常非常长的无空格中文列表项文本用来验证窄窗口下软换行不会向源码注入额外换行";
+  it("keeps the code block language single-line", async () => {
     const onChange = vi.fn();
     await act(async () => {
       root.render(
         <MarkdownWysiwygEditor
-          content={`- ${longChinese}`}
+          content={"```js\nvar a = 1;\n```"}
           onChange={onChange}
         />,
       );
     });
 
-    const itemText = container.querySelector<HTMLTextAreaElement>(
-      ".markdown-wysiwyg-list-text",
-    );
-    expect(itemText).not.toBeNull();
-    expect(itemText?.tagName).toBe("TEXTAREA");
-
-    const longEnglish =
-      "SupercalifragilisticexpialidociousAndThenSomeMoreWordsWithoutAnyBreaksHere";
-    await act(async () => {
-      if (itemText === null) throw new Error("missing list item text");
-      setValueOnTextarea(itemText, longEnglish);
-    });
-
-    expect(onChange).toHaveBeenLastCalledWith(`- ${longEnglish}`);
-    const lastCall =
-      onChange.mock.calls[onChange.mock.calls.length - 1]?.[0] ?? "";
-    expect(lastCall).not.toContain("\n");
-  });
-
-  it("keeps single-line controls (heading, list item, code language) on one source line by stripping newlines", async () => {
-    const contentRef: { current: string } = {
-      current: "# Heading\n\n- item\n\n```js\nvar a = 1;\n```",
-    };
-
-    function ControlledEditor() {
-      const [content, setContent] = useState(contentRef.current);
-      contentRef.current = content;
-      return <MarkdownWysiwygEditor content={content} onChange={setContent} />;
-    }
-
-    await act(async () => {
-      root.render(<ControlledEditor />);
-    });
-
-    const heading = container.querySelector<HTMLTextAreaElement>(
-      ".markdown-wysiwyg-heading",
-    );
-    const itemText = container.querySelector<HTMLTextAreaElement>(
-      ".markdown-wysiwyg-list-text",
-    );
     const language = container.querySelector<HTMLTextAreaElement>(
       ".markdown-wysiwyg-code-language",
     );
-
-    expect(heading?.tagName).toBe("TEXTAREA");
-    expect(itemText?.tagName).toBe("TEXTAREA");
-    expect(language?.tagName).toBe("TEXTAREA");
-
     await act(async () => {
-      if (!heading || !itemText || !language) {
-        throw new Error("missing single-line controls");
-      }
-      setValueOnTextarea(heading, "multi\nline\nheading");
-    });
-    await act(async () => {
-      if (!itemText) throw new Error("missing list item text");
-      setValueOnTextarea(itemText, "first\nsecond");
-    });
-    await act(async () => {
-      if (!language) throw new Error("missing code language");
+      if (language === null) throw new Error("missing code language");
       setValueOnTextarea(language, "java\nscript");
     });
 
-    const [headingLine, , listItemLine, , fenceStart] =
-      contentRef.current.split("\n");
-    expect(headingLine).toBe("# multi line heading");
-    expect(listItemLine).toBe("- first second");
-    expect(fenceStart).toBe("```java script");
+    expect(onChange).toHaveBeenLastCalledWith("```java script\nvar a = 1;\n```");
   });
 
-  it("prevents Enter from inserting newlines in single-line controls", async () => {
+  it("locks every control when disabled", async () => {
     await act(async () => {
       root.render(
         <MarkdownWysiwygEditor
-          content={"# Heading\n\n- item"}
+          content="# Title\n\n```js\ncode\n```"
+          disabled
           onChange={vi.fn()}
         />,
       );
     });
 
-    const heading = container.querySelector<HTMLTextAreaElement>(
-      ".markdown-wysiwyg-heading",
-    );
-    const itemText = container.querySelector<HTMLTextAreaElement>(
-      ".markdown-wysiwyg-list-text",
-    );
-
-    const headingEnter = new KeyboardEvent("keydown", {
-      key: "Enter",
-      bubbles: true,
-      cancelable: true,
-    });
-    const itemEnter = new KeyboardEvent("keydown", {
-      key: "Enter",
-      bubbles: true,
-      cancelable: true,
-    });
-
-    heading?.dispatchEvent(headingEnter);
-    itemText?.dispatchEvent(itemEnter);
-
-    expect(headingEnter.defaultPrevented).toBe(true);
-    expect(itemEnter.defaultPrevented).toBe(true);
+    container
+      .querySelectorAll<HTMLElement>(".wysiwyg-inline-run > span")
+      .forEach((span) => {
+        expect(span.getAttribute("contenteditable")).toBe("false");
+      });
+    container
+      .querySelectorAll<HTMLTextAreaElement>(".markdown-wysiwyg-editor textarea")
+      .forEach((textarea) => {
+        expect(textarea.disabled).toBe(true);
+      });
   });
 
-  it("does not intercept Enter while composing (CJK input methods)", async () => {
-    await act(async () => {
-      root.render(
-        <MarkdownWysiwygEditor content={"# 标题"} onChange={vi.fn()} />,
-      );
-    });
-
-    const heading = container.querySelector<HTMLTextAreaElement>(
-      ".markdown-wysiwyg-heading",
-    );
-
-    const enterDuringComposition = new KeyboardEvent("keydown", {
-      key: "Enter",
-      bubbles: true,
-      cancelable: true,
-    });
-    heading?.dispatchEvent(
-      new CompositionEvent("compositionstart", { bubbles: true }),
-    );
-    heading?.dispatchEvent(enterDuringComposition);
-    expect(enterDuringComposition.defaultPrevented).toBe(false);
-
-    const enterAfterComposition = new KeyboardEvent("keydown", {
-      key: "Enter",
-      bubbles: true,
-      cancelable: true,
-    });
-    heading?.dispatchEvent(
-      new CompositionEvent("compositionend", { bubbles: true }),
-    );
-    heading?.dispatchEvent(enterAfterComposition);
-    expect(enterAfterComposition.defaultPrevented).toBe(true);
-  });
-
-  it("allows newlines in multi-line controls (paragraph) to reach the Markdown source", async () => {
-    const onChange = vi.fn();
-    await act(async () => {
-      root.render(
-        <MarkdownWysiwygEditor content={"one paragraph"} onChange={onChange} />,
-      );
-    });
-
-    const paragraph = container.querySelector<HTMLTextAreaElement>(
-      ".markdown-wysiwyg-paragraph",
-    );
-    expect(paragraph?.tagName).toBe("TEXTAREA");
-
-    const enter = new KeyboardEvent("keydown", {
-      key: "Enter",
-      bubbles: true,
-      cancelable: true,
-    });
-    paragraph?.dispatchEvent(enter);
-    expect(enter.defaultPrevented).toBe(false);
-
-    await act(async () => {
-      if (paragraph === null) throw new Error("missing paragraph");
-      setValueOnTextarea(paragraph, "line one\nline two");
-    });
-
-    expect(onChange).toHaveBeenLastCalledWith("line one\nline two");
-  });
-
-  it("auto-grows without throwing when scrollHeight is unavailable (jsdom)", async () => {
+  it("does not throw when rendering many blocks without layout (jsdom)", async () => {
     await expect(
       act(async () => {
         root.render(
           <MarkdownWysiwygEditor
-            content={"# Title\n\nlong ".repeat(20).trim()}
+            content={"# Title\n\nlong paragraph ".repeat(10).trim()}
             onChange={vi.fn()}
           />,
         );
       }),
     ).resolves.toBeUndefined();
-
-    const textareas = container.querySelectorAll<HTMLTextAreaElement>(
-      ".markdown-wysiwyg-editor textarea",
-    );
-    expect(textareas.length).toBeGreaterThan(0);
-    textareas.forEach((textarea) => {
-      expect(textarea.tagName).toBe("TEXTAREA");
-    });
+    expect(
+      container.querySelectorAll(".markdown-wysiwyg-editor > *").length,
+    ).toBeGreaterThan(0);
   });
 });
 
@@ -294,7 +258,7 @@ type ResizeObserverCallback = (entries: {
   contentRect: { width: number };
 }[]) => void;
 
-describe("AutoGrowTextarea resize behavior", () => {
+describe("AutoGrowTextarea resize behavior (code block content)", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot>;
   let originalScrollHeight: PropertyDescriptor | undefined;
@@ -367,9 +331,7 @@ describe("AutoGrowTextarea resize behavior", () => {
       );
     } else {
       delete (
-        HTMLTextAreaElement.prototype as unknown as {
-          scrollHeight?: number;
-        }
+        HTMLTextAreaElement.prototype as unknown as { scrollHeight?: number }
       ).scrollHeight;
     }
     if (originalOffsetHeight) {
@@ -380,9 +342,7 @@ describe("AutoGrowTextarea resize behavior", () => {
       );
     } else {
       delete (
-        HTMLTextAreaElement.prototype as unknown as {
-          offsetHeight?: number;
-        }
+        HTMLTextAreaElement.prototype as unknown as { offsetHeight?: number }
       ).offsetHeight;
     }
     if (originalClientHeight) {
@@ -393,9 +353,7 @@ describe("AutoGrowTextarea resize behavior", () => {
       );
     } else {
       delete (
-        HTMLTextAreaElement.prototype as unknown as {
-          clientHeight?: number;
-        }
+        HTMLTextAreaElement.prototype as unknown as { clientHeight?: number }
       ).clientHeight;
     }
     globalThis.ResizeObserver = originalResizeObserver;
@@ -407,9 +365,9 @@ describe("AutoGrowTextarea resize behavior", () => {
     );
   }
 
-  function headingHeight(): string {
+  function codeHeight(): string {
     return (
-      container.querySelector<HTMLTextAreaElement>(".markdown-wysiwyg-heading")
+      container.querySelector<HTMLTextAreaElement>(".markdown-wysiwyg-code")
         ?.style.height ?? ""
     );
   }
@@ -418,112 +376,92 @@ describe("AutoGrowTextarea resize behavior", () => {
     mockHeight = 40;
     await act(async () => {
       root.render(
-        <MarkdownWysiwygEditor content="# Heading" onChange={vi.fn()} />,
+        <MarkdownWysiwygEditor
+          content={"```js\ncode\n```"}
+          onChange={vi.fn()}
+        />,
       );
     });
-    expect(headingHeight()).toBe("40px");
+    expect(codeHeight()).toBe("40px");
   });
 
-  it("re-measures when the value changes", async () => {
+  it("re-measures when the code content changes", async () => {
     mockHeight = 40;
     await act(async () => {
       root.render(
-        <MarkdownWysiwygEditor content="# one" onChange={vi.fn()} />,
+        <MarkdownWysiwygEditor
+          content={"```js\none\n```"}
+          onChange={vi.fn()}
+        />,
       );
     });
-    expect(headingHeight()).toBe("40px");
+    expect(codeHeight()).toBe("40px");
 
     mockHeight = 90;
     await act(async () => {
       root.render(
-        <MarkdownWysiwygEditor content="# two" onChange={vi.fn()} />,
+        <MarkdownWysiwygEditor
+          content={"```js\ntwo\n```"}
+          onChange={vi.fn()}
+        />,
       );
     });
-    expect(headingHeight()).toBe("90px");
-  });
-
-  it("re-measures when heading level changes even with the same text", async () => {
-    mockHeight = 40;
-    await act(async () => {
-      root.render(<MarkdownWysiwygEditor content="# x" onChange={vi.fn()} />);
-    });
-    const heading = container.querySelector<HTMLTextAreaElement>(
-      ".markdown-wysiwyg-heading",
-    );
-    expect(heading?.className).toContain("is-h1");
-    expect(headingHeight()).toBe("40px");
-
-    mockHeight = 110;
-    await act(async () => {
-      root.render(<MarkdownWysiwygEditor content="## x" onChange={vi.fn()} />);
-    });
-    const after = container.querySelector<HTMLTextAreaElement>(
-      ".markdown-wysiwyg-heading",
-    );
-    expect(after?.className).toContain("is-h2");
-    expect(headingHeight()).toBe("110px");
-  });
-
-  it("re-measures when ResizeObserver reports a container width change", async () => {
-    mockHeight = 40;
-    await act(async () => {
-      root.render(<MarkdownWysiwygEditor content="# x" onChange={vi.fn()} />,
-      );
-    });
-    expect(headingHeight()).toBe("40px");
-
-    act(() => fireResizeObserver(100));
-
-    mockHeight = 70;
-    act(() => fireResizeObserver(60));
-    expect(headingHeight()).toBe("70px");
-  });
-
-  it("does not re-measure when width is unchanged (no feedback loop)", async () => {
-    mockHeight = 40;
-    await act(async () => {
-      root.render(<MarkdownWysiwygEditor content="# x" onChange={vi.fn()} />,
-      );
-    });
-    act(() => fireResizeObserver(100));
-    mockHeight = 70;
-    act(() => fireResizeObserver(70));
-
-    mockHeight = 250;
-    act(() => fireResizeObserver(70));
-    expect(headingHeight()).toBe("70px");
+    expect(codeHeight()).toBe("90px");
   });
 
   it("re-measures on the first ResizeObserver notification at the final width", async () => {
     mockHeight = 40;
     await act(async () => {
-      root.render(<MarkdownWysiwygEditor content="# x" onChange={vi.fn()} />,
+      root.render(
+        <MarkdownWysiwygEditor
+          content={"```js\ncode\n```"}
+          onChange={vi.fn()}
+        />,
       );
     });
-    expect(headingHeight()).toBe("40px");
+    expect(codeHeight()).toBe("40px");
 
-    // A parent scrollbar may reduce the available width after mount, so the
-    // first observer notification carries the final width and the required
-    // height (here 70px) may differ from the mount-time measure.
     mockHeight = 70;
     act(() => fireResizeObserver(120));
-    expect(headingHeight()).toBe("70px");
+    expect(codeHeight()).toBe("70px");
 
-    // A later notification with the same final width must not re-measure.
     mockHeight = 250;
     act(() => fireResizeObserver(120));
-    expect(headingHeight()).toBe("70px");
+    expect(codeHeight()).toBe("70px");
+  });
+
+  it("re-measures when ResizeObserver reports a width change without looping", async () => {
+    mockHeight = 40;
+    await act(async () => {
+      root.render(
+        <MarkdownWysiwygEditor
+          content={"```js\ncode\n```"}
+          onChange={vi.fn()}
+        />,
+      );
+    });
+    act(() => fireResizeObserver(100));
+    mockHeight = 70;
+    act(() => fireResizeObserver(60));
+    expect(codeHeight()).toBe("70px");
+
+    mockHeight = 250;
+    act(() => fireResizeObserver(60));
+    expect(codeHeight()).toBe("70px");
   });
 
   it("includes top and bottom border thickness in the final height (border-box)", async () => {
     mockHeight = 40;
-    // 1px top + 1px bottom border: offsetHeight - clientHeight = 2.
     mockOffsetHeight = 50;
     mockClientHeight = 48;
     await act(async () => {
-      root.render(<MarkdownWysiwygEditor content="# x" onChange={vi.fn()} />,
+      root.render(
+        <MarkdownWysiwygEditor
+          content={"```js\ncode\n```"}
+          onChange={vi.fn()}
+        />,
       );
     });
-    expect(headingHeight()).toBe("42px");
+    expect(codeHeight()).toBe("42px");
   });
 });

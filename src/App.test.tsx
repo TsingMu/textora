@@ -3256,44 +3256,38 @@ describe("App Markdown preview", () => {
       container.querySelector<HTMLButtonElement>(".markdown-wysiwyg-toggle")?.click();
     });
 
-    const heading = container.querySelector<HTMLTextAreaElement>(
-      ".markdown-wysiwyg-heading",
+    const headingText = container.querySelector(
+      ".markdown-wysiwyg-heading .wysiwyg-inline-text",
     );
     await act(async () => {
-      const setter = Object.getOwnPropertyDescriptor(
-        HTMLTextAreaElement.prototype,
-        "value",
-      )?.set;
-      setter?.call(heading, "Edited");
-      heading?.dispatchEvent(new Event("input", { bubbles: true }));
+      if (headingText) {
+        headingText.textContent = "Edited";
+        headingText.dispatchEvent(new InputEvent("input", { bubbles: true }));
+      }
     });
 
-    const paragraph = container.querySelector<HTMLTextAreaElement>(
-      ".markdown-wysiwyg-paragraph",
+    const paragraphText = container.querySelector(
+      ".markdown-wysiwyg-paragraph .wysiwyg-inline-text",
     );
     await act(async () => {
-      const setter = Object.getOwnPropertyDescriptor(
-        HTMLTextAreaElement.prototype,
-        "value",
-      )?.set;
-      setter?.call(paragraph, "Updated paragraph");
-      paragraph?.dispatchEvent(new Event("input", { bubbles: true }));
+      if (paragraphText) {
+        paragraphText.textContent = "Updated paragraph";
+        paragraphText.dispatchEvent(new InputEvent("input", { bubbles: true }));
+      }
     });
 
     await act(async () => {
       container.querySelector<HTMLInputElement>("input[aria-label='Task 1']")?.click();
     });
 
-    const blockquote = container.querySelector<HTMLTextAreaElement>(
-      ".markdown-wysiwyg-blockquote",
+    const blockquoteText = container.querySelector(
+      ".markdown-wysiwyg-blockquote .wysiwyg-inline-text",
     );
     await act(async () => {
-      const setter = Object.getOwnPropertyDescriptor(
-        HTMLTextAreaElement.prototype,
-        "value",
-      )?.set;
-      setter?.call(blockquote, "updated quote");
-      blockquote?.dispatchEvent(new Event("input", { bubbles: true }));
+      if (blockquoteText) {
+        blockquoteText.textContent = "updated quote";
+        blockquoteText.dispatchEvent(new InputEvent("input", { bubbles: true }));
+      }
     });
 
     const code = container.querySelector<HTMLTextAreaElement>(
@@ -3326,6 +3320,89 @@ describe("App Markdown preview", () => {
     );
     expect(savedContent).not.toContain("markdown-wysiwyg");
     expect(savedContent).not.toContain("<input");
+  });
+
+  it("shows and edits inline formatting in WYSIWYG list items and saves source", async () => {
+    let savedContent = "";
+    invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        return {
+          id: "doc-md-inline",
+          path: "/tmp/notes.md",
+          displayName: "notes.md",
+          byteCount: 64,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 64, sha256: "md-inline" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder()
+          .encode("- **状态**：待开始\n- 参考 `docs/tasks/current.md`")
+          .buffer;
+      }
+      if (cmd === "save_document") {
+        savedContent = new TextDecoder().decode(args as Uint8Array);
+        return {
+          id: "doc-md-inline",
+          path: "/tmp/notes.md",
+          displayName: "notes.md",
+          byteCount: savedContent.length,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: savedContent.length, sha256: "saved" },
+          readOnly: false,
+        };
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await act(async () => root.render(<App />));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    await vi.waitFor(() => {
+      expect(container.querySelector(".statusbar-language")?.textContent).toBe(
+        "Markdown",
+      );
+    });
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".markdown-wysiwyg-toggle")?.click();
+    });
+
+    const bold = container.querySelector(
+      ".markdown-wysiwyg-list-text .wysiwyg-inline-bold",
+    );
+    const code = container.querySelector(
+      ".markdown-wysiwyg-list-text .wysiwyg-inline-code",
+    );
+    expect(bold?.textContent).toBe("状态");
+    expect(code?.textContent).toBe("docs/tasks/current.md");
+    expect(
+      container.querySelector(".markdown-wysiwyg-list-text .wysiwyg-inline-run")
+        ?.textContent,
+    ).toBe("状态：待开始");
+
+    await act(async () => {
+      if (bold) {
+        bold.textContent = "进度";
+        bold.dispatchEvent(new InputEvent("input", { bubbles: true }));
+      }
+    });
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".save-button")?.click();
+    });
+
+    expect(savedContent).toBe(
+      "- **进度**：待开始\n- 参考 `docs/tasks/current.md`",
+    );
+    expect(savedContent).not.toContain("<span");
   });
 
   it("locks WYSIWYG fields for read-only Markdown documents", async () => {
@@ -3366,9 +3443,10 @@ describe("App Markdown preview", () => {
     });
 
     expect(
-      container.querySelector<HTMLInputElement>(".markdown-wysiwyg-heading")
-        ?.disabled,
-    ).toBe(true);
+      container.querySelector(
+        ".markdown-wysiwyg-heading .wysiwyg-inline-run > span",
+      )?.getAttribute("contenteditable"),
+    ).toBe("false");
     expect(container.querySelector(".readonly-badge")?.textContent).toBe(
       "Read-only",
     );

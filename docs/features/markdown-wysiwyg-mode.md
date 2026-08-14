@@ -35,6 +35,10 @@ Textora 已支持 Markdown 源码编辑、源码/预览左右分栏、Markdown f
 - 富文本剪贴板、从网页粘贴并转换 Markdown、导出 PDF/HTML/图片。
 - 改变编码、换行、保存目标、冲突保护、Rust 文件核心、Tauri capability、网络或 shell 权限。
 
+## 后续发现与扩展
+
+- 2026-08-14 真实应用观察到 WYSIWYG 当时只结构化处理块级语法，列表项中的 `**状态**` 与反引号包裹的路径仍显示 Markdown 标记。该发现已通过已完成规格 `docs/features/markdown-wysiwyg-inline-formatting.md` 交付：标题、段落、列表项和引用现支持粗体、斜体、删除线、行内代码与非导航链接文本的显示和已有片段编辑；基础块级规格本身的已完成范围不变。
+
 ## 用户流程
 
 1. 用户打开或另存为一个 Markdown 文件。
