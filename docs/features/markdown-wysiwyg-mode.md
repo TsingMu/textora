@@ -1,6 +1,6 @@
 # Markdown 所见即所得模式
 
-> 状态：已完成（2026-08-11）
+> 状态：已完成（2026-08-11）；长文本自动换行修复已承诺（2026-08-14）
 
 ## 背景与目标
 
@@ -54,6 +54,7 @@ Textora 已支持 Markdown 源码编辑、源码/预览左右分栏、Markdown f
 - fenced code block 首版以源码岛方式编辑完整 fence 内容；不执行代码、不格式化代码、不加载远程资源。
 - fenced `mermaid` code block 在 WYSIWYG 首版中以源码岛显示和编辑，不在该模式内渲染为可视图表；图表预览仍由现有 Preview/Mermaid 预览负责。
 - 原始 HTML 在 WYSIWYG 中按源码岛或文本显示，不作为可执行 DOM 注入。
+- WYSIWYG 中的标题、段落、列表项、引用、fenced code block、代码语言标记与源码岛等可编辑文本，在内容超过控件可视宽度时必须软换行并保持完整可见、可编辑；软换行只属于派生视图，不得向 Markdown 源码插入额外换行或改变块结构。
 - WYSIWYG 解析失败时应退化为源码编辑或源码岛，不阻止用户继续编辑和保存。
 - 加载、保存中、保存冲突、文件缺失、关闭确认和另存为面板期间，WYSIWYG 编辑区与源码编辑器一样被锁定。
 - 只读 Markdown 文件中的 WYSIWYG 编辑区被锁定；源码编辑器保留既有“本地编辑后另存为副本”的产品行为。
@@ -71,6 +72,7 @@ Textora 已支持 Markdown 源码编辑、源码/预览左右分栏、Markdown f
 - [x] 功能不引入网络、shell、远程页面或宽泛文件系统权限。
 - [x] 自动化测试覆盖模式入口、模式互斥、内容同步、保存源码、多标签隔离和源码岛退化。
 - [x] macOS release 应用真实验收覆盖模式入口与互斥、常见块编辑后源码往返、源码岛保留、保存源码、多标签隔离、只读锁定和未保存关闭保护。
+- [ ] 长列表项及其他 WYSIWYG 可编辑块在窄窗口内自动软换行、保持完整可见和可编辑，且保存源码不产生额外换行。
 
 ## 依赖与约束
 
@@ -99,6 +101,8 @@ Markdown 所见即所得模式按以下顺序拆成可连续交付的小切片�
 5. **WYSIWYG 集成验收与文档收尾**：完整自动化、前端构建、release 构建和 macOS 真实应用验收；规格状态改为已完成，必要时同步 README。
 
 ## 验证记录
+
+- 2026-08-14 发现 WYSIWYG 长列表项超过可视宽度后被单行裁切，且当前交互无法拖动查看剩余内容。已承诺后续任务「修复 Markdown WYSIWYG 长文本无法完整查看」：修复列表项的自动软换行，并检查标题、段落、引用、fenced code block、代码语言标记与源码岛等其他可编辑块是否存在同类问题后统一处理；实现与验证尚未执行。
 
 - 2026-08-10「建立 Markdown WYSIWYG 块模型与源码往返契约」：新增 `src/markdownWysiwyg.ts` 与 `src/markdownWysiwyg.test.ts`，建立首版纯前端块模型。解析支持标题、段落、无序/有序/任务列表、引用、fenced code block 与分隔线；表格、原始 HTML、Mermaid fence、未知 fence 和未知结构作为源码岛保留；序列化会把块模型写回 Markdown 源码。验证：`npm run test -- markdownWysiwyg` 通过（**4 passed / 0 failed**）；`npm run build` 通过；`git diff --check` 通过。本切片未接入主界面。
 - 2026-08-10「接入 Markdown WYSIWYG 模式入口与首版编辑视图」：Markdown 标签新增 `WYSIWYG` 工具栏入口，非 Markdown 不显示；WYSIWYG 与 Preview 按标签互斥，默认仍为源码编辑；新增 `MarkdownWysiwygEditor` 把块模型渲染为标题、段落、列表/任务列表、引用、fenced code block、分隔线和源码岛编辑视图，编辑后同步 Markdown 源码、脏状态、保存和关闭保护链路；只读 Markdown 的 WYSIWYG 字段禁用，源码编辑器继续保留既有只读另存为副本流程。未新增依赖、网络、shell、Rust IPC、Tauri capability 或远程资源能力。验证：`npm run test -- markdownWysiwyg MarkdownWysiwygEditor tabSession App` 通过（**98 passed / 0 failed**）；`npm run check` 通过（typecheck + vitest **202 passed / 0 failed**）；`npm run build` 通过；`npm run tauri -- build` 通过并生成 release `Textora.app`；`git diff --check` 通过。当前自动化环境未做真实 WebView 人工点击验收。

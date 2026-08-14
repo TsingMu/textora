@@ -244,3 +244,102 @@ export function unclosedOpeningAtLineEnd(
     lineIndex + 1,
   );
 }
+
+/** opening fence 首个 info token 的建议上下文，供语言候选提示切片直接消费。 */
+export type OpeningFenceTokenContext = {
+  marker: FenceMarker;
+  /** 当前查询前缀：首个 info token 起点到光标（不含）的原文，未做大小写归一化。 */
+  prefix: string;
+  /** 首个 info token 在源码中的替换起点（token 首字符 offset；空 token 时等于 `to`）。 */
+  from: number;
+  /** 首个 info token 在源码中的替换终点（token 末字符之后的 offset）。 */
+  to: number;
+};
+
+/**
+ * 判断 `offset` 是否位于一个「有效 opening fence 行」的首个 info token 内或末尾，供语言候选提示使用。
+ *
+ * 有效 opening fence：当前行符合 fence 词法（0–3 个前导空格 + ≥3 个同字符标记），且其上方没有未闭合的
+ * 外层 fence（否则当前行是内容而非 opening）。光标必须落在首个 info token 的字符范围内或其末尾
+ * （`from <= offset <= to`）；标记内部、token 后空格、第二 token、closing fence、fence 内容、嵌套
+ * fence、4+ 个前导空格与非 fence 行均返回 `null`。不要求 opening 在下方已闭合——已闭合 opening 仍可
+ * 编辑其语言 token。
+ *
+ * 首个 token 的位置与 {@link fenceContextAt} 的 `infoToken` 归一化一致：跳过标记后的前导空白，取首个
+ * 非空白 run；标记后无内容（空 token）时 `from === to`，位于标记后可输入首个语言字符的位置。
+ */
+export function openingFenceTokenContext(
+  text: string,
+  offset: number,
+): OpeningFenceTokenContext | null {
+  if (offset < 0 || offset > text.length) return null;
+  const lines = splitLines(text);
+  const cursorLine = lineIndexOfOffset(lines, offset);
+  return openingFenceTokenContextFromLineSource(
+    lines.length,
+    (n) => lines[n - 1].text,
+    (n) => lines[n - 1].start,
+    cursorLine + 1,
+    offset,
+  );
+}
+
+/**
+ * {@link openingFenceTokenContext} 的行源核心，供编辑器热路径用 CodeMirror `Text` 行 API 按需取行，
+ * 避免全文 `toString()` 与 `splitLines()` 复制。`getLineText(n)`/`getLineStart(n)` 以 1-based 行号
+ * 返回该行文本与绝对起始 offset，`cursorLine` 为 1-based，`cursorOffset` 为绝对 offset。
+ *
+ * 关键优化：先只读当前行做 fence 词法判定与光标 token 命中——非 fence 行（普通段落）与光标不在首个
+ * token 内的行直接返回 `null`，不扫描上方，避免普通 Markdown 输入时触发 O(行数) 扫描。仅当前行确为
+ * fence 行且光标在 token 内时，才需要确认未被外层未闭合 fence 包住。
+ *
+ * 嵌套确认优先交给可选的 `nestingOracle`：返回 `true`（处于上方未闭合 fence 内）直接拒绝，返回 `false`
+ *（确认无外层 fence）直接放行，二者都避免 O(行数) 上方扫描；仅当 oracle 未提供或返回 `null`（无法判定，
+ * 例如语法树尚未覆盖到光标）时，才回退到逐行扫描。判定语义与 {@link openingFenceTokenContext} 完全一致。
+ */
+export function openingFenceTokenContextFromLineSource(
+  lineCount: number,
+  getLineText: (lineNumber: number) => string,
+  getLineStart: (lineNumber: number) => number,
+  cursorLine: number,
+  cursorOffset: number,
+  nestingOracle?: (cursorLine: number) => boolean | null,
+): OpeningFenceTokenContext | null {
+  if (cursorLine < 1 || cursorLine > lineCount) return null;
+
+  const cursorLineText = getLineText(cursorLine);
+  const info = classifyFenceLine(cursorLineText);
+  if (info === null) return null;
+
+  const markerEnd = info.indent + info.length;
+  const rest = cursorLineText.slice(markerEnd);
+  const match = rest.match(/^(\s*)(\S*)/);
+  const leadingWs = match ? match[1].length : 0;
+  const tokenLen = match ? match[2].length : 0;
+  const lineStart = getLineStart(cursorLine);
+  const tokenFromInLine = markerEnd + leadingWs;
+  const from = lineStart + tokenFromInLine;
+  const to = from + tokenLen;
+
+  if (cursorOffset < from || cursorOffset > to) return null;
+
+  let nested: boolean | null = nestingOracle ? nestingOracle(cursorLine) : null;
+  if (nested === null) {
+    let openAbove: { marker: FenceMarker; length: number } | null = null;
+    for (let n = 1; n < cursorLine; n++) {
+      const above = classifyFenceLine(getLineText(n));
+      if (above === null) continue;
+      if (openAbove === null) {
+        openAbove = { marker: above.marker, length: above.length };
+      } else if (isClosingFor(above, openAbove)) {
+        openAbove = null;
+      }
+    }
+    nested = openAbove !== null;
+  }
+  if (nested) return null;
+
+  const prefixLen = cursorOffset - from;
+  const prefix = cursorLineText.slice(tokenFromInLine, tokenFromInLine + prefixLen);
+  return { marker: info.marker, prefix, from, to };
+}

@@ -1,9 +1,52 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  FENCE_LANGUAGE_DIRECTORY,
   renderHighlightedCodeBlock,
   resolveMarkdownCodeBlockLanguage,
 } from "./markdownCodeHighlight";
+
+describe("FENCE_LANGUAGE_DIRECTORY", () => {
+  it("canonical 顺序与首版候选词表一致", () => {
+    expect(FENCE_LANGUAGE_DIRECTORY.map((e) => e.canonical)).toEqual([
+      "javascript",
+      "typescript",
+      "json",
+      "html",
+      "css",
+      "rust",
+      "python",
+      "java",
+      "shell",
+      "sql",
+      "toml",
+      "yaml",
+      "markdown",
+      "mermaid",
+    ]);
+  });
+
+  it("canonical 与每个别名都按目录映射到同一高亮语言，证明目录是高亮解析的单一来源", () => {
+    for (const entry of FENCE_LANGUAGE_DIRECTORY) {
+      // mermaid 在高亮解析中显式返回 null（由图表渲染接管）。
+      if (entry.canonical === "mermaid") {
+        expect(resolveMarkdownCodeBlockLanguage(entry.canonical)).toBeNull();
+        continue;
+      }
+      expect(resolveMarkdownCodeBlockLanguage(entry.canonical)).toBe(
+        entry.previewTarget,
+      );
+      for (const alias of entry.aliases) {
+        expect(resolveMarkdownCodeBlockLanguage(alias)).toBe(entry.previewTarget);
+      }
+    }
+  });
+
+  it("大小写不敏感识别仍然成立", () => {
+    expect(resolveMarkdownCodeBlockLanguage("RUST")).toBe("rust");
+    expect(resolveMarkdownCodeBlockLanguage("Py")).toBe("python");
+  });
+});
 
 describe("resolveMarkdownCodeBlockLanguage", () => {
   it("按 info string 首个 token 大小写不敏感识别常见语言别名", () => {

@@ -1,6 +1,6 @@
 # Markdown opening fence 语言候选提示
 
-> 状态：已确认（2026-08-13）
+> 状态：已完成（2026-08-14）
 
 ## 背景与目标
 
@@ -51,16 +51,16 @@ Textora 已支持 Markdown fenced code block 自动闭合、本地预览语法�
 
 ## 验收条件
 
-- [ ] Markdown 源码中输入 opening fence 语言前缀会显示正确的本地候选，并按不区分大小写的前缀过滤。
-- [ ] Preview 左侧源码区行为一致；WYSIWYG、非 Markdown 文档、closing fence、代码块内容区和普通文本不显示候选。
-- [ ] 反引号/波浪号 fence、0–3 个前导空格和“位于另一未闭合 fence 内”的边界识别正确。
-- [ ] 方向键可移动候选，Enter/Tab 可确认，Escape、光标移动、空格/换行和上下文失效可关闭。
-- [ ] 确认候选只替换首个 info token 前缀，保留 fence 标记、缩进与其余 info string，并可一次撤销。
-- [ ] 候选确认后，既有 Enter 自动闭合仍能补齐 closing fence；未确认候选直接按 Enter 的行为符合已确认决议。
-- [ ] 只读/忙碌状态、多标签切换、Preview/WYSIWYG 切换、保存、关闭保护和列块编辑不回退。
-- [ ] 候选为空、UI 创建失败或上下文失效时安全退化，不丢输入、不抛出阻塞错误。
-- [ ] 功能不新增网络、shell、远程服务、Rust IPC、Tauri capability 或宽泛文件权限。
-- [ ] 自动化覆盖候选过滤、上下文边界、键盘确认/取消、撤销、自动闭合协同和多标签/模式隔离；macOS release 真实应用验收覆盖主要键盘流程与弹层定位。
+- [x] Markdown 源码中输入 opening fence 语言前缀会显示正确的本地候选，并按不区分大小写的前缀过滤。
+- [x] Preview 左侧源码区行为一致；WYSIWYG、非 Markdown 文档、closing fence、代码块内容区和普通文本不显示候选。
+- [x] 反引号/波浪号 fence、0–3 个前导空格和“位于另一未闭合 fence 内”的边界识别正确。
+- [x] 方向键可移动候选，Enter/Tab 可确认，Escape、光标移动、空格/换行和上下文失效可关闭。
+- [x] 确认候选只替换首个 info token 前缀，保留 fence 标记、缩进与其余 info string，并可一次撤销。
+- [x] 候选确认后，既有 Enter 自动闭合仍能补齐 closing fence；未确认候选直接按 Enter 的行为符合已确认决议。
+- [x] 只读/忙碌状态、多标签切换、Preview/WYSIWYG 切换、保存、关闭保护和列块编辑不回退。
+- [x] 候选为空、UI 创建失败或上下文失效时安全退化，不丢输入、不抛出阻塞错误。
+- [x] 功能不新增网络、shell、远程服务、Rust IPC、Tauri capability 或宽泛文件权限。
+- [x] 自动化覆盖候选过滤、上下文边界、键盘确认/取消、撤销、自动闭合协同和多标签/模式隔离；macOS release 真实应用验收覆盖主要键盘流程与弹层定位。
 
 ## 依赖与约束
 
@@ -87,3 +87,5 @@ Textora 已支持 Markdown fenced code block 自动闭合、本地预览语法�
 
 - 2026-08-13 形成草案并完成与现有 fenced 编辑、高亮语言集合、Markdown 模式边界和任务颗粒度的文档核对；本轮仅规划，未修改实现代码，未运行实现测试或构建。
 - 2026-08-13 确认规格。核对 `src/markdownCodeHighlight.ts` 的既有 info token 映射、`src/languageRecognition.ts` 的语言集合、`src/Editor.tsx` 的高优先级 Enter 自动闭合 keymap，以及依赖树中由多个现有 CodeMirror 包共同使用的 `@codemirror/autocomplete@6.20.3`。据此确认 canonical 展示/别名检索、候选优先确认后再次 Enter 自动闭合、官方 autocomplete 接入和无结果关闭四项决议；本任务只修改规划文档，未修改生产代码、实现性测试或依赖，未运行测试或构建。
+- 2026-08-14 实现完成并通过组合自动化与 release 构建。9 条可由自动化/代码/权限确认的验收条件已勾选：候选过滤/上下文边界/键盘确认·取消/撤销/自动闭合协调/只读·忙碌·多标签·模式隔离/安全退化由 vitest 覆盖（含真实 `input.type` 事务 + 自动激活 + Enter 的裸 fence 自动闭合与 `j` 前缀确认候选、20,000 行文档下 completion 热路径只做常数次行读取），未新增网络/shell/Rust IPC/capability 经 `src-tauri/capabilities` 自基线无改动确认；`npm run tauri -- build` 通过并生成 release `Textora.app`（`CFBundleIdentifier`=`com.tsingmu.textora`、`CFBundleExecutable`=`textora`、`CFBundleIconFile`=`icon.icns`）。最后一条「macOS release 真实应用验收覆盖主要键盘流程与弹层定位」与「已完成」状态待人工执行后落实——当前自动化环境无法可靠驱动真实 macOS 应用的键盘输入（尤其反引号）与弹层定位视觉判定。
+- 2026-08-14 用户确认 macOS release 真实应用 opening fence 键盘验收完成，主要键盘流程与候选弹层定位通过；据此勾选最后一条验收条件并将规格状态更新为已完成。本次状态收尾未重新运行自动化或构建，沿用前置集成任务已通过的 `npm run check`（373 tests）与 `npm run tauri -- build` 记录。

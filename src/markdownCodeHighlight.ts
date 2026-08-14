@@ -15,36 +15,60 @@ import { classHighlighter, highlightTree } from "@lezer/highlight";
 
 import type { LanguageMode } from "./languageRecognition";
 
-const INFO_TOKEN_TO_LANGUAGE: Readonly<Record<string, LanguageMode>> = {
-  js: "javascript",
-  javascript: "javascript",
-  jsx: "javascript",
-  mjs: "javascript",
-  cjs: "javascript",
-  ts: "typescript",
-  typescript: "typescript",
-  tsx: "typescript",
-  mts: "typescript",
-  cts: "typescript",
-  json: "json",
-  html: "html",
-  htm: "html",
-  css: "css",
-  rs: "rust",
-  rust: "rust",
-  py: "python",
-  python: "python",
-  java: "java",
-  sh: "shell",
-  bash: "shell",
-  shell: "shell",
-  sql: "sql",
-  toml: "toml",
-  yaml: "yaml",
-  yml: "yaml",
-  md: "markdown",
-  markdown: "markdown",
+/**
+ * Markdown fenced code block 语言目录项，是代码高亮解析与 opening fence 语言候选提示共享的单一契约来源。
+ *
+ * - `canonical`：确认候选时写回源码的语言名称（小写），也是候选列表去重后唯一展示与插入的标识。
+ * - `aliases`：仅用于检索的别名（小写），不进入候选列表、不写回源码，避免产生重复项。
+ * - `previewTarget`：预览/高亮解析目标（{@link LanguageMode}）。`mermaid` 纳入目录以支持候选提示，
+ *   但 {@link resolveMarkdownCodeBlockLanguage} 继续对其返回 `null`（由本地 Mermaid 图表渲染接管）。
+ */
+export type LanguageDirectoryEntry = {
+  readonly canonical: string;
+  readonly aliases: readonly string[];
+  readonly previewTarget: LanguageMode;
 };
+
+/**
+ * 首版语言目录。canonical 顺序即候选稳定展示顺序；`mermaid` 作为可推荐的本地预览语言纳入，
+ * 但普通代码高亮解析仍返回 `null`。
+ */
+export const FENCE_LANGUAGE_DIRECTORY: readonly LanguageDirectoryEntry[] = [
+  { canonical: "javascript", aliases: ["js", "jsx", "mjs", "cjs"], previewTarget: "javascript" },
+  { canonical: "typescript", aliases: ["ts", "tsx", "mts", "cts"], previewTarget: "typescript" },
+  { canonical: "json", aliases: [], previewTarget: "json" },
+  { canonical: "html", aliases: ["htm"], previewTarget: "html" },
+  { canonical: "css", aliases: [], previewTarget: "css" },
+  { canonical: "rust", aliases: ["rs"], previewTarget: "rust" },
+  { canonical: "python", aliases: ["py"], previewTarget: "python" },
+  { canonical: "java", aliases: [], previewTarget: "java" },
+  { canonical: "shell", aliases: ["sh", "bash"], previewTarget: "shell" },
+  { canonical: "sql", aliases: [], previewTarget: "sql" },
+  { canonical: "toml", aliases: [], previewTarget: "toml" },
+  { canonical: "yaml", aliases: ["yml"], previewTarget: "yaml" },
+  { canonical: "markdown", aliases: ["md"], previewTarget: "markdown" },
+  { canonical: "mermaid", aliases: [], previewTarget: "mermaid" },
+];
+
+/**
+ * 由目录派生 info token → 高亮语言模式映射。`mermaid` 也进入映射，但
+ * {@link resolveMarkdownCodeBlockLanguage} 在查表前显式对 `mermaid` 返回 `null`。
+ */
+function buildInfoTokenToLanguage(
+  directory: readonly LanguageDirectoryEntry[],
+): Record<string, LanguageMode> {
+  const map: Record<string, LanguageMode> = {};
+  for (const entry of directory) {
+    map[entry.canonical] = entry.previewTarget;
+    for (const alias of entry.aliases) {
+      map[alias] = entry.previewTarget;
+    }
+  }
+  return map;
+}
+
+const INFO_TOKEN_TO_LANGUAGE: Readonly<Record<string, LanguageMode>> =
+  buildInfoTokenToLanguage(FENCE_LANGUAGE_DIRECTORY);
 
 type HighlightSpan = {
   from: number;

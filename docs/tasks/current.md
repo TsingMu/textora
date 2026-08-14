@@ -10,19 +10,52 @@
 
 ## 已承诺待办
 
-### 建立 Markdown opening fence 候选上下文与词表契约
+### 修复 Markdown WYSIWYG 长文本无法完整查看
 
 - **状态**：待开始
-- **Feature Spec**：`docs/features/markdown-fence-language-suggestions.md`
-- **目标**：形成可由后续 CodeMirror completion source 直接消费的纯函数契约：识别有效 opening fence 首个 info token、返回替换范围，并按前缀生成去重的 canonical 语言候选。
-- **范围**：反引号/波浪号至少 3 个、0–3 个前导空格、当前行不位于其他未闭合 fence 内；光标位于首个 token 内或末尾；canonical 名称与别名检索共用预览语言目录；大小写不敏感前缀过滤；无匹配返回空；生成只替换首个 token 的插入计划。
-- **非范围**：不接入 `@codemirror/autocomplete` UI，不处理键盘导航、Enter/Tab/Escape 优先级、主题样式、React 状态、Preview/WYSIWYG 切换或 macOS 真实应用验收。
-- **依赖**：已确认 `docs/features/markdown-fence-language-suggestions.md`；复用既有 `markdownFenceContext` 与 `markdownCodeHighlight` 语言解析边界。
-- **拆分检查**：本任务只交付纯上下文、词表和插入计划契约及其确定性测试，完成后尚无用户可见弹层；UI 接入与最终集成验收分别留给后续任务。
-- **实施要点**：从预览语言映射导出单一候选目录，避免复制两套语言/别名表；保持 Mermaid 的本地预览身份和 Markdown 代码高亮语言均可推荐；所有失败返回空结果并不修改文档。
-- **完成标准**：自动化覆盖 canonical/别名过滤、token 替换范围、反引号/波浪号、缩进、closing/content/嵌套 fence、第二 token、光标移动和空结果；`npm run check`、`npm run build`、`git diff --check` 通过。
+- **Feature Spec**：`docs/features/markdown-wysiwyg-mode.md`
+- **目标**：修复 WYSIWYG 中长列表项超过可视宽度后被裁切且无法完整查看的问题，使长文本在编辑区内自动软换行显示。
+- **范围**：检查 WYSIWYG 的标题、普通段落、无序/有序/任务列表、引用、fenced code block、代码语言标记与源码岛等全部可编辑文本控件；凡存在长文本被裁切、只能单行显示或无法通过当前交互完整查看的同类问题，一并改为在控件可视宽度内软换行并正确扩展高度。换行只影响显示，不得向 Markdown 源码插入额外换行或改变块结构；编辑、脏状态、撤销、模式切换、保存与只读/忙碌锁定行为保持不变。补充覆盖代表性中文、英文无空格长串和代码/源码岛内容的自动化回归，并在 release 应用中缩窄窗口执行真实显示与编辑验收。
+- **非范围**：不实现源码编辑器或 Preview 的全局自动换行开关；不改变 Markdown 解析/序列化语义；不新增 Markdown 格式、代码格式化、网络、shell、Rust IPC、Tauri capability 或文件权限。
+- **完成标准**：截图所示长列表项及其他 WYSIWYG 可编辑块在窄窗口内均可自动换行并完整查看、编辑；软换行不改变保存的 Markdown 源码；相关自动化回归、`npm run check`、`npm run build`、`npm run tauri -- build`、macOS release 真实交互验收与 `git diff --check` 通过；Feature Spec 与必要的当前状态文档同步。
 
 ## 最近完成
+
+### Markdown opening fence 语言候选 macOS 真实应用键盘验收
+
+- **状态**：已完成
+- **开始日期**：2026-08-14
+- **完成日期**：2026-08-14
+- **Feature Spec**：`docs/features/markdown-fence-language-suggestions.md`
+- **结果**：用户确认 macOS release 真实应用 opening fence 键盘验收完成，主要键盘流程与候选弹层定位通过。Feature Spec 最后一条验收条件已勾选、状态改为已完成，README 当前状态与文档导航同步收尾；未修改实现代码或依赖。
+- **验证记录**：本次记录用户完成的 macOS release 真实应用键盘验收；未重新运行自动化或构建，沿用前置集成任务已通过的 `npm run check`（373 tests）与 `npm run tauri -- build` 结果；`git diff --check` 通过。
+
+### Markdown opening fence 语言候选集成验收与文档收尾
+
+- **状态**：自动化、release 构建、bundle 与权限校验、文档收尾完成；macOS 真实键盘/弹层验收待执行
+- **开始日期**：2026-08-13
+- **完成日期**：2026-08-14
+- **Feature Spec**：`docs/features/markdown-fence-language-suggestions.md`
+- **结果**：完成组合自动化回归、release 构建、bundle 与权限校验和文档收尾。审查问题已修复：completion 热路径在 Markdown 语法树未覆盖当前行时安全退化为不显示候选，不再回退无界逐行扫描（`openingFenceTokenContextFromState` 在树判定返回 `null` 时按拒绝处理）；`openingFenceTokenContextFromLineSource` 增加可选 `nestingOracle`；新增真实未强制解析的 20,000 行文档回归测试确认热路径只做常数次行读取。`@codemirror/autocomplete@^6.20.3` 与 `@lezer/common@^1.5.2` 声明为直接依赖并更新 lockfile。`docs/features/markdown-fence-language-suggestions.md` 状态改为「实现完成，macOS 真实应用键盘/弹层验收待执行」，9 条可由自动化/代码/权限确认的验收条件已勾选，最后一条 macOS 真实应用键盘/弹层验收条件与「已完成」状态待人工执行；README 当前状态与文档导航同步。未新增用户可见行为、网络/shell/Rust IPC/capability/文件权限。
+- **验证记录**：`npm run check` 通过（typecheck + vitest **373 passed / 0 failed**，含 20,000 行文档 completion 热路径常数次行读取回归，既有候选过滤/上下文边界/键盘确认·取消/撤销/自动闭合协调/只读·忙碌·多标签·模式隔离/安全退化用例不回退）；`npm run tauri -- build` 通过并生成 release `Textora.app`；bundle 校验 `CFBundleIdentifier`=`com.tsingmu.textora`、`CFBundleExecutable`=`textora`、`CFBundleIconFile`=`icon.icns`；`src-tauri/capabilities/` 自基线无改动，确认未新增网络、shell、远程页面、Rust IPC、Tauri capability 或宽泛文件权限；`git diff --check` 通过。macOS release 真实应用键盘流程（输入 opening fence 语言前缀、方向键移动、Enter/Tab 确认、Escape/光标移动/空格·换行关闭、撤销、与自动闭合协调）与弹层定位视觉判定待人工执行——当前自动化环境无法可靠驱动真实 macOS 应用键盘输入（尤其反引号）与 WebView 弹层视觉判定，逻辑层由自动化确定性覆盖。
+
+### 接入 Markdown opening fence 语言候选弹层与键盘交互
+
+- **状态**：已完成
+- **开始日期**：2026-08-13
+- **完成日期**：2026-08-13
+- **Feature Spec**：`docs/features/markdown-fence-language-suggestions.md`
+- **结果**：把前置切片的纯函数契约接入官方 `@codemirror/autocomplete`，交付 Markdown opening fence 语言候选弹层与键盘交互。新增 `@codemirror/autocomplete@^6.20.3` 为项目直接依赖（与依赖树既有 `6.20.3` 对齐）。新增 `src/markdownFenceLanguageCompletion.ts`：completion source 复用 `openingFenceTokenContext`/`suggestFenceLanguages`/`buildFenceLanguageInsertion`，仅在单空光标位于有效非嵌套 opening fence 首个 token 时返回候选；以 `filter: false` 提交保证大小写不敏感前缀、目录顺序与去重，别名只检索不出现；只读/多选/非空选/非 fence 上下文/无匹配均返回 `null`（不显示空弹层）；每个 option 的 `apply` 按当前光标重新确认 token 范围并用 `buildFenceLanguageInsertion` 把 canonical 写回（光标在 token 中部仍替换整个 token），经普通事务进入撤销/脏状态/保存链路。`Editor.tsx` 新增 `editorExtensionsForLanguage`：Markdown 时挂候选 completion 与 `Tab→acceptCompletion`（`Prec.high`）keymap，非 Markdown 不挂。键盘协调复用依赖树既有优先级链——`basicSetup` 内置 `completionKeymapExt` 位于 `Prec.highest`（Enter→acceptCompletion、Escape→closeCompletion、方向键→moveCompletionSelection），高于既有 `Prec.high` opening fence Enter 自动闭合：候选打开且有选中项时 Enter/Tab 只确认候选；候选关闭（确认/Escape/无匹配/上下文失效）后 Enter 落到自动闭合→普通换行。WYSIWYG 用独立编辑器组件、多标签各自 Editor 实例，天然隔离。修复两个问题：(1) 裸 opening fence 的空前缀在输入自动激活（非显式）时返回 `null`，避免弹层吞掉既有 Enter 自动闭合；显式 `Ctrl-Space` 仍展示完整目录；(2) 上下文识别重构为行源核心 `openingFenceTokenContextFromLineSource`，completion source 改用 CodeMirror `Text` 行 API（`doc.line(n)`），不再调用 `state.doc.toString()`；核心先只读当前行做 fence 词法快速判定，普通段落与非 token 位置直接返回 `null` 不扫描上方，避免普通 Markdown 输入触发全文 O(行数) 扫描。再修复两个问题：(3) `Editor.tsx` 在 `disabled` 转 `true` 时调用 `closeCompletion` 关闭活动候选，`apply` 起始复核 `view.state.readOnly`，防止候选打开后进入只读/忙碌仍可经鼠标确认写入；(4) 嵌套判定优先用 Markdown 语法树（新增 `fenceOpeningNestingFromTree`/`openingFenceTokenContextFromState`，按 `FencedCode` 节点 O(树深) 判断光标行是否处于上方未闭合 fence 内），`openingFenceTokenContextFromLineSource` 增加可选 `nestingOracle`，仅当树未覆盖到光标（`tree.length < line.to`）或 oracle 未提供时才回退到逐行扫描，避免大文档 fence 输入时的 O(行数) 上方扫描。
+- **验证记录**：`npm run check` 通过（typecheck + vitest **372 passed / 0 failed**，新增 `markdownFenceLanguageCompletion` 用例含：前缀过滤/大小写/中部 token/无匹配 null、非 fence·closing·content·嵌套·第二 token null、只读/多选·非空选 null、裸 fence 非显式 null 而显式给完整目录、普通段落不调用 `toString()`、确认替换·光标位置·一次撤销·确认后下一 Enter 自动闭合、候选打开后转只读确认不写入，以及真实 `input.type` 事务 + 自动激活 + Enter 的裸 fence 自动闭合与 `j` 前缀确认候选，和 `fenceOpeningNestingFromTree` 树判定（无外层放行/未闭合内拒绝/闭合后放行/`openingFenceTokenContextFromState` 嵌套拒绝）；新增 `openingFenceTokenContextFromLineSource` 用例含：普通段落仅读当前行、非 token 位置仅读当前行、fence 行才向上扫描、嵌套拒绝，以及大文档（2000/500/1000 行）`nestingOracle` 命中只读当前行、回退逐行扫描、嵌套直接拒绝的调用计数；新增 Editor 用例：Markdown 给候选、plain-text 与只读不给、弹层打开后切 `disabled` 关闭候选且文档不可修改；既有 Editor/高亮/fence 契约测试不回退）；`npm run build` 通过（Vite 大 chunk 提示为既有，不影响本切片）；`git diff --check` 通过。前端切片，未运行 release 构建或 macOS 真实应用键盘/弹层定位人工验收，留给集成验收切片。
+
+### 建立 Markdown opening fence 候选上下文与词表契约
+
+- **状态**：已完成
+- **开始日期**：2026-08-13
+- **完成日期**：2026-08-13
+- **Feature Spec**：`docs/features/markdown-fence-language-suggestions.md`
+- **结果**：交付可由后续 CodeMirror completion source 直接消费的纯函数契约，未接入 UI。`src/markdownCodeHighlight.ts` 把既有 info token 映射整理为单一导出目录 `FENCE_LANGUAGE_DIRECTORY`（每项含 canonical 名称、可检索别名与预览解析目标 `previewTarget`），`INFO_TOKEN_TO_LANGUAGE` 改为目录派生，`resolveMarkdownCodeBlockLanguage` 既有解析结果不变（`mermaid` 进入目录但高亮仍返回 `null`）。`src/markdownFenceContext.ts` 新增 `openingFenceTokenContext(text, offset)`：复用既有 `classifyFenceLine`/`isClosingFor` 与上方未闭合 fence 扫描，识别有效非嵌套 opening fence 首个 info token，返回 `{ marker, prefix, from, to }`；首个 token 位置与 `fenceContextAt` 的 `infoToken` 归一化一致（跳过标记后前导空白），空 token 时 `from === to`，不要求 opening 在下方已闭合。`src/markdownFenceLanguageSuggestions.ts` 新增 `suggestFenceLanguages(prefix)`（按目录顺序、大小写不敏感前缀过滤 canonical 与别名，去重只返回 canonical，别名只检索不出现，无匹配返回空）与 `buildFenceLanguageInsertion(context, canonical)`（用 canonical 替换首个 token 范围，光标在 token 中部时仍替换整个 token，canonical 为空返回 `null`）。本切片不接入 `@codemirror/autocomplete`、不渲染弹层、不处理键盘导航/Enter/Tab/Escape 优先级、不触及 React 状态/Preview/WYSIWYG/Rust/capability。
+- **验证记录**：`npm run check` 通过（typecheck + vitest **341 passed / 0 failed**，新增 `markdownFenceLanguageSuggestions` 12 用例、`openingFenceTokenContext` 16 用例、`FENCE_LANGUAGE_DIRECTORY` 3 用例；既有 `markdownCodeHighlight`/`markdownFenceContext`/Markdown 高亮与 Mermaid 测试不回退）；`npm run build` 通过（Vite 大 chunk 提示为既有，不影响本切片）；`git diff --check` 通过。纯前端契约切片，未运行 release 构建、macOS 真实交互或依赖变更。
 
 ### 确认 Markdown opening fence 语言候选提示规格
 

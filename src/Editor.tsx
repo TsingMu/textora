@@ -16,12 +16,14 @@ import {
   rectangularSelection,
 } from "@codemirror/view";
 import { defaultKeymap, historyKeymap } from "@codemirror/commands";
+import { acceptCompletion, closeCompletion } from "@codemirror/autocomplete";
 import { HighlightStyle, syntaxHighlighting, syntaxTree } from "@codemirror/language";
 import { tags } from "@lezer/highlight";
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import { safeLanguageExtension } from "./languageExtensions";
 import type { LanguageMode } from "./languageRecognition";
 import { unclosedOpeningFromLineSource, fenceContextAt, classifyFenceLine } from "./markdownFenceContext";
+import { markdownFenceLanguageCompletion } from "./markdownFenceLanguageCompletion";
 
 type EditorProps = {
   content: string;
@@ -404,6 +406,31 @@ export const columnBlockSelectionExtensions: Extension = [
   ),
 ];
 
+/**
+ * Markdown opening fence 候选确认的 Tab 绑定。`acceptCompletion` 在无活动候选时返回 false，自然落回默认 Tab
+ * 行为；候选打开时与 Enter（由 `basicSetup` 的 `completionKeymapExt` 在 `Prec.highest` 绑定）一致确认候选。
+ */
+const markdownFenceLanguageAcceptKeymap: Extension = Prec.high(
+  keymap.of([{ key: "Tab", run: acceptCompletion }]),
+);
+
+/**
+ * 按活动标签的 {@link LanguageMode} 派生 language compartment 内容：挂对应 CodeMirror 语言扩展；Markdown
+ * 额外挂 opening fence 语言候选 completion 与 Tab 确认键。非 Markdown 不挂候选，保证只在 Markdown 源码
+ * （含 Preview 左侧）启用，WYSIWYG 使用独立编辑器组件不受影响。
+ */
+function editorExtensionsForLanguage(language: LanguageMode): Extension {
+  const languageExtension = safeLanguageExtension(language);
+  const extensions: Extension[] = [];
+  if (languageExtension !== null) {
+    extensions.push(languageExtension);
+  }
+  if (language === "markdown") {
+    extensions.push(markdownFenceLanguageCompletion, markdownFenceLanguageAcceptKeymap);
+  }
+  return extensions;
+}
+
 export const textoraSyntaxHighlightStyle = HighlightStyle.define([
   { tag: tags.keyword, color: "var(--syntax-keyword)" },
   { tag: [tags.atom, tags.bool, tags.number], color: "var(--syntax-atom)" },
@@ -494,7 +521,7 @@ export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(
             { key: "Enter", run: markdownFenceAutoCloseCommand(() => languageRef.current) },
           ]),
         ),
-        languageCompartmentRef.current.of(safeLanguageExtension(language) ?? []),
+        languageCompartmentRef.current.of(editorExtensionsForLanguage(language)),
         availabilityRef.current.of([
           EditorState.readOnly.of(disabled),
           EditorView.editable.of(!disabled),
@@ -566,6 +593,10 @@ export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(
         EditorView.editable.of(!disabled),
       ]),
     });
+    // 转入只读/忙碌时关闭活动候选，防止已打开的弹层被（鼠标）确认写入只读文档。
+    if (disabled) {
+      closeCompletion(view);
+    }
   }, [disabled]);
 
   useEffect(() => {
@@ -590,6 +621,7 @@ export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(
   }, [content]);
 
   // 语言扩展随活动标签的 LanguageMode 重配置；普通文本/加载失败时不挂任何语言扩展。
+  // Markdown 额外挂 opening fence 语言候选 completion 与 Tab 确认键。
   useEffect(() => {
     const view = viewRef.current;
     if (!view) {
@@ -597,7 +629,7 @@ export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(
     }
     view.dispatch({
       effects: languageCompartmentRef.current.reconfigure(
-        safeLanguageExtension(language) ?? [],
+        editorExtensionsForLanguage(language),
       ),
     });
   }, [language]);
