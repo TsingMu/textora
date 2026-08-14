@@ -1,4 +1,12 @@
 import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  type TextareaHTMLAttributes,
+} from "react";
+
+import {
   parseMarkdownWysiwygBlocks,
   serializeMarkdownWysiwygBlocks,
   type MarkdownTaskState,
@@ -28,13 +36,13 @@ export function MarkdownWysiwygEditor({
   return (
     <div className="markdown-wysiwyg-editor" aria-label="Markdown WYSIWYG editor">
       {blocks.length === 0 ? (
-        <textarea
+        <AutoGrowTextarea
           className="markdown-wysiwyg-empty"
           value=""
           disabled={disabled}
           aria-label="Empty Markdown document"
           placeholder="Start writing Markdown…"
-          onChange={(event) => onChange(event.currentTarget.value)}
+          onChange={(value) => onChange(value)}
         />
       ) : (
         blocks.map((block, index) => (
@@ -62,26 +70,23 @@ function MarkdownWysiwygBlockEditor({
   switch (block.type) {
     case "heading":
       return (
-        <input
+        <AutoGrowTextarea
           className={`markdown-wysiwyg-heading is-h${block.level}`}
           value={block.text}
+          singleLine
           disabled={disabled}
           aria-label={`Heading level ${block.level}`}
-          onChange={(event) =>
-            onChange({ ...block, text: event.currentTarget.value })
-          }
+          onChange={(text) => onChange({ ...block, text })}
         />
       );
     case "paragraph":
       return (
-        <textarea
+        <AutoGrowTextarea
           className="markdown-wysiwyg-paragraph"
           value={block.text}
           disabled={disabled}
           aria-label="Paragraph"
-          onChange={(event) =>
-            onChange({ ...block, text: event.currentTarget.value })
-          }
+          onChange={(text) => onChange({ ...block, text })}
         />
       );
     case "list":
@@ -100,6 +105,7 @@ function MarkdownWysiwygBlockEditor({
               {item.taskState !== null && (
                 <input
                   type="checkbox"
+                  className="markdown-wysiwyg-task-checkbox"
                   checked={item.taskState === "checked"}
                   disabled={disabled}
                   aria-label={`Task ${index + 1}`}
@@ -118,16 +124,15 @@ function MarkdownWysiwygBlockEditor({
                   }}
                 />
               )}
-              <input
+              <AutoGrowTextarea
                 className="markdown-wysiwyg-list-text"
                 value={item.text}
+                singleLine
                 disabled={disabled}
                 aria-label={`List item ${index + 1}`}
-                onChange={(event) => {
+                onChange={(text) => {
                   const items = block.items.map((current, itemIndex) =>
-                    itemIndex === index
-                      ? { ...current, text: event.currentTarget.value }
-                      : current,
+                    itemIndex === index ? { ...current, text } : current,
                   );
                   onChange({ ...block, items });
                 }}
@@ -138,37 +143,32 @@ function MarkdownWysiwygBlockEditor({
       );
     case "blockquote":
       return (
-        <textarea
+        <AutoGrowTextarea
           className="markdown-wysiwyg-blockquote"
           value={block.text}
           disabled={disabled}
           aria-label="Block quote"
-          onChange={(event) =>
-            onChange({ ...block, text: event.currentTarget.value })
-          }
+          onChange={(text) => onChange({ ...block, text })}
         />
       );
     case "code":
       return (
         <div className="markdown-wysiwyg-code-block">
-          <input
+          <AutoGrowTextarea
             className="markdown-wysiwyg-code-language"
             value={block.language}
+            singleLine
             disabled={disabled}
             aria-label="Code block language"
-            onChange={(event) =>
-              onChange({ ...block, language: event.currentTarget.value })
-            }
+            onChange={(language) => onChange({ ...block, language })}
           />
-          <textarea
+          <AutoGrowTextarea
             className="markdown-wysiwyg-code"
             value={block.code}
             disabled={disabled}
             aria-label="Code block source"
             spellCheck={false}
-            onChange={(event) =>
-              onChange({ ...block, code: event.currentTarget.value })
-            }
+            onChange={(code) => onChange({ ...block, code })}
           />
         </div>
       );
@@ -176,16 +176,116 @@ function MarkdownWysiwygBlockEditor({
       return <div className="markdown-wysiwyg-hr" role="separator" />;
     case "source":
       return (
-        <textarea
+        <AutoGrowTextarea
           className={`markdown-wysiwyg-source-island is-${block.reason}`}
           value={block.source}
           disabled={disabled}
           aria-label={`${block.reason} source island`}
           spellCheck={false}
-          onChange={(event) =>
-            onChange({ ...block, source: event.currentTarget.value })
-          }
+          onChange={(source) => onChange({ ...block, source })}
         />
       );
   }
+}
+
+type AutoGrowTextareaProps = Omit<
+  TextareaHTMLAttributes<HTMLTextAreaElement>,
+  "onChange" | "value"
+> & {
+  value: string;
+  singleLine?: boolean;
+  onChange: (value: string) => void;
+};
+
+function AutoGrowTextarea({
+  value,
+  singleLine = false,
+  className,
+  onChange,
+  ...rest
+}: AutoGrowTextareaProps) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+  const composingRef = useRef(false);
+  const widthRef = useRef<number | null>(null);
+
+  const resize = useCallback(() => {
+    const el = ref.current;
+    if (!el) {
+      return;
+    }
+    el.style.height = "auto";
+    // scrollHeight excludes borders; border-box sizing needs them added back.
+    const next = el.scrollHeight + el.offsetHeight - el.clientHeight;
+    if (next > 0) {
+      el.style.height = `${next}px`;
+    }
+  }, []);
+
+  useLayoutEffect(() => {
+    resize();
+  }, [value, className, resize]);
+
+  useEffect(() => {
+    if (typeof ResizeObserver === "undefined") {
+      return;
+    }
+    const el = ref.current;
+    if (!el) {
+      return;
+    }
+    const observer = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width;
+      if (width === undefined) {
+        return;
+      }
+      if (widthRef.current === null) {
+        widthRef.current = width;
+        resize();
+        return;
+      }
+      if (width !== widthRef.current) {
+        widthRef.current = width;
+        resize();
+      }
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [resize]);
+
+  return (
+    <textarea
+      ref={ref}
+      rows={1}
+      className={className}
+      value={value}
+      onChange={(event) => {
+        const raw = event.currentTarget.value;
+        onChange(
+          singleLine
+            ? raw.replace(/\r/g, "").replace(/[ \t]*\n+[ \t]*/g, " ")
+            : raw,
+        );
+      }}
+      onCompositionStart={() => {
+        composingRef.current = true;
+      }}
+      onCompositionEnd={() => {
+        composingRef.current = false;
+      }}
+      onKeyDown={
+        singleLine
+          ? (event) => {
+              if (
+                event.key === "Enter" &&
+                !composingRef.current &&
+                !event.nativeEvent.isComposing
+              ) {
+                event.preventDefault();
+              }
+            }
+          : undefined
+      }
+      {...rest}
+    />
+  );
 }

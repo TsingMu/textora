@@ -1,6 +1,6 @@
 # Markdown 所见即所得模式
 
-> 状态：已完成（2026-08-11）；长文本自动换行修复已承诺（2026-08-14）
+> 状态：已完成（2026-08-11；长文本自动换行修复与 macOS 窄窗口视觉验收于 2026-08-14 完成）
 
 ## 背景与目标
 
@@ -72,7 +72,7 @@ Textora 已支持 Markdown 源码编辑、源码/预览左右分栏、Markdown f
 - [x] 功能不引入网络、shell、远程页面或宽泛文件系统权限。
 - [x] 自动化测试覆盖模式入口、模式互斥、内容同步、保存源码、多标签隔离和源码岛退化。
 - [x] macOS release 应用真实验收覆盖模式入口与互斥、常见块编辑后源码往返、源码岛保留、保存源码、多标签隔离、只读锁定和未保存关闭保护。
-- [ ] 长列表项及其他 WYSIWYG 可编辑块在窄窗口内自动软换行、保持完整可见和可编辑，且保存源码不产生额外换行。
+- [x] 长列表项及其他 WYSIWYG 可编辑块在窄窗口内自动软换行、保持完整可见和可编辑，且保存源码不产生额外换行。
 
 ## 依赖与约束
 
@@ -103,6 +103,14 @@ Markdown 所见即所得模式按以下顺序拆成可连续交付的小切片�
 ## 验证记录
 
 - 2026-08-14 发现 WYSIWYG 长列表项超过可视宽度后被单行裁切，且当前交互无法拖动查看剩余内容。已承诺后续任务「修复 Markdown WYSIWYG 长文本无法完整查看」：修复列表项的自动软换行，并检查标题、段落、引用、fenced code block、代码语言标记与源码岛等其他可编辑块是否存在同类问题后统一处理；实现与验证尚未执行。
+
+- 2026-08-14「修复 Markdown WYSIWYG 长文本无法完整查看」：把 WYSIWYG 标题、列表项文本、代码语言标记由单行 `<input>` 改为自动增高的 `<textarea>`（新增内部 `AutoGrowTextarea`：按 `scrollHeight` 自动扩展高度、`wrap="soft"` 视觉软换行、`singleLine` 模式拦截 Enter 并在 `onChange` 清洗 `\r`/`\n` 保持源码单行，IME 组合态期间不拦截 Enter），普通段落、引用、fenced code、源码岛与空文档也统一改用该组件。按审查强化高度测量：`useLayoutEffect` 依赖纳入 `className`（标题级别/控件样式变化时重测），以 `ResizeObserver` 监听控件宽度变化（容器/窗口宽度变化时重测，替代窗口 resize 监听），首次回调只记录宽度避免循环；文本相同而级别/样式/宽度变化时不再保留过期高度，且不为大量文本框在每次渲染制造重复布局。`App.css` 把编辑器内 textarea 设为 `resize:none`，为 `markdown-wysiwyg-list-text`/`code-language`/`empty` 补 `display:block`，`list-text` 设 `width:100%` 填充网格单元并在窄窗口随宽度软换行，`list-item` 改 `align-items:start` 并给 marker/任务复选框顶部偏移使其与首行对齐。软换行只影响派生显示，不向 Markdown 源码注入额外换行或改变块结构。验证：`npm run check` 通过（typecheck + vitest **384 passed / 0 failed**，含 `MarkdownWysiwygEditor` 13 用例：单行控件为 textarea 且换行清洗为单行源码、Enter 拦截、IME 组合态不拦截、多行段落允许换行、长中文/英文无空格列表项保持单行、jsdom 无 `scrollHeight` 不抛错，以及 AutoGrowTextarea 尺寸行为：mount 测高、值变化重测、className 即标题级别变化在文本相同时重测、ResizeObserver 宽度变化重测、宽度不变不重测无循环；既有 heading/source island 用例改为 textarea setter，App 集成用例 heading 操作同步改为 textarea）；`npm run build` 通过；`npm run tauri -- build` 通过并生成 release `Textora.app`（bundle `CFBundleIdentifier`=`com.tsingmu.textora`、`CFBundleExecutable`=`textora`、`CFBundleIconFile`=`icon.icns`）；`src-tauri/capabilities/` 无改动，未新增网络、shell、远程页面、Rust IPC、Tauri capability 或文件权限；`git diff --check` 通过。macOS release 窄窗口真实视觉验收**未执行**——`osascript` 无辅助访问权限（错误 -1719）无法驱动应用 UI，且 app 无 `RunEvent::Open`/文件关联、Untitled 为纯文本，无法自动加载长内容 Markdown 到 WYSIWYG；该视觉验收已拆为 `docs/tasks/current.md` 的独立待办，最后一条验收条件仍为未勾选。
+
+- 2026-08-14「修复 AutoGrowTextarea 忽略首次 ResizeObserver 通知」：修正上一切片「首次回调只记录宽度」的取舍——多个控件挂载后父容器滚动条可能缩小可用宽度，首次 `ResizeObserver` 通知携带最终宽度，跳过重测会使长文本仍按挂载时宽度测量而被裁切。改为首次通知在设置 `widthRef` 后执行一次 `resize()`（按最终宽度重读 `scrollHeight`），后续仅在宽度变化时重测；`resize()` 只改高度不改宽度，不触发宽度变化的循环回调。仅改 `src/MarkdownWysiwygEditor.tsx`。验证：`npm run check` 通过（typecheck + vitest **385 passed / 0 failed**，新增用例：首次通知按最终宽度重测（40px→70px）、相同宽度后续通知不重复测量（不变成 250px）；既有尺寸/重渲染用例不回退）；`npm run build` 通过；`git diff --check` 通过。macOS 视觉验收仍为独立待办。
+
+- 2026-08-14「修复 AutoGrowTextarea 自动测高边框误差」：修复项目全局 `box-sizing: border-box` 下 `resize()` 直接把 `scrollHeight` 当作最终 CSS 高度的边框误差。`scrollHeight` 不含边框，而 border-box 的 CSS `height` 须含边框，直接用 `scrollHeight` 会使带边框控件高度偏小、内容可能被裁切；改为 `scrollHeight + (offsetHeight - clientHeight)`（补上下边框总宽度）。仅改 `src/MarkdownWysiwygEditor.tsx`。验证：`npm run check` 通过（typecheck + vitest **386 passed / 0 failed**，新增用例：mock `scrollHeight=40`、`offsetHeight=50`、`clientHeight=48`（1px 上下边框）时最终高度为 42px；首次 `ResizeObserver` 重测、宽度变化重测、宽度不变无循环用例不回退）；`npm run build` 通过；`git diff --check` 通过。macOS 视觉验收仍为独立待办。
+
+- 2026-08-14「Markdown WYSIWYG 长文本软换行 macOS 窄窗口视觉验收」：用户在 release `Textora.app`（含首次 RO 通知与边框补正修复）中打开 `samples/markdown-wysiwyg-wrap-smoke.md` → 切到 `WYSIWYG` → 把窗口缩到最小宽度 720px，确认标题（H2/H3）、段落、无序/有序/任务列表项、引用、fenced code（JSON/Python）、代码语言标记与表格源码岛均在窄窗口内自动软换行且完整可见可编辑；列表 marker 与任务复选框与首行顶部对齐；长文本高度自动扩展；保存后磁盘 Markdown 源码无额外换行、块结构不变。用户确认验收通过。最后一条验收条件已勾选，Feature Spec 状态改为「已完成（长文本自动换行修复与 macOS 窄窗口视觉验收于 2026-08-14 完成）」，README 同步。本次仅记录用户完成的 macOS 真实应用视觉验收，未修改实现代码或依赖，未重新运行自动化或构建（沿用前置修复任务已通过的 `npm run check` 386 tests 与 `npm run tauri -- build` 结果）。
 
 - 2026-08-10「建立 Markdown WYSIWYG 块模型与源码往返契约」：新增 `src/markdownWysiwyg.ts` 与 `src/markdownWysiwyg.test.ts`，建立首版纯前端块模型。解析支持标题、段落、无序/有序/任务列表、引用、fenced code block 与分隔线；表格、原始 HTML、Mermaid fence、未知 fence 和未知结构作为源码岛保留；序列化会把块模型写回 Markdown 源码。验证：`npm run test -- markdownWysiwyg` 通过（**4 passed / 0 failed**）；`npm run build` 通过；`git diff --check` 通过。本切片未接入主界面。
 - 2026-08-10「接入 Markdown WYSIWYG 模式入口与首版编辑视图」：Markdown 标签新增 `WYSIWYG` 工具栏入口，非 Markdown 不显示；WYSIWYG 与 Preview 按标签互斥，默认仍为源码编辑；新增 `MarkdownWysiwygEditor` 把块模型渲染为标题、段落、列表/任务列表、引用、fenced code block、分隔线和源码岛编辑视图，编辑后同步 Markdown 源码、脏状态、保存和关闭保护链路；只读 Markdown 的 WYSIWYG 字段禁用，源码编辑器继续保留既有只读另存为副本流程。未新增依赖、网络、shell、Rust IPC、Tauri capability 或远程资源能力。验证：`npm run test -- markdownWysiwyg MarkdownWysiwygEditor tabSession App` 通过（**98 passed / 0 failed**）；`npm run check` 通过（typecheck + vitest **202 passed / 0 failed**）；`npm run build` 通过；`npm run tauri -- build` 通过并生成 release `Textora.app`；`git diff --check` 通过。当前自动化环境未做真实 WebView 人工点击验收。

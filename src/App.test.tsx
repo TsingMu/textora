@@ -3256,12 +3256,12 @@ describe("App Markdown preview", () => {
       container.querySelector<HTMLButtonElement>(".markdown-wysiwyg-toggle")?.click();
     });
 
-    const heading = container.querySelector<HTMLInputElement>(
+    const heading = container.querySelector<HTMLTextAreaElement>(
       ".markdown-wysiwyg-heading",
     );
     await act(async () => {
       const setter = Object.getOwnPropertyDescriptor(
-        HTMLInputElement.prototype,
+        HTMLTextAreaElement.prototype,
         "value",
       )?.set;
       setter?.call(heading, "Edited");

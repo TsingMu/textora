@@ -487,7 +487,7 @@ textarea {
 }
 
 .markdown-wysiwyg-editor textarea {
-  resize: vertical;
+  resize: none;
 }
 
 .markdown-wysiwyg-empty,
@@ -517,6 +517,7 @@ textarea {
 }
 
 .markdown-wysiwyg-empty {
+  display: block;
   width: min(100%, 760px);
   min-height: 180px;
   padding: 10px 12px;
@@ -580,13 +581,18 @@ textarea {
 .markdown-wysiwyg-list-item {
   display: grid;
   grid-template-columns: 28px auto minmax(0, 1fr);
-  align-items: center;
+  align-items: start;
   gap: 6px;
 }
 
 .markdown-wysiwyg-list-marker {
+  padding-top: 4px;
   color: var(--text-muted);
   text-align: right;
+}
+
+.markdown-wysiwyg-task-checkbox {
+  margin-top: 5px;
 }
 
 .markdown-wysiwyg-list-item:not(.has-task) .markdown-wysiwyg-list-text {
@@ -594,6 +600,8 @@ textarea {
 }
 
 .markdown-wysiwyg-list-text {
+  display: block;
+  width: 100%;
   min-width: 0;
   padding: 4px 6px;
 }
@@ -614,6 +622,7 @@ textarea {
 }
 
 .markdown-wysiwyg-code-language {
+  display: block;
   width: min(180px, 100%);
   margin: 0 0 8px;
   padding: 4px 7px;
