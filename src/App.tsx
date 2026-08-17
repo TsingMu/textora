@@ -131,6 +131,7 @@ type CloseKind = "window" | "app-exit" | "tab";
 type CloseIntentItem = {
   tabId: string;
   documentId: string;
+  backendDocumentId: string | null;
   content: string;
 };
 type CloseIntent = {
@@ -411,6 +412,8 @@ function App() {
       .map((tab) => ({
         tabId: tab.tabId,
         documentId: tab.document.id,
+        backendDocumentId:
+          tab.document.path === null ? null : tab.document.id,
         content: tab.document.content,
       }));
   }
@@ -1088,9 +1091,9 @@ function App() {
     }
     setCloseConfirmPending(false);
     closeConfirmPendingRef.current = false;
-    if (!activeIntent.documentId.startsWith("untitled-")) {
+    if (activeIntent.backendDocumentId !== null) {
       try {
-        await closeDocument(activeIntent.documentId);
+        await closeDocument(activeIntent.backendDocumentId);
       } catch {
         setCloseConfirmError(
           "The document could not be closed safely. Please try again.",
@@ -1606,6 +1609,8 @@ function App() {
           active: {
             tabId,
             documentId: tab.document.id,
+            backendDocumentId:
+              tab.document.path === null ? null : tab.document.id,
             content: tab.document.content,
           },
           pending: [],
@@ -1623,6 +1628,8 @@ function App() {
       active: {
         tabId,
         documentId: tab.document.id,
+        backendDocumentId:
+          tab.document.path === null ? null : tab.document.id,
         content: tab.document.content,
       },
       pending: [],

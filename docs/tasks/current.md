@@ -23,6 +23,21 @@
 
 ## 最近完成
 
+### 修复保留缺失文件后“不保存”关闭报错
+
+- **状态**：已完成
+- **开始日期**：2026-08-17
+- **完成日期**：2026-08-17
+- **Feature Spec**：`docs/features/external-file-change-sync.md`、`docs/features/unsaved-close-protection.md`
+- **目标**：文件被移走后选择在应用中保留，后续关闭标签或窗口并选择“不保存”时直接完成关闭，不再对已解除的后端文档重复调用 `close_document` 并报错。
+- **范围**：关闭意图记录目标是否仍有后端文档关联；“不保存”仅在关联仍存在时释放后端文档；补充缺失文件保留后关闭的回归测试。
+- **非范围**：不改变缺失文件提示、保存/另存为语义、关闭队列交互、Rust `close_document` 的严格拒绝规则或其他文件生命周期。
+- **依赖**：已完成的外部文件缺失保留流程与未保存关闭保护。
+- **拆分检查**：单一状态衔接缺陷及其用户流程回归测试，保持为一个最小垂直切片。
+- **完成标准**：目标回归测试通过；`npm run check`、`npm run build`、`cargo fmt --manifest-path src-tauri/Cargo.toml --check`、`cargo test --manifest-path src-tauri/Cargo.toml`、`npm run tauri -- build` 与 `git diff --check` 通过。
+- **结果**：关闭意图项新增 `backendDocumentId`，在发起关闭时依据文档是否仍有关联路径记录需要释放的后端文档。缺失文件选择“在应用中保留”后，前端文档已转为无路径状态，后续“不保存”会直接移除标签并完成窗口关闭，不再对已经由保留流程解除的旧文档 ID 重复调用 `close_document`；仍有关联路径的普通文档继续保留严格关闭失败保护。新增完整回归覆盖打开文件、外部缺失、保留内容、关闭窗口及“不保存”流程，并断言后端关闭只发生一次且窗口正常隐藏。
+- **验证记录**：目标测试 `npm run test -- App -t "discards a kept missing file"` 通过（**1 passed / 0 failed**）；`npm run check` 通过（typecheck + vitest **439 passed / 0 failed**）；`npm run build` 通过；`cargo fmt --manifest-path src-tauri/Cargo.toml --check` 通过；`cargo test --manifest-path src-tauri/Cargo.toml` 通过（**163 passed / 0 failed**）；`npm run tauri -- build` 通过并生成 release `Textora.app`；`git diff --check` 通过。未执行 macOS 手工交互验收。
+
 ### 修复清单投影拒绝被误判为写入成功
 
 - **状态**：已完成

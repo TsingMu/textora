@@ -4346,6 +4346,75 @@ describe("App window close protection", () => {
     ).toBeNull();
   });
 
+  it("discards a kept missing file without closing the detached backend document twice", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        return {
+          id: "doc-kept-missing",
+          path: "/tmp/kept-missing.txt",
+          displayName: "kept-missing.txt",
+          byteCount: 5,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 5, sha256: "old" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode("Hello").buffer;
+      }
+      if (cmd === "refresh_external_document") {
+        return { documentId: "doc-kept-missing", kind: "missing" };
+      }
+      if (cmd === "check_target_exists") {
+        return false;
+      }
+      if (cmd === "close_document") {
+        const closeCalls = invokeMock.mock.calls.filter(
+          (call) => call[0] === "close_document",
+        );
+        if (closeCalls.length > 1) {
+          throw { code: "unknown-document", message: "stale" };
+        }
+        return undefined;
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await act(async () => root.render(<App />));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    await emitWindowFocus();
+    await vi.waitFor(() => {
+      expect(
+        container.querySelector('[aria-label="File missing on disk"]'),
+      ).not.toBeNull();
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".confirm-cancel")?.click();
+      await Promise.resolve();
+    });
+
+    await emitWindowClose();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".confirm-discard")?.click();
+      await Promise.resolve();
+    });
+
+    expect(
+      invokeMock.mock.calls.filter((call) => call[0] === "close_document"),
+    ).toEqual([["close_document", { id: "doc-kept-missing" }]]);
+    expect(tauriWindowMock.hide).toHaveBeenCalledOnce();
+    expect(
+      container.querySelector('[aria-label="Save before closing?"]'),
+    ).toBeNull();
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
   it("saves an opened document and hides the window", async () => {
     invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "health_check") {
