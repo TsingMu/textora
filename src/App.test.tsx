@@ -63,8 +63,26 @@ const mermaidPreviewMock = vi.hoisted(() => ({
   }),
 }));
 
+const sessionCommandsMock = vi.hoisted(() => ({
+  restoreSteps: [] as unknown[],
+  manifestStatus: "written" as unknown,
+  manifestCalls: [] as unknown[],
+}));
+
 vi.mock("@tauri-apps/api/core", () => ({
-  invoke: (...args: unknown[]) => invokeMock(...args),
+  invoke: (...args: unknown[]) => {
+    const cmd = args[0] as string;
+    if (cmd === "restore_next_session_document") {
+      const step = sessionCommandsMock.restoreSteps.shift() ?? { kind: "done" };
+      return step instanceof Error ? Promise.reject(step) : Promise.resolve(step);
+    }
+    if (cmd === "update_open_files_manifest") {
+      sessionCommandsMock.manifestCalls.push(args[1]);
+      const status = sessionCommandsMock.manifestStatus;
+      return status instanceof Error ? Promise.reject(status) : Promise.resolve(status);
+    }
+    return invokeMock(...args);
+  },
 }));
 vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({
@@ -118,6 +136,9 @@ import App from "./App";
 
 function setupInvoke() {
   mermaidPreviewMock.renderMermaidPreview.mockClear();
+  sessionCommandsMock.restoreSteps = [{ kind: "done" }];
+  sessionCommandsMock.manifestStatus = "written";
+  sessionCommandsMock.manifestCalls = [];
   invokeMock.mockImplementation(async (cmd: string, _args?: unknown) => {
     if (cmd === "health_check") {
       return { service: "document-core", version: "0.1.0" };
@@ -5740,5 +5761,966 @@ describe("App Format JSON", () => {
     expect(container.querySelector(".notice-format-json")).toBeNull();
     // 活动语言随 .txt 回到 plain-text，Format JSON 按钮消失。
     expect(container.querySelector(".format-json-button")).toBeNull();
+  });
+});
+
+describe("App session restore", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+
+  beforeEach(() => {
+    (
+      globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
+    ).IS_REACT_ACT_ENVIRONMENT = true;
+    invokeMock.mockReset();
+    resetTauriWindowMock();
+    setupInvoke();
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  function restoredDescriptor(
+    id: string,
+    path: string,
+    displayName: string,
+  ) {
+    return {
+      id,
+      path,
+      displayName,
+      byteCount: 3,
+      encoding: { utf8: { bom: false } },
+      lineEnding: "lf" as const,
+      fingerprint: { sizeBytes: 3, sha256: id },
+      readOnly: false,
+    };
+  }
+
+  function mockContentReads(
+    contentById: Record<string, string | Error | Promise<string | Error>>,
+  ) {
+    invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "read_document_content") {
+        const { id } = args as { id: string };
+        const value = contentById[id];
+        if (value === undefined) {
+          throw new Error(`unexpected content read for ${id}`);
+        }
+        const content = await value;
+        if (content instanceof Error) {
+          throw content;
+        }
+        return new TextEncoder().encode(content).buffer;
+      }
+      if (cmd === "close_document") {
+        return undefined;
+      }
+      if (cmd === "refresh_external_document") {
+        return null;
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+  }
+
+  it("adopts restored files in order with the manifest active tab and projects the session", async () => {
+    sessionCommandsMock.restoreSteps = [
+      { kind: "started", total: 2, activeIndex: 1 },
+      {
+        kind: "item",
+        descriptor: restoredDescriptor("doc-a", "/tmp/a.md", "a.md"),
+        manifestIndex: 0,
+      },
+      {
+        kind: "item",
+        descriptor: restoredDescriptor("doc-b", "/tmp/b.txt", "b.txt"),
+        manifestIndex: 1,
+      },
+      { kind: "done" },
+    ];
+    mockContentReads({ "doc-a": "alpha", "doc-b": "beta" });
+
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    const tabTitles = Array.from(
+      container.querySelectorAll(".document-tab-select .document-tab-title"),
+    ).map((node) => node.textContent);
+    expect(tabTitles).toEqual(["a.md", "b.txt"]);
+    expect(
+      container.querySelector(".document-tab.is-active .document-tab-title")
+        ?.textContent,
+    ).toBe("b.txt");
+    expect(container.querySelector(".cm-content")?.textContent ?? "").toContain(
+      "beta",
+    );
+    expect(container.querySelector(".notice-session")).toBeNull();
+    // 初始 Untitled 被恢复的文件替换；投影含顺序与活动项。
+    expect(sessionCommandsMock.manifestCalls).toEqual([
+      {
+        projection: {
+          generation: 1,
+          documentIds: ["doc-a", "doc-b"],
+          activeDocumentId: "doc-b",
+        },
+      },
+    ]);
+    // 恢复完成后对每个已恢复文件执行一次可信复核。
+    expect(
+      invokeMock.mock.calls
+        .filter((call) => call[0] === "refresh_external_document")
+        .map((call) => (call[1] as { id: string }).id),
+    ).toEqual(["doc-a", "doc-b"]);
+  });
+
+  it("skips failed files, cleans up failed content reads, and falls back to the last restored tab", async () => {
+    sessionCommandsMock.restoreSteps = [
+      { kind: "started", total: 3, activeIndex: 0 },
+      {
+        kind: "item",
+        descriptor: restoredDescriptor("doc-a", "/tmp/a.md", "a.md"),
+        manifestIndex: 0,
+      },
+      {
+        kind: "failed",
+        displayName: "gone.md",
+        error: { code: "read-failed", message: "io" },
+      },
+      {
+        kind: "item",
+        descriptor: restoredDescriptor("doc-b", "/tmp/b.txt", "b.txt"),
+        manifestIndex: 2,
+      },
+      { kind: "done" },
+    ];
+    mockContentReads({
+      "doc-a": new Error("content fetch failed"),
+      "doc-b": "beta",
+    });
+
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    const tabTitles = Array.from(
+      container.querySelectorAll(".document-tab-select .document-tab-title"),
+    ).map((node) => node.textContent);
+    expect(tabTitles).toEqual(["b.txt"]);
+    // 建议活动项（清单索引 0）失败时，回落到最后成功恢复的文件。
+    expect(
+      container.querySelector(".document-tab.is-active .document-tab-title")
+        ?.textContent,
+    ).toBe("b.txt");
+    // 内容取回失败的条目被逐项清理，不阻塞其他文件。
+    expect(
+      invokeMock.mock.calls.filter((call) => call[0] === "close_document"),
+    ).toEqual([["close_document", { id: "doc-a" }]]);
+    // 非模态汇总提示列出打开失败与取回失败的原因，可关闭。
+    const notice = container.querySelector(".notice-session");
+    expect(notice?.textContent).toContain("could not be restored");
+    expect(notice?.textContent).toContain("gone.md");
+    expect(notice?.textContent).toContain("a.md");
+    await act(async () => {
+      notice?.querySelector<HTMLButtonElement>(".notice-dismiss")?.click();
+    });
+    expect(container.querySelector(".notice-session")).toBeNull();
+    // 下一份清单只含成功恢复的文件，失败路径被移除。
+    expect(sessionCommandsMock.manifestCalls).toEqual([
+      {
+        projection: {
+          generation: 1,
+          documentIds: ["doc-b"],
+          activeDocumentId: "doc-b",
+        },
+      },
+    ]);
+  });
+
+  it("keeps the default Untitled startup when there is nothing to restore", async () => {
+    sessionCommandsMock.restoreSteps = [{ kind: "done" }];
+
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    expect(
+      Array.from(
+        container.querySelectorAll(".document-tab-select .document-tab-title"),
+      ).map((node) => node.textContent),
+    ).toEqual(["Untitled"]);
+    expect(container.querySelector(".notice-session")).toBeNull();
+    expect(sessionCommandsMock.manifestCalls).toEqual([
+      {
+        projection: {
+          generation: 1,
+          documentIds: [],
+          activeDocumentId: null,
+        },
+      },
+    ]);
+  });
+
+  it("locks competing operations while the restore is running and unlocks after", async () => {
+    let resolveStep: ((step: unknown) => void) | undefined;
+    sessionCommandsMock.restoreSteps = [
+      new Promise((resolve) => {
+        resolveStep = resolve;
+      }),
+    ];
+
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    expect(
+      container.querySelector<HTMLButtonElement>(".open-button")?.disabled,
+    ).toBe(true);
+    expect(
+      container.querySelector<HTMLButtonElement>(".new-tab-button")?.disabled,
+    ).toBe(true);
+    expect(
+      container.querySelector(".notice-loading")?.textContent,
+    ).toContain("Restoring previous session");
+
+    await act(async () => {
+      resolveStep?.({ kind: "done" });
+    });
+
+    expect(
+      container.querySelector<HTMLButtonElement>(".open-button")?.disabled,
+    ).toBe(false);
+    expect(container.querySelector(".notice-loading")).toBeNull();
+  });
+
+  it("projects a new generation after switching the active tab", async () => {
+    sessionCommandsMock.restoreSteps = [
+      { kind: "started", total: 2, activeIndex: 1 },
+      {
+        kind: "item",
+        descriptor: restoredDescriptor("doc-a", "/tmp/a.md", "a.md"),
+        manifestIndex: 0,
+      },
+      {
+        kind: "item",
+        descriptor: restoredDescriptor("doc-b", "/tmp/b.txt", "b.txt"),
+        manifestIndex: 1,
+      },
+      { kind: "done" },
+    ];
+    mockContentReads({ "doc-a": "alpha", "doc-b": "beta" });
+
+    await act(async () => {
+      root.render(<App />);
+    });
+    await act(async () => {
+      container.querySelectorAll<HTMLButtonElement>(".document-tab-select")[0]?.click();
+    });
+
+    expect(sessionCommandsMock.manifestCalls).toEqual([
+      {
+        projection: {
+          generation: 1,
+          documentIds: ["doc-a", "doc-b"],
+          activeDocumentId: "doc-b",
+        },
+      },
+      {
+        projection: {
+          generation: 2,
+          documentIds: ["doc-a", "doc-b"],
+          activeDocumentId: "doc-a",
+        },
+      },
+    ]);
+  });
+
+  it("keeps an external change of the first file while the second content read is delayed", async () => {
+    let resolveBeta: ((value: string | Error) => void) | undefined;
+    const betaPending = new Promise<string | Error>((resolve) => {
+      resolveBeta = resolve;
+    });
+    const contentById: Record<string, string | Error | Promise<string | Error>> = {
+      "doc-a": "alpha",
+      "doc-b": betaPending,
+    };
+    const externallyChanged = {
+      ...restoredDescriptor("doc-a", "/tmp/a.md", "a.md"),
+      fingerprint: { sizeBytes: 8, sha256: "a-external" },
+    };
+    sessionCommandsMock.restoreSteps = [
+      { kind: "started", total: 2, activeIndex: 1 },
+      {
+        kind: "item",
+        descriptor: restoredDescriptor("doc-a", "/tmp/a.md", "a.md"),
+        manifestIndex: 0,
+      },
+      {
+        kind: "item",
+        descriptor: restoredDescriptor("doc-b", "/tmp/b.txt", "b.txt"),
+        manifestIndex: 1,
+      },
+      { kind: "done" },
+    ];
+    invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "read_document_content") {
+        const { id } = args as { id: string };
+        const value = contentById[id];
+        if (value === undefined) {
+          throw new Error(`unexpected content read for ${id}`);
+        }
+        const content = await value;
+        if (content instanceof Error) {
+          throw content;
+        }
+        return new TextEncoder().encode(content).buffer;
+      }
+      if (cmd === "prepare_external_reload") {
+        return { kind: "content", descriptor: externallyChanged };
+      }
+      if (cmd === "refresh_external_document") {
+        return null;
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    // 第一个文件已采用为标签；第二个文件的正文读取被延迟，恢复仍在进行。此刻第一个
+    // 文件发生外部修改：事件不得因恢复未完成而被丢弃。
+    await act(async () => {
+      contentById["doc-a"] = "alpha-v2";
+      await emitExternalChange({ documentId: "doc-a", kind: "content" });
+      await vi.waitFor(() => {
+        expect(
+          invokeMock.mock.calls.filter(
+            (call) =>
+              call[0] === "read_document_content" &&
+              (call[1] as { id: string }).id === "doc-a",
+          ),
+        ).toHaveLength(2);
+      });
+    });
+
+    await act(async () => {
+      resolveBeta?.("beta");
+    });
+
+    expect(
+      Array.from(
+        container.querySelectorAll(".document-tab-select .document-tab-title"),
+      ).map((node) => node.textContent),
+    ).toEqual(["a.md", "b.txt"]);
+    expect(
+      container.querySelector(".document-tab.is-active .document-tab-title")
+        ?.textContent,
+    ).toBe("b.txt");
+    // 恢复完成后的可信复核覆盖每个已恢复文件。
+    expect(
+      invokeMock.mock.calls
+        .filter((call) => call[0] === "refresh_external_document")
+        .map((call) => (call[1] as { id: string }).id),
+    ).toEqual(["doc-a", "doc-b"]);
+    // 第一个文件的会话内容已更新为外部版本。
+    await act(async () => {
+      container.querySelectorAll<HTMLButtonElement>(".document-tab-select")[0]?.click();
+    });
+    expect(container.querySelector(".cm-content")?.textContent ?? "").toContain(
+      "alpha-v2",
+    );
+  });
+
+  it("keeps the launch manifest untouched when the first restore step rejects", async () => {
+    sessionCommandsMock.restoreSteps = [new Error("restore transport failed")];
+
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    // 中断不是完成：保持默认 Untitled，不把空会话写回清单。
+    expect(
+      Array.from(
+        container.querySelectorAll(".document-tab-select .document-tab-title"),
+      ).map((node) => node.textContent),
+    ).toEqual(["Untitled"]);
+    expect(sessionCommandsMock.manifestCalls).toEqual([]);
+    // 非模态错误提示，编辑入口解锁，并提供安全重试。
+    const notice = container.querySelector(".notice-session");
+    expect(notice?.textContent).toContain("could not be fully restored");
+    expect(notice?.textContent).toContain("stay on the restore list");
+    expect(
+      container.querySelector<HTMLButtonElement>(".column-sequence-button")
+        ?.disabled,
+    ).toBe(false);
+    expect(notice?.querySelector<HTMLButtonElement>(".notice-action")?.textContent).toBe(
+      "Retry",
+    );
+  });
+
+  it("keeps the launch manifest untouched when a later step rejects after adopting the first item", async () => {
+    sessionCommandsMock.restoreSteps = [
+      { kind: "started", total: 2, activeIndex: null },
+      {
+        kind: "item",
+        descriptor: restoredDescriptor("doc-a", "/tmp/a.md", "a.md"),
+        manifestIndex: 0,
+      },
+      new Error("restore transport failed"),
+    ];
+    mockContentReads({ "doc-a": "alpha" });
+
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    // 已采用的第一项保留并成为活动标签（回落最后成功项）。
+    expect(
+      Array.from(
+        container.querySelectorAll(".document-tab-select .document-tab-title"),
+      ).map((node) => node.textContent),
+    ).toEqual(["a.md"]);
+    expect(
+      container.querySelector(".document-tab.is-active .document-tab-title")
+        ?.textContent,
+    ).toBe("a.md");
+    expect(container.querySelector(".cm-content")?.textContent ?? "").toContain(
+      "alpha",
+    );
+    // 中断不是完成：不得把部分会话写回清单，未处理文件留给下次启动。
+    expect(container.querySelector(".notice-session")?.textContent).toContain(
+      "could not be fully restored",
+    );
+    expect(sessionCommandsMock.manifestCalls).toEqual([]);
+  });
+
+  it("resumes safely after retrying an interrupted restore and then projects the full session", async () => {
+    sessionCommandsMock.restoreSteps = [
+      { kind: "started", total: 2, activeIndex: 1 },
+      {
+        kind: "item",
+        descriptor: restoredDescriptor("doc-a", "/tmp/a.md", "a.md"),
+        manifestIndex: 0,
+      },
+      new Error("restore transport failed"),
+    ];
+    mockContentReads({ "doc-a": "alpha", "doc-b": "beta" });
+
+    await act(async () => {
+      root.render(<App />);
+    });
+    expect(sessionCommandsMock.manifestCalls).toEqual([]);
+
+    // 重试继续同一后端游标：剩余条目处理完后才写完整投影。
+    sessionCommandsMock.restoreSteps = [
+      {
+        kind: "item",
+        descriptor: restoredDescriptor("doc-b", "/tmp/b.txt", "b.txt"),
+        manifestIndex: 1,
+      },
+      { kind: "done" },
+    ];
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(".notice-session .notice-action")
+        ?.click();
+    });
+
+    expect(
+      Array.from(
+        container.querySelectorAll(".document-tab-select .document-tab-title"),
+      ).map((node) => node.textContent),
+    ).toEqual(["a.md", "b.txt"]);
+    expect(
+      container.querySelector(".document-tab.is-active .document-tab-title")
+        ?.textContent,
+    ).toBe("b.txt");
+    expect(container.querySelector(".notice-session")).toBeNull();
+    expect(sessionCommandsMock.manifestCalls).toEqual([
+      {
+        projection: {
+          generation: 1,
+          documentIds: ["doc-a", "doc-b"],
+          activeDocumentId: "doc-b",
+        },
+      },
+    ]);
+  });
+
+  it("preserves an edited initial Untitled when a retried restore completes", async () => {
+    sessionCommandsMock.restoreSteps = [new Error("restore transport failed")];
+    mockContentReads({ "doc-a": "alpha", "doc-b": "beta" });
+
+    await act(async () => {
+      root.render(<App />);
+    });
+    expect(container.querySelector(".notice-session")).not.toBeNull();
+
+    // 中断解锁后用户编辑了初始 Untitled（脏状态）。
+    const editable = container.querySelector<HTMLElement>(".cm-content")!;
+    await act(async () => {
+      editable.textContent = "draft notes";
+      editable.dispatchEvent(
+        new InputEvent("input", {
+          bubbles: true,
+          inputType: "insertText",
+          data: "draft notes",
+        }),
+      );
+      await Promise.resolve();
+    });
+    expect(container.querySelector(".statusbar")?.textContent).toContain(
+      "Modified",
+    );
+
+    sessionCommandsMock.restoreSteps = [
+      { kind: "started", total: 2, activeIndex: 1 },
+      {
+        kind: "item",
+        descriptor: restoredDescriptor("doc-a", "/tmp/a.md", "a.md"),
+        manifestIndex: 0,
+      },
+      {
+        kind: "item",
+        descriptor: restoredDescriptor("doc-b", "/tmp/b.txt", "b.txt"),
+        manifestIndex: 1,
+      },
+      { kind: "done" },
+    ];
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(".notice-session .notice-action")
+        ?.click();
+    });
+
+    // 编辑过的占位标签保留，两个文件按序恢复，清单活动项成为活动标签。
+    expect(
+      Array.from(
+        container.querySelectorAll(".document-tab-select .document-tab-title"),
+      ).map((node) => node.textContent),
+    ).toEqual(["Untitled", "a.md", "b.txt"]);
+    expect(
+      container.querySelector(".document-tab.is-active .document-tab-title")
+        ?.textContent,
+    ).toBe("b.txt");
+
+    await act(async () => {
+      container.querySelectorAll<HTMLButtonElement>(".document-tab-select")[0]?.click();
+    });
+    expect(container.querySelector(".cm-content")?.textContent ?? "").toContain(
+      "draft notes",
+    );
+    expect(container.querySelector(".statusbar")?.textContent).toContain(
+      "Modified",
+    );
+  });
+
+  it("preserves a new Untitled tab created during an interrupted restore", async () => {
+    sessionCommandsMock.restoreSteps = [new Error("restore transport failed")];
+    mockContentReads({ "doc-a": "alpha" });
+
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    // 中断解锁后用户新建并编辑了一个 Untitled 标签。
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".new-tab-button")?.click();
+    });
+    const editable = container.querySelector<HTMLElement>(".cm-content")!;
+    await act(async () => {
+      editable.textContent = "scratch";
+      editable.dispatchEvent(
+        new InputEvent("input", {
+          bubbles: true,
+          inputType: "insertText",
+          data: "scratch",
+        }),
+      );
+      await Promise.resolve();
+    });
+
+    sessionCommandsMock.restoreSteps = [
+      { kind: "started", total: 1, activeIndex: 0 },
+      {
+        kind: "item",
+        descriptor: restoredDescriptor("doc-a", "/tmp/a.md", "a.md"),
+        manifestIndex: 0,
+      },
+      { kind: "done" },
+    ];
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(".notice-session .notice-action")
+        ?.click();
+    });
+
+    // 用户新建的标签保留（含内容与脏状态）；未触碰的初始占位照常移除。
+    expect(
+      Array.from(
+        container.querySelectorAll(".document-tab-select .document-tab-title"),
+      ).map((node) => node.textContent),
+    ).toEqual(["Untitled 2", "a.md"]);
+    await act(async () => {
+      container.querySelectorAll<HTMLButtonElement>(".document-tab-select")[0]?.click();
+    });
+    expect(container.querySelector(".cm-content")?.textContent ?? "").toContain(
+      "scratch",
+    );
+    expect(container.querySelector(".statusbar")?.textContent).toContain(
+      "Modified",
+    );
+  });
+
+  it("removes the untouched initial placeholder after a normal completed restore", async () => {
+    sessionCommandsMock.restoreSteps = [
+      { kind: "started", total: 1, activeIndex: 0 },
+      {
+        kind: "item",
+        descriptor: restoredDescriptor("doc-a", "/tmp/a.md", "a.md"),
+        manifestIndex: 0,
+      },
+      { kind: "done" },
+    ];
+    mockContentReads({ "doc-a": "alpha" });
+
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    expect(
+      Array.from(
+        container.querySelectorAll(".document-tab-select .document-tab-title"),
+      ).map((node) => node.textContent),
+    ).toEqual(["a.md"]);
+    expect(
+      container.querySelector(".document-tab.is-active .document-tab-title")
+        ?.textContent,
+    ).toBe("a.md");
+  });
+
+  it("maps manifest entries the user opened during an interruption to the existing tab", async () => {
+    // 首次推进即中断（清单 [a.md(0), b.txt(1)]，活动项指向 b）。
+    sessionCommandsMock.restoreSteps = [
+      { kind: "started", total: 2, activeIndex: 1 },
+      new Error("restore transport failed"),
+    ];
+    invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        return restoredDescriptor("doc-b", "/tmp/b.txt", "b.txt");
+      }
+      if (cmd === "read_document_content") {
+        const { id } = args as { id: string };
+        const content = id === "doc-b" ? "beta" : "alpha";
+        return new TextEncoder().encode(content).buffer;
+      }
+      if (cmd === "refresh_external_document") {
+        return null;
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await act(async () => {
+      root.render(<App />);
+    });
+    // 中断解锁后用户经普通 Open 打开下一清单文件 b.txt。
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    expect(
+      Array.from(
+        container.querySelectorAll(".document-tab-select .document-tab-title"),
+      ).map((node) => node.textContent),
+    ).toEqual(["Untitled", "b.txt"]);
+
+    // Retry：剩余清单项 a 正常恢复，b 映射到现有标签而不重复。
+    sessionCommandsMock.restoreSteps = [
+      {
+        kind: "item",
+        descriptor: restoredDescriptor("doc-a", "/tmp/a.md", "a.md"),
+        manifestIndex: 0,
+      },
+      { kind: "already-open", documentId: "doc-b", manifestIndex: 1 },
+      { kind: "done" },
+    ];
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(".notice-session .notice-action")
+        ?.click();
+    });
+
+    const titles = Array.from(
+      container.querySelectorAll(".document-tab-select .document-tab-title"),
+    ).map((node) => node.textContent);
+    expect(titles).toEqual(["b.txt", "a.md"]);
+    expect(titles.filter((title) => title === "b.txt")).toHaveLength(1);
+    // 清单声明的活动项指向用户已打开的文件：活动标签落到现有标签。
+    expect(
+      container.querySelector(".document-tab.is-active .document-tab-title")
+        ?.textContent,
+    ).toBe("b.txt");
+    expect(container.querySelector(".cm-content")?.textContent ?? "").toContain(
+      "beta",
+    );
+    // 完整投影（现有标签在前）成功写出，不因重复路径被拒绝。
+    expect(sessionCommandsMock.manifestCalls).toEqual([
+      {
+        projection: {
+          generation: 1,
+          documentIds: ["doc-b", "doc-a"],
+          activeDocumentId: "doc-b",
+        },
+      },
+    ]);
+  });
+
+  it("accumulates failure summaries across an interruption and retries until done", async () => {
+    // 首次运行：一个单项失败后命令中断。
+    sessionCommandsMock.restoreSteps = [
+      { kind: "started", total: 3, activeIndex: 1 },
+      {
+        kind: "failed",
+        displayName: "gone.md",
+        error: { code: "read-failed", message: "io" },
+      },
+      new Error("restore transport failed"),
+    ];
+    mockContentReads({ "doc-a": "alpha", "doc-b": "beta" });
+
+    await act(async () => {
+      root.render(<App />);
+    });
+    expect(container.querySelector(".notice-session")?.textContent).toContain(
+      "gone.md",
+    );
+
+    // Retry：剩余两个文件成功并返回 done；最终提示仍包含先前失败文件，清单只含成功文件。
+    sessionCommandsMock.restoreSteps = [
+      {
+        kind: "item",
+        descriptor: restoredDescriptor("doc-a", "/tmp/a.md", "a.md"),
+        manifestIndex: 0,
+      },
+      {
+        kind: "item",
+        descriptor: restoredDescriptor("doc-b", "/tmp/b.txt", "b.txt"),
+        manifestIndex: 2,
+      },
+      { kind: "done" },
+    ];
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(".notice-session .notice-action")
+        ?.click();
+    });
+
+    const notice = container.querySelector(".notice-session");
+    expect(notice?.textContent).toContain("1 file(s) from the last session could not be restored");
+    expect(notice?.textContent).toContain("gone.md");
+    expect(
+      Array.from(
+        container.querySelectorAll(".document-tab-select .document-tab-title"),
+      ).map((node) => node.textContent),
+    ).toEqual(["a.md", "b.txt"]);
+    expect(
+      container.querySelector(".document-tab.is-active .document-tab-title")
+        ?.textContent,
+    ).toBe("b.txt");
+    expect(sessionCommandsMock.manifestCalls).toEqual([
+      {
+        projection: {
+          generation: 1,
+          documentIds: ["doc-a", "doc-b"],
+          activeDocumentId: "doc-b",
+        },
+      },
+    ]);
+  });
+
+  it("shows the restore failure summary and the manifest write failure at the same time", async () => {
+    sessionCommandsMock.restoreSteps = [
+      { kind: "started", total: 2, activeIndex: 0 },
+      {
+        kind: "failed",
+        displayName: "gone.md",
+        error: { code: "read-failed", message: "io" },
+      },
+      {
+        kind: "item",
+        descriptor: restoredDescriptor("doc-a", "/tmp/a.md", "a.md"),
+        manifestIndex: 1,
+      },
+      { kind: "done" },
+    ];
+    sessionCommandsMock.manifestStatus = new Error("disk full");
+    mockContentReads({ "doc-a": "alpha" });
+
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    const notices = container.querySelectorAll(".notice-session");
+    expect(notices).toHaveLength(2);
+    const restoreNotice = notices[0];
+    const manifestNotice = notices[1];
+    expect(restoreNotice?.textContent).toContain("could not be restored");
+    expect(restoreNotice?.textContent).toContain("gone.md");
+    expect(manifestNotice?.textContent).toContain("could not be saved");
+    // 两个提示都保持非模态：编辑入口不受影响。
+    expect(
+      container.querySelector<HTMLButtonElement>(".column-sequence-button")
+        ?.disabled,
+    ).toBe(false);
+
+    // 各自独立关闭。
+    await act(async () => {
+      restoreNotice?.querySelector<HTMLButtonElement>(".notice-dismiss")?.click();
+    });
+    expect(container.querySelectorAll(".notice-session")).toHaveLength(1);
+    expect(
+      container.querySelector(".notice-session")?.textContent,
+    ).toContain("could not be saved");
+    await act(async () => {
+      manifestNotice?.querySelector<HTMLButtonElement>(".notice-dismiss")?.click();
+    });
+    expect(container.querySelector(".notice-session")).toBeNull();
+  });
+
+  it("keeps the manifest write notice for rejected projections until a newer write succeeds", async () => {
+    sessionCommandsMock.restoreSteps = [
+      { kind: "started", total: 2, activeIndex: 1 },
+      {
+        kind: "item",
+        descriptor: restoredDescriptor("doc-a", "/tmp/a.md", "a.md"),
+        manifestIndex: 0,
+      },
+      {
+        kind: "item",
+        descriptor: restoredDescriptor("doc-b", "/tmp/b.txt", "b.txt"),
+        manifestIndex: 1,
+      },
+      { kind: "done" },
+    ];
+    sessionCommandsMock.manifestStatus = new Error("disk full");
+    mockContentReads({ "doc-a": "alpha", "doc-b": "beta" });
+
+    await act(async () => {
+      root.render(<App />);
+    });
+    expect(
+      container.querySelector(".notice-session")?.textContent,
+    ).toContain("could not be saved");
+    expect(sessionCommandsMock.manifestCalls).toHaveLength(1);
+
+    // 切换活动标签触发第二次投影；rejected 未写入，旧提示必须保留。
+    sessionCommandsMock.manifestStatus = "rejected";
+    await act(async () => {
+      container.querySelectorAll<HTMLButtonElement>(".document-tab-select")[0]?.click();
+    });
+
+    expect(
+      container.querySelector(".notice-session")?.textContent,
+    ).toContain("could not be saved");
+    expect(sessionCommandsMock.manifestCalls).toHaveLength(2);
+    expect(sessionCommandsMock.manifestCalls[1]).toEqual({
+      projection: {
+        generation: 2,
+        documentIds: ["doc-a", "doc-b"],
+        activeDocumentId: "doc-a",
+      },
+    });
+
+    // 再切回另一标签触发第三次投影；只有 written 才确认恢复并清除提示。
+    sessionCommandsMock.manifestStatus = "written";
+    await act(async () => {
+      container.querySelectorAll<HTMLButtonElement>(".document-tab-select")[1]?.click();
+    });
+
+    expect(container.querySelector(".notice-session")).toBeNull();
+    expect(sessionCommandsMock.manifestCalls).toHaveLength(3);
+    expect(sessionCommandsMock.manifestCalls[2]).toEqual({
+      projection: {
+        generation: 3,
+        documentIds: ["doc-a", "doc-b"],
+        activeDocumentId: "doc-b",
+      },
+    });
+  });
+
+  it("ignores a late failure of an older manifest write after a newer success", async () => {
+    let rejectFirstWrite: ((reason?: unknown) => void) | undefined;
+    const firstWrite = new Promise<never>((_resolve, reject) => {
+      rejectFirstWrite = reject;
+    });
+    sessionCommandsMock.restoreSteps = [
+      { kind: "started", total: 2, activeIndex: 1 },
+      {
+        kind: "item",
+        descriptor: restoredDescriptor("doc-a", "/tmp/a.md", "a.md"),
+        manifestIndex: 0,
+      },
+      {
+        kind: "item",
+        descriptor: restoredDescriptor("doc-b", "/tmp/b.txt", "b.txt"),
+        manifestIndex: 1,
+      },
+      { kind: "done" },
+    ];
+    sessionCommandsMock.manifestStatus = firstWrite;
+    mockContentReads({ "doc-a": "alpha", "doc-b": "beta" });
+
+    // 第一次写入悬而未决。
+    await act(async () => {
+      root.render(<App />);
+    });
+    expect(container.querySelector(".notice-session")).toBeNull();
+
+    // 切换活动标签触发第二次写入并成功。
+    sessionCommandsMock.manifestStatus = "written";
+    await act(async () => {
+      container.querySelectorAll<HTMLButtonElement>(".document-tab-select")[0]?.click();
+    });
+    expect(sessionCommandsMock.manifestCalls).toHaveLength(2);
+
+    // 第一次写入现在才失败：迟到的旧请求不得覆盖较新成功状态。
+    await act(async () => {
+      rejectFirstWrite?.(new Error("late write failure"));
+    });
+    expect(container.querySelector(".notice-session")).toBeNull();
+  });
+
+  it("shows a dismissible non-modal notice when the manifest write fails", async () => {
+    sessionCommandsMock.manifestStatus = new Error("disk full");
+
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    const notice = container.querySelector(".notice-session");
+    expect(notice?.textContent).toContain("could not be saved");
+    // 非模态：编辑入口不受影响。
+    expect(
+      container.querySelector<HTMLButtonElement>(".column-sequence-button")
+        ?.disabled,
+    ).toBe(false);
+    await act(async () => {
+      notice?.querySelector<HTMLButtonElement>(".notice-dismiss")?.click();
+    });
+    expect(container.querySelector(".notice-session")).toBeNull();
   });
 });

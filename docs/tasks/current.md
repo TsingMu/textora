@@ -10,7 +10,180 @@
 
 ## 已承诺待办
 
+### 确认编辑器自动换行开关规格
+
+- **状态**：待开始
+- **Feature Spec**：`docs/features/editor-word-wrap.md`
+- **目标**：确认 macOS 原生 `View > Word Wrap` 的用户行为、全局持久化边界，以及原生菜单勾选状态与前端编辑器状态的单一同步协议。
+- **范围**：确认默认开启、适用的 CodeMirror 源码视图、模式/标签/重启边界、菜单文案与快捷键、持久化所有权、失败回退和验收条件；把草案改为已确认并拆出首个实现切片。
+- **非范围**：不修改 React/Rust 生产代码、菜单实现、持久化实现、测试或构建配置；不同时规划列标尺、光标位置或其他设置。
+- **依赖**：Backlog 中的真实查看需求；现有 `EditorView.lineWrapping`、Tauri 原生菜单事件桥接和源码权威架构不变量。
+- **拆分检查**：本任务只交付可执行规格和状态协议；编辑器动态重配、菜单/持久化接入与集成验收分别作为后续小任务。
+- **完成标准**：规格不存在影响实现的开放问题；任务拆分满足颗粒度规则；更新 `current.md` 使首个实现切片待开始；`git diff --check` 通过。
+
 ## 最近完成
+
+### 修复清单投影拒绝被误判为写入成功
+
+- **状态**：已完成
+- **开始日期**：2026-08-17
+- **完成日期**：2026-08-17
+- **Feature Spec**：`docs/features/restore-open-files-on-launch.md`
+- **目标**：最新清单投影返回 `rejected` 或 `stale` 时并未写入当前状态，不能据此清除既有写入失败提示；只有明确返回 `written` 才确认持久化恢复。
+- **范围**：前端按 `SessionManifestUpdateStatus` 区分结果并保留现有 generation 门禁；补充失败后 `rejected` 保留提示、后续 `written` 才清除的回归测试；修正上一任务结果描述。
+- **非范围**：不改 Rust、清单协议、提示布局或恢复流程。
+- **依赖**：已完成的清单提示 generation 门禁。
+- **拆分检查**：单一状态判定缺陷及其回归测试，保持为一个切片。
+- **完成标准**：新增测试通过；`npm run test -- App -t "session restore"`、`npm run check` 与 `git diff --check` 通过。
+- **结果**：清单投影回调现在读取 `SessionManifestUpdateStatus`；只有仍为最新 generation 且结果为 `written` 时清除 `manifestNotice`。`rejected` 与 `stale` 均未写入当前投影，不再被误判为成功；迟到旧请求仍受既有 generation 门禁约束。同步修正上一任务把所有正常返回视为成功的历史描述。
+- **验证记录**：`npm run test -- App -t "session restore"` 通过（**18 passed / 0 failed**，回归覆盖 generation 1 写入失败显示提示、generation 2 返回 `rejected` 后提示保留、generation 3 返回 `written` 后才清除）；`npm run check` 通过（typecheck + vitest **438 passed / 0 failed**）；`git diff --check` 通过。
+
+### 清单写入提示按最新 generation 门禁
+
+- **状态**：已完成
+- **开始日期**：2026-08-17
+- **完成日期**：2026-08-17
+- **Feature Spec**：`docs/features/restore-open-files-on-launch.md`
+- **目标**：清单更新回调无条件设置/保留 `manifestNotice`：旧请求迟到失败会在较新请求已成功后覆盖性地重新显示提示，且较新成功写入不会清除旧失败提示。
+- **范围**：回调记录请求 generation，与当前最新已发 generation 比较——仅最新失败设置提示、最新成功清除旧提示、迟到旧请求（无论成败）不改变提示状态；补测试：首次写入失败显示提示、切换活动标签触发第二次成功写入后提示消失；旧请求迟到失败不得覆盖较新成功状态。
+- **非范围**：不改 Rust、清单协议或提示拆分结构。
+- **依赖**：已完成的提示拆分与失败摘要累积。
+- **拆分检查**：单一回调状态门禁缺陷，保持为一个切片。
+- **完成标准**：新增测试通过；`npm run test -- App -t "session restore"`、`npm run check` 与 `git diff --check` 通过。
+- **结果**：清单投影 effect 的 `updateOpenFilesManifest` 回调与本次请求的 generation 绑定（即 `manifestGenerationRef` 已发计数）：完成回调仅在仍是最新已发 generation 时更新 `manifestNotice`，失败回调仅在仍是最新 generation 时设置提示——迟到的旧请求无论成败都不改变提示状态。此任务当时把所有正常返回都视作成功；后续任务进一步修正 `written/stale/rejected` 的结果判定。
+- **验证记录**：`npm run test -- App -t "session restore"` 通过（**18 passed / 0 failed**，新增 2 项：首次写入失败显示提示、切换活动标签触发 generation 2 成功后提示消失且投影含新活动项；第一次写入挂起、generation 2 成功后旧请求才 reject，提示保持为空）；`npm run check` 通过（typecheck + vitest **438 passed / 0 failed**）；`git diff --check` 通过。
+
+### 恢复失败摘要与清单写入失败同时展示
+
+- **状态**：已完成
+- **开始日期**：2026-08-17
+- **完成日期**：2026-08-17
+- **Feature Spec**：`docs/features/restore-open-files-on-launch.md`
+- **目标**：`sessionNotice` 单一提示槽使清单写入失败提示覆盖恢复失败摘要（或反之），两者无法同时展示；拆分为独立状态并行显示。
+- **范围**：拆为「恢复结果提示」（完成失败汇总/中断信息，含 Retry）与「清单写入失败提示」两个非模态块，各自可关闭；补组合测试：恢复步骤含一个 failed 且最终 done、同时 `update_open_files_manifest` reject，验证两个提示同时包含失败文件名与清单无法保存信息、非模态且可分别关闭。
+- **非范围**：不改恢复/清单协议与 Rust。
+- **依赖**：已完成的失败摘要累积修复。
+- **拆分检查**：单一展示状态缺陷，保持为一个切片。
+- **完成标准**：新增测试通过；`npm run test -- App -t "session restore"`、`npm run check` 与 `git diff --check` 通过。
+- **结果**：`sessionNotice` 单槽拆为 `sessionRestoreNotice`（恢复失败汇总/中断信息，中断时附带 Retry 按钮，干净完成时清除）与 `manifestNotice`（清单写入失败，仅在失败时设置）两个独立状态，各渲染一个 `notice-session` 非模态块并独立关闭，互不覆盖。
+- **验证记录**：`npm run test -- App -t "session restore"` 通过（**16 passed / 0 failed**，新增 1 项组合用例：failed(gone.md)+item 成功+done 且 `update_open_files_manifest` reject——两个提示同时展示（含失败文件名与「could not be saved」）、编辑入口不受影响、可分别关闭）；`npm run check` 通过（typecheck + vitest **436 passed / 0 failed**）；`git diff --check` 通过。
+
+### 恢复失败摘要跨 IPC 中断与重试累积
+
+- **状态**：已完成
+- **开始日期**：2026-08-17
+- **完成日期**：2026-08-17
+- **Feature Spec**：`docs/features/restore-open-files-on-launch.md`
+- **目标**：`runSessionRestore` 每次运行用新的空数组收集单项失败摘要，中断后再次 Retry 会把此前的失败展示清空；失败摘要应跨 IPC 中断与多次 Retry 累积，恢复最终完成后的提示包含本次启动期间的全部失败。
+- **范围**：失败摘要改为进程内累积 ref（与活动索引/索引映射同样跨运行保留）；新增测试：先返回 failed、随后命令 reject，Retry 后剩余文件成功并 done，最终提示仍包含先前失败文件，最终清单只含成功文件。
+- **非范围**：不改 Rust 步进契约、清单投影协议、中断/占位/already-open 语义。
+- **依赖**：已完成的恢复中断处理与重试链路。
+- **拆分检查**：单一展示状态缺陷，保持为一个切片。
+- **完成标准**：新增测试通过；`npm run test -- App -t "session restore"`、`npm run check` 与 `git diff --check` 通过。
+- **结果**：单项失败摘要从每次运行的局部数组改为 `restoreFailureSummariesRef`（与活动索引、清单索引→标签映射同样跨运行保留）：中断提示与最终完成提示都读取同一累积数组，最终 `done` 后仍展示本次启动期间（含多次 Retry）的全部失败文件；其余语义不变。
+- **验证记录**：`npm run test -- App -t "session restore"` 通过（**15 passed / 0 failed**，新增 1 项：failed(gone.md) 后命令 reject，Retry 后两文件成功并 done——最终提示仍含 gone.md、活动标签回落 b.txt、最终投影只含 doc-a/doc-b）；`npm run check` 通过（typecheck + vitest **435 passed / 0 failed**）；`git diff --check` 通过。
+
+### 修复恢复中断后手动打开文件的重复恢复
+
+- **状态**：已完成
+- **开始日期**：2026-08-17
+- **完成日期**：2026-08-17
+- **Feature Spec**：`docs/features/restore-open-files-on-launch.md`
+- **目标**：恢复中断期间用户经普通 Open 或 Save As 打开的清单文件，Retry 时被恢复游标再次打开，产生重复后端文档与重复标签；游标只按自身 accepted_paths 去重，未考虑 `DocumentStore` 当前活动文档路径。
+- **范围**：恢复推进前按路径身份（规范化/真实路径规则）检查当前活动文档；目标已打开时返回 `already-open` 步（携带文档 id 与清单索引，不重复读取、不建第二个后端文档），前端把清单索引映射到现有标签并保留活动项与顺序语义；新增 Rust（Open 后 Retry 无重复、符号链接别名识别、投影成功不 rejected）与前端（活动标签落到现有标签、无重复标签）测试。
+- **非范围**：不依赖前端提交任意路径；不改清单格式、generation 协议或占位标签语义。
+- **依赖**：已完成的逐项恢复、中断处理与占位标签修复。
+- **拆分检查**：单一缺陷（游标重复打开已打开目标）加其前端映射，保持为一个切片。
+- **完成标准**：新增测试通过；`cargo fmt --manifest-path src-tauri/Cargo.toml --check`、`cargo test --manifest-path src-tauri/Cargo.toml`、`npm run check`、`npm run build`、`npm run tauri -- build` 与 `git diff --check` 通过。
+- **结果**：`DocumentStore` 新增 `active_document_for_path`：锁内快照全部已提升活动文档的 `(id, path)`，锁外按既有 `same_path_identity`（规范化选择路径 + canonical 真实路径）比较，不依赖前端提交路径。恢复步进在游标自身去重之后、打开文件之前执行该检查：目标已打开时返回新步 `AlreadyOpen { document_id, manifest_index }`（同时把路径计入游标 accepted_paths 供后续清单内重复项去重），不重复读取、不建立第二个后端文档。前端对 `already-open` 按文档 id 查找现有标签，把清单索引映射到该标签（活动项建议与「最后成功项」回落均覆盖它），不新建标签；未找到标签时静默跳过（后端状态与前端标签此时不可能失配，属防御路径）。清单顺序语义：恢复项之间保持清单相对顺序，用户中断期间手动打开的标签按用户操作位置保留在前；完成后投影按最终标签顺序写出。
+- **验证记录**：`cargo fmt --manifest-path src-tauri/Cargo.toml --check` 通过；`cargo test --manifest-path src-tauri/Cargo.toml` 通过（**163 passed / 0 failed**，新增 2 项：中断后经普通 Open 打开下一清单文件再 Retry 返回 `AlreadyOpen` 映射现有文档、完成后双文档投影 `Written` 不因重复路径拒绝；符号链接别名（清单存别名、用户开真实路径）同样识别为已打开）；`npm run check` 通过（typecheck + vitest **434 passed / 0 failed**，App 恢复组 14 用例，新增 1 项：中断后 Open 打开 b.txt 再 Retry——a 正常恢复、b 映射现有标签无重复、清单声明的活动标签落到现有 b.txt 标签、完整投影 generation 1 成功写出）；`npm run build` 与 `npm run tauri -- build` 通过并生成 release `Textora.app`；`git diff --check` 通过。
+
+### 修复恢复重试时用户未保存标签被静默丢弃
+
+- **状态**：已完成
+- **开始日期**：2026-08-17
+- **完成日期**：2026-08-17
+- **Feature Spec**：`docs/features/restore-open-files-on-launch.md`
+- **目标**：`interrupted` 状态解锁编辑与新建标签后，`finalizeRestoredTabs` 在重试成功时删除所有无路径标签，导致用户在中断后编辑的初始 Untitled 或新建的未保存标签被静默丢弃；改为只移除仍干净、为空且未被触碰的初始占位标签。
+- **范围**：`finalizeRestoredTabs` 显式接收初始占位标签 ID，占位仅在内容为空、未变脏且不处于打开/保存流程时移除，其他 Untitled 一律保留（含 nextUntitledNumber 不重置防编号冲突）；活动标签建议未命中时保留仍存在的当前活动标签（中断后用户焦点），最后回落最后文件标签；新增「编辑初始 Untitled 后重试」「新建并编辑 Untitled 后重试」「未触碰占位在正常恢复后仍移除」测试。
+- **非范围**：不改恢复步进契约、清单投影协议或 Rust。
+- **依赖**：已完成的恢复中断处理修复。
+- **拆分检查**：单一缺陷（收尾误删用户标签）加必要的状态保留规则，保持为一个切片。
+- **完成标准**：新增测试通过；`npm run check`、`npm run build`、`cargo fmt --manifest-path src-tauri/Cargo.toml --check`、`cargo test --manifest-path src-tauri/Cargo.toml`、`npm run tauri -- build` 与 `git diff --check` 通过。
+- **结果**：`finalizeRestoredTabs` 显式接收初始占位标签 ID（App 传入 `initialTabs.tabs[0].tabId`）：占位仅在 `path === null && content === "" && !isDirty && openStatus/saveStatus idle`（未被触碰、不处于任何打开/保存流程）时移除；用户编辑过的初始 Untitled 与中断期间新建的其他无路径标签一律保留，且仍存在无路径标签时 `nextUntitledNumber` 不重置（避免后续新建 Untitled 编号/身份冲突）。活动标签解析改为：建议值（清单声明活动项）→ 仍存在的当前活动标签（保护中断后的用户焦点）→ 最后一个文件标签。未改 Rust、恢复步进契约或清单投影协议。
+- **验证记录**：`npm run check` 通过（typecheck + vitest **433 passed / 0 failed**，`tabSession` 新增「编辑过的初始占位与新建 Untitled 在收尾时保留且计数不重置」1 用例；App 恢复组 13 用例，新增 3 项：首步中断后编辑初始 Untitled 再 Retry 成功，内容与 Modified 保留且两个文件按序恢复；中断后新建并编辑 Untitled 再 Retry 成功，新标签（Untitled 2）及内容/脏状态保留、未触碰占位照常移除；未触碰初始占位在正常恢复完成后仍被移除）；`npm run build` 通过；`cargo fmt --manifest-path src-tauri/Cargo.toml --check` 与 `cargo test --manifest-path src-tauri/Cargo.toml`（**161 passed / 0 failed**，Rust 未改）通过；`npm run tauri -- build` 通过并生成 release `Textora.app`；`git diff --check` 通过。
+
+### 修复恢复中断处理：异常不写清单并提供重试
+
+- **状态**：已完成
+- **开始日期**：2026-08-17
+- **完成日期**：2026-08-17
+- **Feature Spec**：`docs/features/restore-open-files-on-launch.md`
+- **目标**：逐项恢复 IPC 在开始前或处理部分条目后异常时，此前代码仍进入完成态并由清单 effect 把默认空会话或部分会话写回，导致未处理文件从下次启动清单中静默消失；修复为仅在明确收到 `done` 后执行最终投影。
+- **范围**：命令异常保留原清单（不写任何投影）、显示非模态错误并提供安全重试（继续推进同一游标）或留待下次启动；新增「首个推进 reject 不写空清单」「采用第一项后推进 reject 不写部分清单」与重试续跑测试。
+- **非范围**：不改 Rust 恢复步进契约、清单格式、generation 协议或单项失败处理。
+- **依赖**：已完成的有界逐项恢复与竞态修复。
+- **拆分检查**：单一缺陷（中断误写清单）加其重试出口，保持为一个切片。
+- **完成标准**：新增测试通过；`cargo fmt --manifest-path src-tauri/Cargo.toml --check`、`cargo test --manifest-path src-tauri/Cargo.toml`、`npm run check`、`npm run build`、`npm run tauri -- build` 与 `git diff --check` 通过。
+- **结果**：恢复状态增加 `interrupted`。恢复循环只有明确收到 `{ kind: "done" }` 才进入完成态并放行清单投影 effect；推进命令 reject 时进入 `interrupted`：已采用标签保留（有恢复项时仍移除初始 Untitled 并回落最后成功项为活动标签），不写任何清单投影（generation 未消费、磁盘清单保持进程启动时版本，未处理文件留给重试或下次启动），显示一次非模态错误（含已收集的单项失败摘要）并提供 Retry——重试经同一后端游标继续推进剩余条目，清单声明的活动索引与「清单索引→标签」映射经 ref 跨运行保留，成功后才写完整投影。可信复核 effect 改为恢复不再推进（完成或中断）即执行。单项正文取回失败仍按单项失败继续，不视为中断。
+- **验证记录**：`cargo fmt --manifest-path src-tauri/Cargo.toml --check` 通过；`cargo test --manifest-path src-tauri/Cargo.toml` 通过（**161 passed / 0 failed**，Rust 未改动）；`npm run check` 通过（typecheck + vitest **429 passed / 0 failed**，App 恢复组 10 用例，新增 3 项：首个推进 reject 保持 Untitled、`manifestCalls` 为空、提示含重试按钮且编辑解锁；采用第一项后推进 reject 保留 a.md 活动、不写部分清单；重试续跑完成两文件后按声明活动索引定位并写出 generation 1 完整投影、提示清除）；`npm run build` 与 `npm run tauri -- build` 通过并生成 release `Textora.app`；`git diff --check` 通过。
+
+### 修复启动恢复批量缓冲与外部变化竞态
+
+- **状态**：已完成
+- **开始日期**：2026-08-17
+- **完成日期**：2026-08-17
+- **Feature Spec**：`docs/features/restore-open-files-on-launch.md`
+- **目标**：消除启动恢复的两个审查缺陷：单次恢复命令把全部清单文件同时打开进候选缓冲（合法清单即可造成巨大内存占用与长时间启动锁定），以及前端在全部正文读取完成后才采用标签，恢复期间 `read_document_content` 已关联 watcher 产生的外部变化事件因标签尚不存在而被丢弃。
+- **范围**：恢复改为有界逐项推进 IPC（后端无论前端行为如何，任意时刻至多一个已打开文件滞留候选缓冲）；前端逐项采用标签并在恢复完成后对每个已恢复文件执行可信复核；新增大文件批量恢复的资源边界测试与「第二个文件读取被延迟时第一个文件发生外部修改」测试。
+- **非范围**：不改变恢复对象、清单格式、信任边界、generation 协议或提示行为；不新增 capability 或依赖。
+- **依赖**：已完成的启动恢复垂直切片与集成验收。
+- **拆分检查**：两个缺陷同属启动恢复资源与竞态安全，修复共同交付同一恢复行为，保持为一个切片；不改清单契约或外部监听服务本身。
+- **完成标准**：新增资源边界与外部变化竞态测试通过；`cargo fmt --manifest-path src-tauri/Cargo.toml --check`、`cargo test --manifest-path src-tauri/Cargo.toml`、`npm run check`、`npm run build`、`npm run tauri -- build` 与 `git diff --check` 通过。
+- **结果**：批量恢复命令重构为逐项推进的 `restore_next_session_document`（managed `SessionRestoreCursor` 持有清单、清单索引、去重路径与当前滞留缓冲 id；每次推进至多打开一个文件并在确定要打开下一个文件时先经 `DocumentStore::discard_pending_content` 释放上一条未取回缓冲——无论前端行为如何，后端同时至多缓冲一个恢复文件，清单耗尽时最后一条保留供取回；`Started` 返回清单总数与声明活动索引，活动项成立与否由前端在采用时判定）。前端恢复循环改为逐项「推进→二进制取回→立即 `appendRestoredTab` 采用」，外部变化事件在恢复期间即可找到归属标签走既有处理链路；全部条目处理后 `finalizeRestoredTabs` 丢弃未触碰的初始 Untitled、按建议索引（回落最后成功项）定位活动标签；恢复完成后新增一次 `refreshAllExternalDocuments` 可信复核，与聚焦兜底共用路径，补上采用前到达的被丢事件。文件 I/O 仍在 `spawn_blocking`。未改清单格式、信任边界、generation 协议、提示行为或 capability。
+- **验证记录**：`cargo fmt --manifest-path src-tauri/Cargo.toml --check` 通过；`cargo test --manifest-path src-tauri/Cargo.toml` 通过（**161 passed / 0 failed**，恢复契约测试改为步进模型：顺序逐项打开与内容候选、缺失/符号链接别名、3×512 KiB 文件连续推进不取回时仅最后一条缓冲保留的资源边界、缺失/损坏清单与一次性门禁）；`npm run check` 通过（typecheck + vitest **426 passed / 0 failed**，`tabSession` 改为 `appendRestoredTab`/`finalizeRestoredTabs` 3 用例、App 恢复组 7 用例含新增「第二个文件读取被延迟时第一个文件发生外部修改」：恢复期间外部事件经既有候选通道刷新第一文件内容、完成后按文件复核 `refresh_external_document` 且编辑器显示外部版本）；`npm run build` 与 `npm run tauri -- build` 通过并生成 release `Textora.app`（`CFBundleIdentifier=com.tsingmu.textora`、`CFBundleExecutable=textora`）；`src-tauri/capabilities/` 无改动；`git diff --check` 通过。
+
+### 启动文件恢复集成验收与文档收尾
+
+- **状态**：已完成
+- **开始日期**：2026-08-17
+- **完成日期**：2026-08-17
+- **Feature Spec**：`docs/features/restore-open-files-on-launch.md`
+- **结果**：完成启动文件恢复的组合回归、release 构建、macOS 真实重启与单项缺失退化验收，并将 Feature Spec 与 README 收尾为已完成。真实 release 应用按 alpha→beta 顺序恢复两个文件并保持 beta 为活动项；退出后修改 beta 再启动采用最新磁盘内容；删除 alpha 后只恢复 beta、显示一次非模态失败汇总，下一次重启不再重复提示失败项。恢复后的 beta 能实时采用外部变化并经普通保存写回磁盘。最后关闭文件标签使恢复清单回到空集合，退出应用并清理临时文件。未新增功能行为、权限或依赖，验收中无需实现性小修。
+- **验证记录**：`cargo fmt --manifest-path src-tauri/Cargo.toml --check` 通过；`cargo test --manifest-path src-tauri/Cargo.toml` 通过（**161 passed / 0 failed**）；`npm run check` 通过（typecheck + vitest **425 passed / 0 failed**）；`npm run build` 与 `npm run tauri -- build` 通过，release bundle 位于 `src-tauri/target/release/bundle/macos/Textora.app`；bundle 标识和可执行文件分别为 `com.tsingmu.textora`、`textora`；`src-tauri/capabilities/` 无变更；macOS release 真实应用完成多文件顺序/活动项/磁盘重读、单项缺失汇总与失败项清理、恢复后外部监听和普通保存验收；`git diff --check` 通过。Vite 大 chunk 提示为既有。
+
+### 接入启动批量恢复与前端标签采用
+
+- **状态**：已完成
+- **开始日期**：2026-08-17
+- **完成日期**：2026-08-17
+- **Feature Spec**：`docs/features/restore-open-files-on-launch.md`
+- **目标**：完成“下次启动恢复上次已打开文件”的最小用户可用垂直切片。
+- **范围**：把清单 store 接入 Tauri managed state；新增受清单约束的启动恢复与可信 ID 投影更新 IPC；启动逐项安全打开并经二进制通道采用到标签；恢复顺序与活动项；结构变化后的 generation 更新；加载锁定；部分失败非模态汇总与失败项清理；前后端自动化。
+- **非范围**：不恢复 Untitled、未保存内容、撤销/选区/滚动或 Preview/WYSIWYG 模式；不做 release 构建、真实应用重启验收或文档最终收尾。
+- **依赖**：已完成的 Rust 清单与可信投影契约；现有多标签、打开/二进制内容、外部监听和关闭保护链路。
+- **拆分检查**：前端、IPC 与 Rust 共同交付同一个启动恢复用户行为，保留为最小垂直切片；release/真实应用组合验收独立留到最后任务。
+- **完成标准**：自动化覆盖无清单、完整/部分/全部恢复、顺序/活动项、标签变化持久化、迟到更新、恢复锁定、内容取回失败和提示边界；`cargo fmt --manifest-path src-tauri/Cargo.toml --check`、`cargo test --manifest-path src-tauri/Cargo.toml`、`npm run check`、`npm run build` 与 `git diff --check` 通过。
+- **结果**：`SessionManifestStore` 在 setup 中接入 Tauri managed state（`app_data_dir` 不可用时安全降级为无清单），并新增进程内一次性恢复门禁。新增受限 IPC：`restore_session_documents` 只读 Rust 自有清单，经既有 `same_path_identity` 规则按顺序去重后逐项 `open_document`（复用大小/编码/读取竞争保护）进入候选缓冲，返回描述符、原始清单索引、失败摘要（显示名+稳定错误码）与建议活动索引（清单活动项失败或未声明时回落最后成功项）；`update_open_files_manifest` 在锁内把可信文档 ID 投影为清单并按 generation 门禁原子写入，迟到/过期投影静默拒绝且不消费 generation，真实写入失败返回新稳定错误码 `session-manifest-write-failed`。前端挂载时执行一次恢复：逐项经二进制 `read_document_content` 取回并按清单顺序用 `adoptRestoredTabs` 建立标签（替换初始 Untitled），活动项按建议索引；正文取回失败的单项经 `close_document` 清理并计入汇总，不阻塞其他文件；恢复期间锁定打开/保存/关闭/标签切换与编辑并显示加载提示，完成后解除；存在失败时显示一次可关闭的非模态汇总，失败项因下一份投影只含成功项而从清单移除；恢复完成后标签顺序/身份/路径或活动标签变化即提交递增 generation 的投影，写入失败仅显示非模态提示。清单命令文件 I/O 均在 `spawn_blocking` 执行，不阻塞主线程。
+- **验证记录**：`cargo fmt --manifest-path src-tauri/Cargo.toml --check` 通过；`cargo test --manifest-path src-tauri/Cargo.toml` 通过（**161 passed / 0 failed**，新增 6 项恢复/更新契约用例：清单顺序恢复与内容候选提升、缺失项失败摘要与符号链接别名去重、活动项失败回落最后成功项、缺失/损坏清单与一次性门禁、投影写入与迟到/过期拒绝不消费 generation、写入失败不动文档状态）；`npm run check` 通过（typecheck + vitest **425 passed / 0 failed**，新增 `tabSession.adoptRestoredTabs` 3 用例、`platform` 恢复/投影 IPC 封装 2 用例、`App` 6 用例：完整恢复顺序/活动项/首次投影、单项打开失败与正文取回失败清理回落及汇总提示边界、无清单保持默认 Untitled 并提交空投影、恢复期间锁定与解除、切换标签 generation 递增投影、清单写入失败非模态提示）；`npm run build` 通过（Vite 大 chunk 提示为既有）；`git diff --check` 通过。按非范围未运行 release 构建与 macOS 真实应用重启验收，留给集成验收任务。
+
+### 建立 Rust 启动恢复清单与可信投影契约
+
+- **状态**：已完成
+- **开始日期**：2026-08-14
+- **完成日期**：2026-08-14
+- **Feature Spec**：`docs/features/restore-open-files-on-launch.md`
+- **结果**：新增独立 `session_restore` 模块：版本化 JSON 清单、严格结构校验、安全加载分类、`app_data_dir` 路径入口、同目录临时文件原子替换、失败保留旧清单及 generation 门禁；`DocumentStore` 新增一次锁内的有序可信路径投影，拒绝未知/重复文档 ID 和未列出的活动 ID。`serde_json` 改为直接依赖。未新增 IPC、前端接入、恢复读取或用户可观察行为。
+- **验证记录**：定向清单测试 **5 passed / 0 failed**，可信投影测试 **2 passed / 0 failed**；`cargo fmt --manifest-path src-tauri/Cargo.toml --check` 通过；`cargo test --manifest-path src-tauri/Cargo.toml` 通过（**155 passed / 0 failed**）；`npm run check` 通过（typecheck + vitest **414 passed / 0 failed**）；`git diff --check` 通过。
+
+### 确认启动时恢复上次打开文件的规格
+
+- **状态**：已完成
+- **开始日期**：2026-08-14
+- **完成日期**：2026-08-14
+- **Feature Spec**：`docs/features/restore-open-files-on-launch.md`
+- **结果**：确认首期只恢复已关联文件的顺序与活动项，不恢复 Untitled、未保存内容、撤销/选区/滚动或显示模式；Rust 在 `app_data_dir` 持有版本化 JSON 清单，前端只提交可信文档 ID 投影；generation 防止异步旧写覆盖；同目录临时文件原子替换；启动逐项复用 `open_document` 和二进制内容通道；部分失败非阻塞汇总且从下一清单移除。规格已改为已确认，拆为 Rust 清单契约、启动恢复垂直接入和集成验收三个后续实现任务。
+- **验证记录**：复核多标签规格、`tabSession` 初始状态、打开/关闭 IPC、`DocumentStore` 可信路径、外部监听建立时序、本地 `tauri 2.11.5` 的 `app_data_dir()` 与现有原子写入实现；`git diff --check` 通过。仅修改规划文档，未运行测试或构建。
 
 ### Markdown WYSIWYG 内联格式审查修复集成验收
 

@@ -20,8 +20,10 @@ import {
   prepareSaveAs,
   previewSaveTarget,
   refreshExternalDocument,
+  restoreNextSessionDocument,
   retryExternalReload,
   saveAsAt,
+  updateOpenFilesManifest,
 } from "./platform";
 
 beforeEach(() => {
@@ -235,6 +237,32 @@ describe("external reload IPC", () => {
     );
     expect(options).toEqual({
       headers: { "textora-document-id": "doc-1" },
+    });
+  });
+});
+
+describe("session restore IPC", () => {
+  it("restores step by step by trusting only the backend-owned manifest", async () => {
+    invokeMock.mockResolvedValue({ kind: "done" });
+    await expect(restoreNextSessionDocument()).resolves.toEqual({ kind: "done" });
+    expect(invokeMock).toHaveBeenCalledWith("restore_next_session_document");
+  });
+
+  it("submits projections with trusted document ids and a monotonic generation", async () => {
+    invokeMock.mockResolvedValue("stale");
+    await expect(
+      updateOpenFilesManifest({
+        generation: 4,
+        documentIds: ["doc-1", "doc-2"],
+        activeDocumentId: "doc-2",
+      }),
+    ).resolves.toBe("stale");
+    expect(invokeMock).toHaveBeenCalledWith("update_open_files_manifest", {
+      projection: {
+        generation: 4,
+        documentIds: ["doc-1", "doc-2"],
+        activeDocumentId: "doc-2",
+      },
     });
   });
 });

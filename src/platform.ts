@@ -70,7 +70,8 @@ export type DocumentErrorCode =
   | "unknown-document"
   | "invalid-file-name"
   | "missing-grant"
-  | "grant-mismatch";
+  | "grant-mismatch"
+  | "session-manifest-write-failed";
 
 export type DocumentCommandError = {
   code: DocumentErrorCode;
@@ -108,6 +109,44 @@ export async function selectAndOpenDocument(
  */
 export async function readDocumentContent(id: string): Promise<ArrayBuffer> {
   return invoke<ArrayBuffer>("read_document_content", { id });
+}
+
+/** 启动恢复的一次推进结果；后端任意时刻至多一个已打开文件滞留候选缓冲。 */
+export type SessionRestoreStep =
+  | { kind: "started"; total: number; activeIndex: number | null }
+  | { kind: "item"; descriptor: DocumentDescriptor; manifestIndex: number }
+  | { kind: "already-open"; documentId: string; manifestIndex: number }
+  | { kind: "failed"; displayName: string; error: DocumentCommandError }
+  | { kind: "done" };
+
+/**
+ * 启动恢复的逐项推进。后端只读取 Rust 自有清单中的路径；首次返回清单概要，此后每次
+ * 至多打开一个文件（内容经 `readDocumentContent` 取回后再推进），清单缺失/损坏或全部
+ * 处理完返回 `done`。
+ */
+export async function restoreNextSessionDocument(): Promise<SessionRestoreStep> {
+  return invoke<SessionRestoreStep>("restore_next_session_document");
+}
+
+/** 清单投影更新的结果：写入成功、generation 过期被忽略，或投影含过期文档 id 被拒绝。 */
+export type SessionManifestUpdateStatus = "written" | "stale" | "rejected";
+
+/**
+ * 提交打开文件清单投影。只传后端可信文档 ID（路径由 Rust 投影）；generation 为当前
+ * 进程单调递增编号，迟到提交在 Rust 侧被拒绝。真实写入失败时 reject。
+ */
+export async function updateOpenFilesManifest(options: {
+  generation: number;
+  documentIds: readonly string[];
+  activeDocumentId: string | null;
+}): Promise<SessionManifestUpdateStatus> {
+  return invoke<SessionManifestUpdateStatus>("update_open_files_manifest", {
+    projection: {
+      generation: options.generation,
+      documentIds: options.documentIds,
+      activeDocumentId: options.activeDocumentId,
+    },
+  });
 }
 
 /** 采用 Rust 已复核的外部变化候选；内容正文随后经二进制读取通道取得。 */
@@ -323,6 +362,7 @@ const COMMAND_ERROR_CODES: readonly DocumentErrorCode[] = [
   "invalid-file-name",
   "missing-grant",
   "grant-mismatch",
+  "session-manifest-write-failed",
 ];
 
 /** 判定值是否为后端稳定错误信封；打开与保存共用。 */
@@ -447,6 +487,8 @@ export function describeSaveError(error: DocumentCommandError): string {
     case "missing-grant":
     case "grant-mismatch":
       return "The save location authorization expired. Choose the location again.";
+    case "session-manifest-write-failed":
+      return "The list of open files could not be saved for the next launch.";
     case "unsupported-encoding":
       return "The edited content could not be encoded for saving.";
     case "changed-during-read":

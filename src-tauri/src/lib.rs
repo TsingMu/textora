@@ -8,6 +8,7 @@ use tauri::{
 pub mod document;
 pub mod external_watch;
 pub mod ipc;
+pub mod session_restore;
 
 use ipc::DocumentStore;
 
@@ -183,6 +184,10 @@ pub fn run() {
         .setup(|app| {
             let watcher = external_watch::ExternalWatchService::new(app.handle().clone())?;
             app.manage(watcher);
+            app.manage(ipc::SessionRestoreCursor::default());
+            if let Ok(manifests) = session_restore::SessionManifestStore::from_app(app.handle()) {
+                app.manage(manifests);
+            }
             Ok(())
         })
         .menu(build_app_menu)
@@ -195,6 +200,8 @@ pub fn run() {
             health_check,
             ipc::select_and_open_document,
             ipc::read_document_content,
+            ipc::restore_next_session_document,
+            ipc::update_open_files_manifest,
             ipc::prepare_external_reload,
             ipc::retry_external_reload,
             ipc::refresh_external_document,

@@ -26,8 +26,10 @@ import {
   activeDocument,
   addOpenedDocumentTab,
   addUntitledTab,
+  appendRestoredTab,
   closeTabCleanly,
   createInitialTabSession,
+  finalizeRestoredTabs,
   setMarkdownPreviewOpen,
   setMarkdownWysiwygOpen,
   setMermaidPreviewOpen,
@@ -59,10 +61,12 @@ import {
   refreshExternalDocument,
   reloadFromConflict,
   requestAppExit,
+  restoreNextSessionDocument,
   retryExternalReload,
   saveAsAt,
   saveDocument,
   selectAndOpenDocument,
+  updateOpenFilesManifest,
   type DocumentCommandError,
   EXTERNAL_DOCUMENT_CHANGED_EVENT,
   type ExternalDocumentChanged,
@@ -91,6 +95,8 @@ import {
 } from "./mermaidPreview";
 
 const initialTabs = createInitialTabSession();
+// 启动恢复收尾只允许移除这个初始占位标签，且仅在仍未被用户触碰时。
+const initialPlaceholderTabId = initialTabs.tabs[0].tabId;
 type ConflictOperationStatus = "idle" | "canceling" | "reloading" | "overwriting";
 type FileMissingOperationStatus = "idle" | "keeping" | "discarding";
 type FileMissingTarget = {
@@ -203,6 +209,14 @@ function App() {
     encoding: EncodingChoice;
     lineEnding: LineEndingChoice;
   }>(saveFormat);
+  const [sessionRestore, setSessionRestore] = useState<
+    "pending" | "done" | "interrupted"
+  >("pending");
+  // 恢复结果提示与清单写入失败提示独立展示、独立关闭，避免互相覆盖。
+  const [sessionRestoreNotice, setSessionRestoreNotice] = useState<
+    string | null
+  >(null);
+  const [manifestNotice, setManifestNotice] = useState<string | null>(null);
   const sessionRef = useRef(session);
   const tabSessionRef = useRef(tabSession);
   const fileMissingPendingRef = useRef<FileMissingTarget | null>(
@@ -229,6 +243,13 @@ function App() {
   const markdownBlockMapRef = useRef<readonly MarkdownBlock[]>([]);
   const markdownPreviewVisibleRef = useRef(false);
   const saveFileNameInputRef = useRef<HTMLInputElement>(null);
+  const sessionRestoreStartedRef = useRef(false);
+  const manifestGenerationRef = useRef(0);
+  // 恢复中断后重试沿用同一后端游标；清单声明的活动索引、已采用标签映射与单项失败
+  // 摘要都跨运行保留——最终完成后的提示覆盖本次启动期间的全部失败。
+  const restoreActiveManifestIndexRef = useRef<number | null>(null);
+  const restoreTabIdByManifestIndexRef = useRef<Map<number, string>>(new Map());
+  const restoreFailureSummariesRef = useRef<string[]>([]);
   sessionRef.current = session;
   tabSessionRef.current = tabSession;
   fileMissingPendingRef.current = fileMissingPending;
@@ -620,6 +641,166 @@ function App() {
       active = false;
     };
   }, []);
+
+  // 启动恢复：新进程只执行一次，逐项推进。Rust 每次至多打开一个清单文件（缓冲有界），
+  // 前端取回正文后立即采用为标签，使后续外部变化事件能找到归属标签。只有明确收到
+  // `done` 才进入完成态并允许最终清单投影；命令异常中断时保留原清单（未处理文件留在
+  // 下次启动恢复列表），显示非模态错误并提供继续同一游标的安全重试。
+  async function runSessionRestore() {
+    setSessionRestore("pending");
+    const failureSummaries = restoreFailureSummariesRef.current;
+    let lastAdoptedTabId: string | null = null;
+    let nextRestoredTabNumber = tabSessionRef.current.nextTabNumber;
+    let completed = false;
+    try {
+      for (;;) {
+        const step = await restoreNextSessionDocument();
+        if (step.kind === "done") {
+          completed = true;
+          break;
+        }
+        if (step.kind === "started") {
+          restoreActiveManifestIndexRef.current = step.activeIndex;
+          continue;
+        }
+        if (step.kind === "already-open") {
+          // 中断期间经普通 Open/Save As 打开：清单索引映射到现有标签，不重复建标签。
+          const existingTab = tabSessionRef.current.tabs.find(
+            (tab) => tab.document.id === step.documentId,
+          );
+          if (existingTab !== undefined) {
+            restoreTabIdByManifestIndexRef.current.set(
+              step.manifestIndex,
+              existingTab.tabId,
+            );
+            lastAdoptedTabId = existingTab.tabId;
+          }
+          continue;
+        }
+        if (step.kind === "failed") {
+          failureSummaries.push(
+            `${step.displayName} (${describeOpenError(step.error.code)})`,
+          );
+          continue;
+        }
+        try {
+          const buffer = await readDocumentContent(step.descriptor.id);
+          const content = new TextDecoder().decode(buffer);
+          const tabId = `tab-${nextRestoredTabNumber}`;
+          nextRestoredTabNumber += 1;
+          updateTabSession((current) =>
+            appendRestoredTab(current, step.descriptor, content),
+          );
+          restoreTabIdByManifestIndexRef.current.set(step.manifestIndex, tabId);
+          lastAdoptedTabId = tabId;
+        } catch {
+          failureSummaries.push(
+            `${step.descriptor.displayName} (the content could not be read)`,
+          );
+          try {
+            await closeDocument(step.descriptor.id);
+          } catch {
+            // 清理失败不阻塞启动；残留候选不影响其他文档。
+          }
+        }
+      }
+    } catch {
+      // 恢复命令异常：中断本次运行，已采用的标签保留，不写任何清单投影。
+    }
+    const activeManifestIndex = restoreActiveManifestIndexRef.current;
+    const activeTabId =
+      (activeManifestIndex !== null
+        ? restoreTabIdByManifestIndexRef.current.get(activeManifestIndex)
+        : undefined) ?? lastAdoptedTabId;
+    updateTabSession((current) =>
+      finalizeRestoredTabs(current, activeTabId, initialPlaceholderTabId),
+    );
+    if (completed) {
+      setSessionRestore("done");
+      if (failureSummaries.length > 0) {
+        setSessionRestoreNotice(
+          `${failureSummaries.length} file(s) from the last session could not be restored: ${failureSummaries.join("; ")}.`,
+        );
+      } else {
+        setSessionRestoreNotice(null);
+      }
+    } else {
+      setSessionRestore("interrupted");
+      setSessionRestoreNotice(
+        `The previous session could not be fully restored. Files that were not processed stay on the restore list for the next launch.${
+          failureSummaries.length > 0
+            ? ` Failed items: ${failureSummaries.join("; ")}.`
+            : ""
+        }`,
+      );
+    }
+  }
+
+  function handleSessionRestoreRetry() {
+    if (sessionRestore !== "interrupted") {
+      return;
+    }
+    void runSessionRestore();
+  }
+
+  useEffect(() => {
+    if (sessionRestoreStartedRef.current) {
+      return;
+    }
+    sessionRestoreStartedRef.current = true;
+    void runSessionRestore();
+  }, []);
+
+  // 恢复不再推进（完成或中断）且已有采用标签时，对每个已恢复文件执行一次可信复核：
+  // 恢复期间（尤其标签尚未存在时）到达的外部变化事件可能被丢弃，此复核与聚焦兜底共用
+  // 同一处理路径补上。
+  useEffect(() => {
+    if (sessionRestore === "pending") {
+      return;
+    }
+    refreshAllExternalDocuments(() => false);
+  }, [sessionRestore]);
+
+  // 恢复完成后，标签集合（顺序/身份/路径）或活动标签变化即提交新的清单投影。generation
+  // 进程内单调递增，迟到的异步提交在 Rust 侧被拒绝；写入失败只显示非模态提示。
+  const manifestProjectionKey =
+    tabSession.tabs
+      .map((tab) => `${tab.tabId}:${tab.document.id}:${tab.document.path ?? ""}`)
+      .join("|") + `#${tabSession.activeTabId}`;
+  useEffect(() => {
+    if (sessionRestore !== "done") {
+      return;
+    }
+    const state = tabSessionRef.current;
+    const documentIds = state.tabs
+      .filter((tab) => tab.document.path !== null)
+      .map((tab) => tab.document.id);
+    const activeTab = state.tabs.find((tab) => tab.tabId === state.activeTabId);
+    const activeDocumentId =
+      activeTab !== undefined && activeTab.document.path !== null
+        ? activeTab.document.id
+        : null;
+    const generation = manifestGenerationRef.current + 1;
+    manifestGenerationRef.current = generation;
+    void updateOpenFilesManifest({ generation, documentIds, activeDocumentId })
+      .then((status) => {
+        // 只有最新请求明确写入成功时才清除旧失败提示；stale/rejected 均未写入
+        // 当前投影，不能据此宣称持久化已经恢复。迟到旧请求不覆盖较新状态。
+        if (
+          manifestGenerationRef.current === generation &&
+          status === "written"
+        ) {
+          setManifestNotice(null);
+        }
+      })
+      .catch(() => {
+        if (manifestGenerationRef.current === generation) {
+          setManifestNotice(
+            "The list of open files could not be saved for the next launch.",
+          );
+        }
+      });
+  }, [sessionRestore, manifestProjectionKey]);
 
   // 文档载入/另存/重载/覆盖导致会话格式变化时，把右下角格式设置重置为当前文档格式；
   // 用户在此期间的覆盖会保留到下一次文档格式变化。若弹层正打开，同时丢弃草稿并关闭弹层，
@@ -1390,6 +1571,7 @@ function App() {
       activeExternalReloadError?.status === "retrying" ||
       fileMissingPending !== null ||
       closeConfirmPending ||
+      sessionRestore === "pending" ||
       session.openStatus === "loading" ||
       session.openStatus === "awaiting-discard-confirm"
     );
@@ -1789,6 +1971,7 @@ function App() {
 
   const busy =
     isBusy(session) ||
+    sessionRestore === "pending" ||
     saveAsPanel.open ||
     conflictPending ||
     activeExternalReloadError?.status === "retrying" ||
@@ -1796,6 +1979,7 @@ function App() {
     closeConfirmPending;
   busyRef.current = busy;
   const editorLocked =
+    sessionRestore === "pending" ||
     session.openStatus === "loading" ||
     session.saveStatus === "saving" ||
     conflictPending ||
@@ -2214,6 +2398,44 @@ function App() {
                 type="button"
                 className="notice-dismiss"
                 onClick={() => setFormatJsonNotice(null)}
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
+          {sessionRestore === "pending" && (
+            <div className="notice notice-loading" role="status">
+              Restoring previous session…
+            </div>
+          )}
+          {sessionRestoreNotice !== null && (
+            <div className="notice notice-error notice-session" role="status">
+              <span>{sessionRestoreNotice}</span>
+              {sessionRestore === "interrupted" && (
+                <button
+                  type="button"
+                  className="notice-action"
+                  onClick={handleSessionRestoreRetry}
+                >
+                  Retry
+                </button>
+              )}
+              <button
+                type="button"
+                className="notice-dismiss"
+                onClick={() => setSessionRestoreNotice(null)}
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
+          {manifestNotice !== null && (
+            <div className="notice notice-error notice-session" role="status">
+              <span>{manifestNotice}</span>
+              <button
+                type="button"
+                className="notice-dismiss"
+                onClick={() => setManifestNotice(null)}
               >
                 Dismiss
               </button>

@@ -11,10 +11,15 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
+use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
 
 use crate::document::{
     self, DocumentDescriptor, DocumentError, FileFingerprint, LineEnding, TextEncoding,
+};
+use crate::session_restore::{
+    ManifestLoadOutcome, ManifestProjectionError, ManifestUpdateOutcome, RestoreManifest,
+    SessionManifestStore,
 };
 
 /// 文档 id 自定义 header。保存命令的内容走 Raw body，id 通过该 header 随行。
@@ -48,11 +53,14 @@ pub enum DocumentErrorCode {
     MissingGrant,
     /// 目录授权 id 有效但不归属当前请求的文档。
     GrantMismatch,
+    // 启动恢复清单
+    /// 应用数据目录中的打开文件清单无法写入（I/O 失败或存储不可用）。
+    SessionManifestWriteFailed,
 }
 
 /// 跨 IPC 的文档命令错误。`character` 与 `byteOffset` 仅在不可编码字符时填充，供
 /// 上层展示；其余字段为 `None`。`message` 仅供诊断，不向用户呈现。
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DocumentCommandError {
     pub code: DocumentErrorCode,
@@ -307,6 +315,75 @@ pub enum OpenDocumentSelection {
     Existing { tab_id: String },
 }
 
+/// 一次启动恢复推进的结果。恢复命令逐项打开清单文件：任意时刻后端至多一个已打开
+/// 条目滞留在候选缓冲中，前端经 `read_document_content` 取回（或下一次推进清除未取回
+/// 缓冲）后才继续，恢复内存因此有界于单个文件。
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum SessionRestoreStep {
+    /// 恢复开始：清单项总数与清单声明的活动索引（活动项是否成立由前端在采用时判定）。
+    Started {
+        total: usize,
+        active_index: Option<usize>,
+    },
+    /// 一个文件已按既有打开保护读入候选缓冲；只含描述符与清单索引，不含失败摘要。
+    Item {
+        descriptor: DocumentDescriptor,
+        manifest_index: usize,
+    },
+    /// 该清单条目的路径身份与当前已打开文档一致（如中断期间经普通 Open/Save As 打开）：
+    /// 不重复读取或建立第二个后端文档；前端把清单索引映射到该文档的现有标签。
+    AlreadyOpen {
+        document_id: String,
+        manifest_index: usize,
+    },
+    /// 一个文件打开失败（缺失、无权限、超限、编码或读取竞争）；继续推进其余项。
+    Failed {
+        display_name: String,
+        error: DocumentCommandError,
+    },
+    /// 清单缺失/损坏或全部项已处理完毕。
+    Done,
+}
+
+/// 启动恢复的逐项游标（Tauri managed state）。整个恢复每个进程至多开始一次；持有
+/// 清单、下一清单索引、去重用已接受路径与当前滞留缓冲的文档 id。命令由前端串行
+/// 驱动，锁内推进保证无论前端行为如何，后端同时至多缓冲一个已打开文件。
+#[derive(Default)]
+pub struct SessionRestoreCursor {
+    inner: Mutex<SessionRestoreCursorInner>,
+}
+
+#[derive(Default)]
+struct SessionRestoreCursorInner {
+    started: bool,
+    finished: bool,
+    manifest: Option<RestoreManifest>,
+    next_index: usize,
+    accepted_paths: Vec<PathBuf>,
+    buffered_document_id: Option<String>,
+}
+
+/// 前端提交的打开文件清单投影：有序可信文档 ID 与可选活动文档 ID。路径只能由 Rust
+/// 从可信状态投影产生；generation 为前端进程内单调递增编号，用于拒绝迟到的旧集合。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionManifestProjection {
+    pub generation: u64,
+    pub document_ids: Vec<String>,
+    pub active_document_id: Option<String>,
+}
+
+/// 清单投影更新的结果：成功写入、因 generation 过期被忽略，或因投影含过期/未知文档 id
+/// 被拒绝（等待更新的投影，不视为需要提示的失败）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SessionManifestUpdateStatus {
+    Written,
+    Stale,
+    Rejected,
+}
+
 /// 目标预览：`dir/file_name` 是否已存在、是否即当前活动文档原路径。用于"替换确认"。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -491,8 +568,85 @@ impl DocumentStore {
         entry.active.clone()
     }
 
+    /// 丢弃该文档尚未取回的候选内容缓冲。用于启动恢复推进前的有界化清理：正常协议下
+    /// 前端已取回上一条目内容，此调用为 no-op；若调用方未取回就推进，后端仍保证任意
+    /// 时刻至多一个恢复文件占用缓冲。
+    pub(crate) fn discard_pending_content(&self, id: &str) {
+        let mut guard = self.inner.lock().expect("document store lock poisoned");
+        if let Some(entry) = guard.documents.get_mut(id) {
+            entry.pending_content = None;
+            entry.pending_trusted = None;
+            entry.pending_reload_revision = None;
+            entry.pending_replaces_session = false;
+        }
+    }
+
+    /// 查找与给定路径身份一致的活动可信文档（启动恢复推进前的重复检查：中断期间用户
+    /// 经普通 Open/Save As 打开的文件）。先在锁内快照活动 (id, path)，路径身份比较在
+    /// 锁外执行；只匹配已提升的活动文档，候选缓冲路径由恢复游标自行跟踪。
+    pub(crate) fn active_document_for_path(&self, path: &Path) -> Option<String> {
+        let active_paths: Vec<(String, PathBuf)> = {
+            let guard = self.inner.lock().expect("document store lock poisoned");
+            guard
+                .documents
+                .iter()
+                .filter(|(_, entry)| entry.pending_overwrite.is_none())
+                .filter_map(|(id, entry)| {
+                    entry
+                        .active
+                        .as_ref()
+                        .map(|document| (id.clone(), document.path.clone()))
+                })
+                .collect()
+        };
+        active_paths
+            .iter()
+            .find(|(_, active_path)| same_path_identity(active_path, path))
+            .map(|(id, _)| id.clone())
+    }
+
     pub(crate) fn active_path(&self, id: &str) -> Option<PathBuf> {
         self.active_for(id).map(|document| document.path)
+    }
+
+    /// 把前端提交的有序文档 id 投影为 Rust 可信路径清单。整个投影持有一次 store 锁，
+    /// 避免在逐 id 查询之间观察到标签关闭、另存为或覆盖租约变化后的混合快照。
+    pub(crate) fn project_restore_manifest(
+        &self,
+        document_ids: &[String],
+        active_document_id: Option<&str>,
+    ) -> Result<RestoreManifest, ManifestProjectionError> {
+        let mut unique_ids = std::collections::HashSet::with_capacity(document_ids.len());
+        if document_ids
+            .iter()
+            .any(|document_id| !unique_ids.insert(document_id.as_str()))
+        {
+            return Err(ManifestProjectionError::DuplicateDocumentId);
+        }
+
+        let active_index = match active_document_id {
+            Some(active_id) => Some(
+                document_ids
+                    .iter()
+                    .position(|document_id| document_id == active_id)
+                    .ok_or(ManifestProjectionError::ActiveDocumentNotInList)?,
+            ),
+            None => None,
+        };
+
+        let guard = self.inner.lock().expect("document store lock poisoned");
+        let mut paths = Vec::with_capacity(document_ids.len());
+        for document_id in document_ids {
+            let path = guard
+                .documents
+                .get(document_id)
+                .filter(|entry| entry.pending_overwrite.is_none())
+                .and_then(|entry| entry.active.as_ref())
+                .map(|document| document.path.clone())
+                .ok_or(ManifestProjectionError::UnknownDocument)?;
+            paths.push(path);
+        }
+        RestoreManifest::new(paths, active_index).map_err(ManifestProjectionError::InvalidManifest)
     }
 
     fn update_active(&self, id: &str, fingerprint: FileFingerprint, byte_count: u64) {
@@ -1292,6 +1446,187 @@ pub fn read_document_content(
             "no buffered content is available for the requested document",
         )),
     }
+}
+
+/// 启动恢复的一次推进。首次调用读取 Rust 自有清单并返回 `Started`（缺失、损坏或读取
+/// 失败直接 `Done`）；此后每次调用至多打开一个清单文件并返回 `Item`（进入候选缓冲，由
+/// 前端经二进制通道取回）或 `Failed`，全部处理完返回 `Done`。同一路径/符号链接别名只
+/// 恢复首个出现位置；推进前清除上一条尚未取回的缓冲，保证恢复内存有界于单个文件。
+fn restore_session_step(
+    cursor: &SessionRestoreCursor,
+    store: &DocumentStore,
+    manifests: &SessionManifestStore,
+) -> SessionRestoreStep {
+    let mut inner = cursor
+        .inner
+        .lock()
+        .expect("session restore cursor lock poisoned");
+    if !inner.started {
+        inner.started = true;
+        return match manifests.load() {
+            ManifestLoadOutcome::Ready(manifest) => {
+                let total = manifest.files().len();
+                let active_index = manifest.active_index();
+                inner.manifest = Some(manifest);
+                SessionRestoreStep::Started {
+                    total,
+                    active_index,
+                }
+            }
+            ManifestLoadOutcome::Missing
+            | ManifestLoadOutcome::Invalid
+            | ManifestLoadOutcome::ReadFailed => {
+                inner.finished = true;
+                SessionRestoreStep::Done
+            }
+        };
+    }
+    if inner.finished {
+        return SessionRestoreStep::Done;
+    }
+    loop {
+        let Some(path) = inner
+            .manifest
+            .as_ref()
+            .and_then(|manifest| manifest.files().get(inner.next_index).cloned())
+        else {
+            inner.finished = true;
+            return SessionRestoreStep::Done;
+        };
+        let index = inner.next_index;
+        // 同一路径或符号链接别名只恢复首个出现位置，不建立重复标签或重复后端文档。
+        if inner
+            .accepted_paths
+            .iter()
+            .any(|accepted| same_path_identity(accepted, &path))
+        {
+            inner.next_index += 1;
+            continue;
+        }
+        // 中断期间经普通 Open/Save As 已打开同一路径身份：映射到现有文档，不重复
+        // 读取或建立第二个后端文档；前端据此把清单索引映射到现有标签。
+        if let Some(document_id) = store.active_document_for_path(&path) {
+            inner.accepted_paths.push(path.clone());
+            inner.next_index = index + 1;
+            return SessionRestoreStep::AlreadyOpen {
+                document_id,
+                manifest_index: index,
+            };
+        }
+        // 有界化：确定要打开下一个文件时，先释放上一条尚未取回的候选缓冲——无论前端
+        // 行为如何，后端同时至多缓冲一个恢复文件；清单耗尽时最后一条保留供前端取回。
+        if let Some(buffered_id) = inner.buffered_document_id.take() {
+            store.discard_pending_content(&buffered_id);
+        }
+        return match document::open_document(&path) {
+            Ok(opened) => {
+                let trusted = trusted_from_descriptor(&opened.descriptor);
+                store.store_open(
+                    opened.descriptor.id.clone(),
+                    opened.content.into_bytes(),
+                    trusted,
+                );
+                inner.accepted_paths.push(path.clone());
+                inner.next_index = index + 1;
+                inner.buffered_document_id = Some(opened.descriptor.id.clone());
+                SessionRestoreStep::Item {
+                    descriptor: opened.descriptor,
+                    manifest_index: index,
+                }
+            }
+            Err(err) => {
+                inner.next_index = index + 1;
+                SessionRestoreStep::Failed {
+                    display_name: display_name_of(&path),
+                    error: DocumentCommandError::from_open_core(err),
+                }
+            }
+        };
+    }
+}
+
+/// 把前端投影写入清单：先在锁内从可信状态投影路径（未知/重复文档 id 或未列出的活动 id
+/// 一律拒绝，视为过期快照，不消费 generation），再按 generation 门禁原子写入。只有真实
+/// 写入失败返回稳定错误；文档状态不受影响。
+fn update_open_files_manifest_inner(
+    store: &DocumentStore,
+    manifests: &SessionManifestStore,
+    generation: u64,
+    document_ids: &[String],
+    active_document_id: Option<&str>,
+) -> Result<SessionManifestUpdateStatus, DocumentCommandError> {
+    let manifest = match store.project_restore_manifest(document_ids, active_document_id) {
+        Ok(manifest) => manifest,
+        Err(_) => return Ok(SessionManifestUpdateStatus::Rejected),
+    };
+    match manifests.update(generation, &manifest) {
+        Ok(ManifestUpdateOutcome::Written) => Ok(SessionManifestUpdateStatus::Written),
+        Ok(ManifestUpdateOutcome::Stale) => Ok(SessionManifestUpdateStatus::Stale),
+        Err(_) => Err(DocumentCommandError::new(
+            DocumentErrorCode::SessionManifestWriteFailed,
+            "open-files manifest could not be written",
+        )),
+    }
+}
+
+/// 启动恢复的逐项推进命令：只能读取 Rust 自有清单中的路径，前端不能提交任何路径。
+/// 首次调用返回清单概要，此后每次推进至多打开一个文件并进入候选缓冲（取回经既有二进制
+/// `read_document_content`）；文件 I/O 在阻塞线程执行，不冻结主线程。
+#[tauri::command]
+pub async fn restore_next_session_document(
+    app: tauri::AppHandle,
+) -> Result<SessionRestoreStep, DocumentCommandError> {
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let cursor = handle.state::<SessionRestoreCursor>();
+        let store = handle.state::<DocumentStore>();
+        // 清单存储不可用（应用数据目录解析失败）视同无可恢复清单，不阻塞启动。
+        match handle.try_state::<SessionManifestStore>() {
+            Some(manifests) => Ok(restore_session_step(&cursor, &store, &manifests)),
+            None => Ok(SessionRestoreStep::Done),
+        }
+    })
+    .await
+    .map_err(|_| {
+        DocumentCommandError::new(
+            DocumentErrorCode::ReadFailed,
+            "session restore worker could not complete",
+        )
+    })?
+}
+
+/// 前端在打开、另存为、关闭标签或活动标签变化后提交的清单投影更新。迟到 generation
+/// 与过期投影被静默忽略；只有真实写入失败返回错误，供前端显示非模态提示。
+#[tauri::command]
+pub async fn update_open_files_manifest(
+    app: tauri::AppHandle,
+    projection: SessionManifestProjection,
+) -> Result<SessionManifestUpdateStatus, DocumentCommandError> {
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = handle.state::<DocumentStore>();
+        // 清单存储不可用时按写入失败报告；文档状态不受影响。
+        let Some(manifests) = handle.try_state::<SessionManifestStore>() else {
+            return Err(DocumentCommandError::new(
+                DocumentErrorCode::SessionManifestWriteFailed,
+                "open-files manifest storage is unavailable",
+            ));
+        };
+        update_open_files_manifest_inner(
+            &store,
+            &manifests,
+            projection.generation,
+            &projection.document_ids,
+            projection.active_document_id.as_deref(),
+        )
+    })
+    .await
+    .map_err(|_| {
+        DocumentCommandError::new(
+            DocumentErrorCode::SessionManifestWriteFailed,
+            "open-files manifest worker could not complete",
+        )
+    })?
 }
 
 /// 采用最近一次外部变化复核建立的候选。内容变化只返回描述符，并把完整 UTF-8 内容
@@ -2469,6 +2804,396 @@ mod tests {
             byte_count: 3,
             read_only: false,
         }
+    }
+
+    #[test]
+    fn restore_manifest_projection_uses_trusted_paths_order_and_active_index() {
+        let store = DocumentStore::default();
+        let first = store.create_active(test_trusted("/tmp/first.txt"));
+        let second = store.create_active(test_trusted("/tmp/second.md"));
+
+        let projected = store
+            .project_restore_manifest(&[second.clone(), first.clone()], Some(&first))
+            .expect("project trusted paths");
+
+        assert_eq!(
+            projected.files(),
+            [
+                PathBuf::from("/tmp/second.md"),
+                PathBuf::from("/tmp/first.txt")
+            ]
+        );
+        assert_eq!(projected.active_index(), Some(1));
+    }
+
+    #[test]
+    fn restore_manifest_projection_rejects_unknown_duplicate_and_unlisted_active_ids() {
+        let store = DocumentStore::default();
+        let active = store.create_active(test_trusted("/tmp/active.txt"));
+
+        assert_eq!(
+            store.project_restore_manifest(&["missing".to_owned()], None),
+            Err(ManifestProjectionError::UnknownDocument)
+        );
+        assert_eq!(
+            store.project_restore_manifest(&[active.clone(), active.clone()], Some(&active)),
+            Err(ManifestProjectionError::DuplicateDocumentId)
+        );
+        assert_eq!(
+            store.project_restore_manifest(std::slice::from_ref(&active), Some("other")),
+            Err(ManifestProjectionError::ActiveDocumentNotInList)
+        );
+    }
+
+    #[test]
+    fn restore_steps_open_files_one_at_a_time_in_manifest_order() {
+        use crate::document::test_support::TestDir;
+        use crate::session_restore::{RestoreManifest, SessionManifestStore};
+
+        let dir = TestDir::new();
+        std::fs::write(dir.join("first.txt"), b"first").unwrap();
+        std::fs::write(dir.join("second.md"), b"second").unwrap();
+        let manifests = SessionManifestStore::at_path(dir.join("session.json"));
+        let manifest =
+            RestoreManifest::new(vec![dir.join("first.txt"), dir.join("second.md")], Some(1))
+                .unwrap();
+        manifests.update(1, &manifest).unwrap();
+
+        let cursor = SessionRestoreCursor::default();
+        let store = DocumentStore::default();
+
+        // 首次推进只读取清单概要，不打开文件。
+        assert_eq!(
+            restore_session_step(&cursor, &store, &manifests),
+            SessionRestoreStep::Started {
+                total: 2,
+                active_index: Some(1)
+            }
+        );
+        let SessionRestoreStep::Item {
+            descriptor: first,
+            manifest_index: 0,
+        } = restore_session_step(&cursor, &store, &manifests)
+        else {
+            panic!("first file must open");
+        };
+        assert_eq!(first.display_name, "first.txt");
+        // 内容进入候选缓冲，经既有二进制通道取回后提升为可信文档。
+        assert_eq!(store.take_content(&first.id), Some(b"first".to_vec()));
+        assert!(store.active_for(&first.id).is_some());
+
+        let SessionRestoreStep::Item {
+            descriptor: second,
+            manifest_index: 1,
+        } = restore_session_step(&cursor, &store, &manifests)
+        else {
+            panic!("second file must open");
+        };
+        assert_eq!(store.take_content(&second.id), Some(b"second".to_vec()));
+
+        assert_eq!(
+            restore_session_step(&cursor, &store, &manifests),
+            SessionRestoreStep::Done
+        );
+        // 一次性恢复：完成后继续推进不再重开文件。
+        assert_eq!(
+            restore_session_step(&cursor, &store, &manifests),
+            SessionRestoreStep::Done
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restore_steps_skip_duplicate_aliases_and_report_missing_failures() {
+        use crate::document::test_support::TestDir;
+        use crate::session_restore::{RestoreManifest, SessionManifestStore};
+        use std::os::unix::fs::symlink;
+
+        let dir = TestDir::new();
+        std::fs::write(dir.join("real.txt"), b"real").unwrap();
+        symlink(dir.join("real.txt"), dir.join("alias.txt")).unwrap();
+        let manifests = SessionManifestStore::at_path(dir.join("session.json"));
+        let manifest = RestoreManifest::new(
+            vec![
+                dir.join("real.txt"),
+                dir.join("missing.txt"),
+                dir.join("alias.txt"),
+            ],
+            None,
+        )
+        .unwrap();
+        manifests.update(1, &manifest).unwrap();
+
+        let cursor = SessionRestoreCursor::default();
+        let store = DocumentStore::default();
+        assert!(matches!(
+            restore_session_step(&cursor, &store, &manifests),
+            SessionRestoreStep::Started { .. }
+        ));
+        let SessionRestoreStep::Item { manifest_index, .. } =
+            restore_session_step(&cursor, &store, &manifests)
+        else {
+            panic!("real file must open");
+        };
+        assert_eq!(manifest_index, 0);
+        let SessionRestoreStep::Failed {
+            display_name,
+            error,
+        } = restore_session_step(&cursor, &store, &manifests)
+        else {
+            panic!("missing file must fail");
+        };
+        assert_eq!(display_name, "missing.txt");
+        assert!(matches!(error.code, DocumentErrorCode::ReadFailed));
+        // 符号链接别名被跳过，不产生重复项或重复失败。
+        assert_eq!(
+            restore_session_step(&cursor, &store, &manifests),
+            SessionRestoreStep::Done
+        );
+    }
+
+    #[test]
+    fn restore_steps_map_already_open_documents_instead_of_duplicating() {
+        use crate::document::test_support::TestDir;
+        use crate::session_restore::{RestoreManifest, SessionManifestStore};
+
+        let dir = TestDir::new();
+        std::fs::write(dir.join("a.txt"), b"alpha").unwrap();
+        std::fs::write(dir.join("b.txt"), b"beta").unwrap();
+        let manifests = SessionManifestStore::at_path(dir.join("session.json"));
+        let manifest =
+            RestoreManifest::new(vec![dir.join("a.txt"), dir.join("b.txt")], Some(1)).unwrap();
+        manifests.update(1, &manifest).unwrap();
+
+        let cursor = SessionRestoreCursor::default();
+        let store = DocumentStore::default();
+        assert!(matches!(
+            restore_session_step(&cursor, &store, &manifests),
+            SessionRestoreStep::Started { .. }
+        ));
+        let SessionRestoreStep::Item {
+            descriptor: first,
+            manifest_index: 0,
+        } = restore_session_step(&cursor, &store, &manifests)
+        else {
+            panic!("first file must open");
+        };
+        // 中断前第一项内容已被取回（提升为活动文档）。
+        assert_eq!(store.take_content(&first.id), Some(b"alpha".to_vec()));
+
+        // 中断：用户经普通 Open 打开下一清单文件 b（既有打开链路）。
+        let opened = open_selected_path(&dir.join("b.txt"), &store).expect("open b");
+        assert_eq!(store.take_content(&opened.id), Some(b"beta".to_vec()));
+
+        // Retry：b 不被重复打开，而是映射到现有文档。
+        assert_eq!(
+            restore_session_step(&cursor, &store, &manifests),
+            SessionRestoreStep::AlreadyOpen {
+                document_id: opened.id.clone(),
+                manifest_index: 1,
+            }
+        );
+        assert_eq!(
+            restore_session_step(&cursor, &store, &manifests),
+            SessionRestoreStep::Done
+        );
+        // Retry 完成后的投影含两个文档 id，不因路径重复被拒绝。
+        assert_eq!(
+            update_open_files_manifest_inner(
+                &store,
+                &manifests,
+                2,
+                &[first.id.clone(), opened.id.clone()],
+                Some(&opened.id),
+            ),
+            Ok(SessionManifestUpdateStatus::Written)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restore_steps_recognize_symlink_aliases_of_already_open_documents() {
+        use crate::document::test_support::TestDir;
+        use crate::session_restore::{RestoreManifest, SessionManifestStore};
+        use std::os::unix::fs::symlink;
+
+        let dir = TestDir::new();
+        std::fs::write(dir.join("real.txt"), b"real").unwrap();
+        symlink(dir.join("real.txt"), dir.join("alias.txt")).unwrap();
+        let manifests = SessionManifestStore::at_path(dir.join("session.json"));
+        let manifest = RestoreManifest::new(vec![dir.join("alias.txt")], None).unwrap();
+        manifests.update(1, &manifest).unwrap();
+
+        let cursor = SessionRestoreCursor::default();
+        let store = DocumentStore::default();
+        // 中断期间用户直接打开了真实路径。
+        let opened = open_selected_path(&dir.join("real.txt"), &store).expect("open real");
+        assert_eq!(store.take_content(&opened.id), Some(b"real".to_vec()));
+
+        assert!(matches!(
+            restore_session_step(&cursor, &store, &manifests),
+            SessionRestoreStep::Started { .. }
+        ));
+        assert_eq!(
+            restore_session_step(&cursor, &store, &manifests),
+            SessionRestoreStep::AlreadyOpen {
+                document_id: opened.id.clone(),
+                manifest_index: 0,
+            }
+        );
+        assert_eq!(
+            restore_session_step(&cursor, &store, &manifests),
+            SessionRestoreStep::Done
+        );
+    }
+
+    #[test]
+    fn restore_steps_keep_at_most_one_buffered_file_regardless_of_client() {
+        use crate::document::test_support::TestDir;
+        use crate::session_restore::{RestoreManifest, SessionManifestStore};
+
+        // 资源边界：即使调用方从不取回内容就连续推进，后端每次推进都先释放上一条
+        // 缓冲，任意时刻至多一个已打开文件占用内存。
+        let dir = TestDir::new();
+        let payload = vec![b'x'; 512 * 1024];
+        let names = ["big-a.bin", "big-b.bin", "big-c.bin"];
+        for name in names {
+            std::fs::write(dir.join(name), &payload).unwrap();
+        }
+        let manifests = SessionManifestStore::at_path(dir.join("session.json"));
+        let manifest =
+            RestoreManifest::new(names.iter().map(|name| dir.join(name)).collect(), None).unwrap();
+        manifests.update(1, &manifest).unwrap();
+
+        let cursor = SessionRestoreCursor::default();
+        let store = DocumentStore::default();
+        assert!(matches!(
+            restore_session_step(&cursor, &store, &manifests),
+            SessionRestoreStep::Started { total: 3, .. }
+        ));
+        let mut ids = Vec::new();
+        for expected in 0..names.len() {
+            match restore_session_step(&cursor, &store, &manifests) {
+                SessionRestoreStep::Item {
+                    descriptor,
+                    manifest_index,
+                } => {
+                    assert_eq!(manifest_index, expected);
+                    ids.push(descriptor.id);
+                }
+                step => panic!("unexpected step at {expected}: {step:?}"),
+            }
+        }
+        assert_eq!(
+            restore_session_step(&cursor, &store, &manifests),
+            SessionRestoreStep::Done
+        );
+        // 只有最后一条缓冲保留；此前未取回的候选均已在推进时释放。
+        for id in &ids[..ids.len() - 1] {
+            assert_eq!(store.take_content(id), None);
+        }
+        assert_eq!(
+            store.take_content(ids.last().unwrap()),
+            Some(payload.clone())
+        );
+    }
+
+    #[test]
+    fn restore_steps_finish_for_missing_or_invalid_manifests() {
+        use crate::document::test_support::TestDir;
+        use crate::session_restore::SessionManifestStore;
+
+        let dir = TestDir::new();
+        let manifests = SessionManifestStore::at_path(dir.join("session.json"));
+        let cursor = SessionRestoreCursor::default();
+        let store = DocumentStore::default();
+        assert_eq!(
+            restore_session_step(&cursor, &store, &manifests),
+            SessionRestoreStep::Done
+        );
+        // 一次性门禁已消费：即使清单随后出现也不再恢复。
+        std::fs::write(dir.join("session.json"), br#"{"version":1,"files":[]}"#).unwrap();
+        assert_eq!(
+            restore_session_step(&cursor, &store, &manifests),
+            SessionRestoreStep::Done
+        );
+
+        let invalid = SessionManifestStore::at_path(dir.join("broken.json"));
+        std::fs::write(dir.join("broken.json"), b"{not-json").unwrap();
+        assert_eq!(
+            restore_session_step(&SessionRestoreCursor::default(), &store, &invalid),
+            SessionRestoreStep::Done
+        );
+    }
+
+    #[test]
+    fn manifest_update_writes_projection_and_rejects_stale_or_expired_inputs() {
+        use crate::session_restore::{ManifestLoadOutcome, SessionManifestStore};
+
+        let dir = crate::document::test_support::TestDir::new();
+        let manifests = SessionManifestStore::at_path(dir.join("session.json"));
+        let store = DocumentStore::default();
+        let first = store.create_active(test_trusted("/tmp/first.txt"));
+        let second = store.create_active(test_trusted("/tmp/second.txt"));
+
+        assert_eq!(
+            update_open_files_manifest_inner(
+                &store,
+                &manifests,
+                3,
+                &[first.clone(), second.clone()],
+                Some(&second),
+            ),
+            Ok(SessionManifestUpdateStatus::Written)
+        );
+        // 迟到/重复 generation 被忽略，磁盘保持最新集合。
+        assert_eq!(
+            update_open_files_manifest_inner(&store, &manifests, 3, &[first.clone()], Some(&first)),
+            Ok(SessionManifestUpdateStatus::Stale)
+        );
+        // 过期投影（未知文档 id）被拒绝且不消费 generation；同代有效投影仍可写入。
+        assert_eq!(
+            update_open_files_manifest_inner(&store, &manifests, 4, &["gone".to_owned()], None),
+            Ok(SessionManifestUpdateStatus::Rejected)
+        );
+        assert_eq!(
+            update_open_files_manifest_inner(&store, &manifests, 4, &[first.clone()], Some(&first)),
+            Ok(SessionManifestUpdateStatus::Written)
+        );
+
+        match manifests.load() {
+            ManifestLoadOutcome::Ready(manifest) => {
+                assert_eq!(manifest.files(), [PathBuf::from("/tmp/first.txt")]);
+                assert_eq!(manifest.active_index(), Some(0));
+            }
+            other => panic!("expected a ready manifest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn manifest_update_reports_write_failures_without_touching_document_state() {
+        use crate::session_restore::SessionManifestStore;
+
+        let dir = crate::document::test_support::TestDir::new();
+        // 用普通文件占据父目录位置，使清单目录无法创建。
+        std::fs::write(dir.join("blocker"), b"file").unwrap();
+        let manifests = SessionManifestStore::at_path(dir.join("blocker/session.json"));
+        let store = DocumentStore::default();
+        let active = store.create_active(test_trusted("/tmp/kept.txt"));
+
+        let result = update_open_files_manifest_inner(
+            &store,
+            &manifests,
+            1,
+            std::slice::from_ref(&active),
+            Some(&active),
+        );
+        assert!(matches!(
+            result,
+            Err(ref error) if error.code == DocumentErrorCode::SessionManifestWriteFailed
+        ));
+        // 文档可信状态不受写入失败影响。
+        assert!(store.active_for(&active).is_some());
     }
 
     #[test]
