@@ -10,9 +10,75 @@
 
 ## 已承诺待办
 
+（无）
+
+## 最近完成
+
+### 自动换行 macOS 真实应用菜单与重启验收
+
+- **状态**：已完成
+- **开始日期**：2026-08-18
+- **完成日期**：2026-08-18
+- **Feature Spec**：`docs/features/editor-word-wrap.md`
+- **目标**：用户在 release `Textora.app` 中确认 `View > Word Wrap` 菜单勾选与编辑器一致、关闭后长行可横向滚动、重启后恢复选择，完成 Feature Spec 最后三项验收条件与文档收尾。
+- **范围**：真实应用菜单点击、窄窗口长行横向滚动视觉确认、重启恢复偏好；按实际结果勾选剩余验收条件并把 Feature Spec/README 改为已完成。
+- **非范围**：不新增设置项、快捷键或其他编辑器偏好；不做新的实现任务。
+- **依赖**：已完成的自动换行集成验收（自动化、release 构建与启动确认）。
+- **拆分检查**：仅包含人工真实验收与文档状态翻转。
+- **完成标准**：用户确认真实应用验收通过；Feature Spec 状态改为已完成且验收条件全部勾选；README 同步；`git diff --check` 通过。
+- **结果**：用户确认 release `Textora.app` 的 `View > Word Wrap` 菜单可用且勾选状态与编辑器一致；关闭自动换行后长行可横向滚动，再次开启后恢复软换行；退出并重启应用后能够恢复上次选择。Feature Spec 全部验收条件已勾选，README 与 backlog 状态同步为已完成。
+- **验证记录**：沿用前置集成验收已经通过的完整自动化、release 构建与启动验证；本任务的 macOS 真实菜单、长行横向滚动和重启恢复由用户于 2026-08-18 确认通过；文档更新后 `git diff --check` 通过。
+
+### 自动换行集成验收与文档收尾
+
+- **状态**：已完成（自动化、release 构建与启动确认；macOS 真实菜单/长行/重启验收由后续任务完成）
+- **开始日期**：2026-08-18
+- **完成日期**：2026-08-18
+- **Feature Spec**：`docs/features/editor-word-wrap.md`
+- **目标**：完成自动换行开关的组合验收：菜单勾选与编辑器一致、长行横向滚动、重启恢复与失败回退，并同步文档状态。
+- **范围**：完整自动化回归、`npm run tauri -- build`、bundle/权限核验、macOS release 真实应用菜单与长行/重启验收、Feature Spec/README/backlog 收尾；只做必要小修。
+- **非范围**：不新增设置项、快捷键或其他编辑器偏好。
+- **依赖**：已完成的全局偏好/持久化/菜单接入切片。
+- **拆分检查**：实现已交付，本任务只做组合验收与文档同步。
+- **完成标准**：Feature Spec 验收条件按真实结果勾选并改为已完成；完整验证链（含 release 构建与 macOS 真实验收）通过；`git diff --check` 通过。
+- **结果**：补齐两项映射验收条件的自动化：只读文档下菜单切换软换行仍生效且内容/只读徽标不变；菜单初始化命令失败时无阻塞提示、编辑器按前端偏好继续可编辑。完整回归、release 构建、bundle/权限核验与 release 启动确认完成（验证实例已清理）。本任务完成时，8 条可由自动化/代码确认的验收条件已勾选；菜单视觉、长行横向滚动与重启恢复因当前自动化环境无辅助访问权限（osascript -1719）留给后续人工验收任务，该后续任务现已完成。
+- **验证记录**：`cargo fmt --manifest-path src-tauri/Cargo.toml --check` 通过；`cargo test --manifest-path src-tauri/Cargo.toml` 通过（**163 passed / 0 failed**）；`npm run check` 通过（typecheck + vitest **456 passed / 0 failed**，App 换行偏好组 11 用例含新增只读切换与初始化失败回退）；`npm run build` 与 `npm run tauri -- build` 通过并生成 release `Textora.app`；bundle 校验 `CFBundleIdentifier=com.tsingmu.textora`、`CFBundleExecutable=textora`；`src-tauri/capabilities/` 无改动；release 应用可启动（`open -n` + `pgrep`）且验证实例已退出；`git diff --check` 通过。
+
+### 接入全局偏好、持久化与原生 View 菜单
+
+- **状态**：已完成
+- **开始日期**：2026-08-18
+- **完成日期**：2026-08-18
+- **Feature Spec**：`docs/features/editor-word-wrap.md`
+- **目标**：完成一个最小垂直切片，使菜单、当前编辑器、标签/模式切换和重启恢复一致；不新增其他设置。
+- **范围**：React 应用级 `wordWrapEnabled` 状态并传入所有 CodeMirror 源码编辑区；`localStorage` 键 `textora.wordWrapEnabled` 同步读取与 best-effort 写入；Rust 新增默认勾选但禁用的 `View > Word Wrap` check item、受限初始化命令与携带明确布尔值的单向菜单事件；启动门禁与失败回退按规格执行。
+- **非范围**：不新增其他编辑器偏好、第二个开关入口、快捷键、Rust 持久化文件或第三方依赖；完整回归与平台验收留给最终任务。
+- **依赖**：已完成的 CodeMirror 动态重配契约；已确认的菜单/状态/持久化协议。
+- **拆分检查**：本切片交付“菜单与编辑器一致并可重启恢复”的用户行为；release 构建与 macOS 真实菜单验收留给集成验收任务。
+- **完成标准**：自动化覆盖动态重配接入、菜单事件、持久化恢复、模式/标签边界和不触发内容更新；`cargo fmt --manifest-path src-tauri/Cargo.toml --check`、`cargo test --manifest-path src-tauri/Cargo.toml`、`npm run check`、`npm run build` 与 `git diff --check` 通过。
+- **结果**：前端新增 `src/wordWrapPreference.ts`（同步读取键 `textora.wordWrapEnabled`，只认 `"true"`/`"false"`，缺失/无效/抛错回退开启；best-effort 写入吞错）。App 以 `useState(readStoredWordWrapPreference)` 在首次渲染初始化阶段同步取得偏好并传入 `Editor.wordWrapEnabled`；启动 effect 按“先注册 `textora-word-wrap-changed` 监听、再调用受限布尔命令 `initialize_word_wrap_menu`”的门禁顺序同步菜单，初始化失败时菜单保持禁用、编辑器按前端值工作。运行期事件携带点击后切换的明确布尔值，前端直接采用并 best-effort 持久化（不自行取反）。Rust 在 View 菜单新增默认勾选但禁用的 `Word Wrap` check item（`textora-word-wrap`），`initialize_word_wrap_menu` 设置勾选并启用（不回写、不发事件）；菜单事件读取切换后的 `is_checked` 发送单向事件，emit 失败时恢复点击前勾选。新增 `src/test/localStorageStub.ts` 供 jsdom（opaque origin 无 localStorage）测试使用。
+- **验证记录**：`cargo fmt --manifest-path src-tauri/Cargo.toml --check` 通过；`cargo test --manifest-path src-tauri/Cargo.toml` 通过（**163 passed / 0 failed**）；`npm run check` 通过（typecheck + vitest **454 passed / 0 failed**，新增：`wordWrapPreference` 5 用例（默认/无效/禁用读取/读取抛错/规范写入与吞错）、`platform` 初始化命令布尔封装 1 用例、App 4 用例（默认开启且按存储偏好初始化菜单、存储 false 首帧生效无闪切、菜单事件切换+持久化+内容与脏状态不变、Preview 模式/退出/新建与切换标签后偏好持续生效））；`npm run build` 通过；`git diff --check` 通过。release 构建与 macOS 真实菜单/长行/重启验收留给集成验收任务。
+
+### 建立 CodeMirror 自动换行动态重配契约
+
+- **状态**：已完成
+- **开始日期**：2026-08-18
+- **完成日期**：2026-08-18
+- **Feature Spec**：`docs/features/editor-word-wrap.md`
+- **目标**：让单个 `Editor` 根据显式布尔偏好在软换行与横向滚动之间动态切换，且不重建编辑器或产生文档编辑事务。
+- **范围**：为 `Editor` 增加 `wordWrapEnabled` 输入和独立 `Compartment`；首次挂载按输入安装 `EditorView.lineWrapping` 或空扩展，后续属性变化只通过 compartment reconfigure；补充内容、`onChange`、脏状态上游契约、选区、撤销历史及同值不重复重配测试。
+- **非范围**：不接 App 全局状态、`localStorage`、原生菜单、Tauri 命令/事件或其他编辑器偏好；不执行 release 构建与 macOS 手工验收。
+- **依赖**：已确认的 `docs/features/editor-word-wrap.md`；现有 `availabilityRef` 与 `languageCompartmentRef` 动态重配模式。
+- **拆分检查**：本任务只交付可独立验证的 CodeMirror 底层显示契约；全局状态、持久化、原生菜单和启动同步留给下一垂直切片，完整回归与平台验收留给最终任务。
+- **完成标准**：新增聚焦测试通过；`npm run test -- Editor`、`npm run check`、`npm run build` 与 `git diff --check` 通过。
+- **结果**：`Editor` 新增 `wordWrapEnabled?: boolean`（默认 `true`）与独立 `wordWrapCompartmentRef`：首次挂载经 `wordWrapExtensionFor(enabled)` 安装 `EditorView.lineWrapping` 或空扩展，属性变化只经 compartment reconfigure 生效；`wordWrapAppliedRef` 保证同值（含挂载后首跑）不产生重复重配事务。切换不重建编辑器、不改内容、不触发 `onChange`（上游脏状态不受影响）、不增加撤销步骤、保留选区。未接 App 状态、持久化或菜单（留给下一任务），App 现有调用点经默认值保持行为不变。
+- **验证记录**：`npm run test -- Editor` 通过（**80 passed / 0 failed**，`Editor.test.tsx` 新增 5 用例：默认挂载启用软换行（`cm-lineWrapping`）、`false` 首挂即不装、切换往返保持同一编辑器实例与内容且 `onChange` 不再触发、输入后重配保留选区且一次 `undo` 直达输入前（重配不增撤销步骤）、同值重渲染零事务而值变化恰一次 reconfigure）；`npm run check` 通过（typecheck + vitest **444 passed / 0 failed**）；`npm run build` 通过；`git diff --check` 通过。下一任务「接入全局偏好、持久化与原生 View 菜单」进入已承诺待办。
+
 ### 确认编辑器自动换行开关规格
 
-- **状态**：待开始
+- **状态**：已完成
+- **开始日期**：2026-08-18
+- **完成日期**：2026-08-18
 - **Feature Spec**：`docs/features/editor-word-wrap.md`
 - **目标**：确认 macOS 原生 `View > Word Wrap` 的用户行为、全局持久化边界，以及原生菜单勾选状态与前端编辑器状态的单一同步协议。
 - **范围**：确认默认开启、适用的 CodeMirror 源码视图、模式/标签/重启边界、菜单文案与快捷键、持久化所有权、失败回退和验收条件；把草案改为已确认并拆出首个实现切片。
@@ -20,8 +86,8 @@
 - **依赖**：Backlog 中的真实查看需求；现有 `EditorView.lineWrapping`、Tauri 原生菜单事件桥接和源码权威架构不变量。
 - **拆分检查**：本任务只交付可执行规格和状态协议；编辑器动态重配、菜单/持久化接入与集成验收分别作为后续小任务。
 - **完成标准**：规格不存在影响实现的开放问题；任务拆分满足颗粒度规则；更新 `current.md` 使首个实现切片待开始；`git diff --check` 通过。
-
-## 最近完成
+- **结果**：规格状态由草案改为已确认。菜单固定为 `View > Word Wrap`、默认开启且首期无快捷键；React 应用级布尔状态作为运行期唯一编辑器状态，WebView `localStorage` 键 `textora.wordWrapEnabled` 负责持久化。启动采用“原生 check item 默认勾选但禁用 → 前端同步读取偏好并注册监听 → 受限命令设置勾选并启用”的门禁；运行期 Rust 读取 macOS 已切换后的勾选值并发送明确布尔事件，前端采用并 best-effort 持久化，事件失败时 Rust 恢复原勾选。规格已明确读取/写入、菜单初始化和事件发送失败保护，且无阻止实现的开放问题；首个 CodeMirror 动态重配任务进入待办。
+- **验证记录**：复核 `src/Editor.tsx` 的既有 Compartment 模式、`src-tauri/src/lib.rs` 的菜单事件桥接，以及锁定依赖 `tauri 2.11.5` / `muda 0.19.3` 的 macOS check item 点击与 `is_checked` / `set_checked` 行为；`git diff --check` 通过。本任务仅修改规格、当前任务、README 与 backlog 文档，未修改生产代码、实现性测试、依赖或构建配置，未运行测试或构建。保留未跟踪的 `samples/remove.md`，未修改。
 
 ### 修复保留缺失文件后“不保存”关闭报错
 

@@ -67,15 +67,22 @@ import {
   saveDocument,
   selectAndOpenDocument,
   updateOpenFilesManifest,
+  initializeWordWrapMenu,
   type DocumentCommandError,
   EXTERNAL_DOCUMENT_CHANGED_EVENT,
   type ExternalDocumentChanged,
+  WORD_WRAP_CHANGED_EVENT,
+  type WordWrapChanged,
   type EncodingChoice,
   type HealthStatus,
   type KnownDocumentPath,
   type LineEndingChoice,
   type SaveDirectoryGrant,
 } from "./platform";
+import {
+  persistWordWrapPreference,
+  readStoredWordWrapPreference,
+} from "./wordWrapPreference";
 import {
   collectMarkdownBlockMap,
   collectMarkdownMermaidBlocks,
@@ -218,6 +225,9 @@ function App() {
     string | null
   >(null);
   const [manifestNotice, setManifestNotice] = useState<string | null>(null);
+  // 应用级软换行偏好：首次渲染的状态初始化阶段同步读取，首个编辑器实例直接取得正确值。
+  const [wordWrapEnabled, setWordWrapEnabled] = useState(readStoredWordWrapPreference);
+  const wordWrapEnabledRef = useRef(wordWrapEnabled);
   const sessionRef = useRef(session);
   const tabSessionRef = useRef(tabSession);
   const fileMissingPendingRef = useRef<FileMissingTarget | null>(
@@ -254,6 +264,7 @@ function App() {
   sessionRef.current = session;
   tabSessionRef.current = tabSession;
   fileMissingPendingRef.current = fileMissingPending;
+  wordWrapEnabledRef.current = wordWrapEnabled;
 
   function setSession(
     update:
@@ -763,6 +774,41 @@ function App() {
     }
     refreshAllExternalDocuments(() => false);
   }, [sessionRestore]);
+
+  // 原生 View > Word Wrap 启动同步：菜单初始禁用，先注册监听再以受限命令设置勾选并
+  // 启用，避免同步期间丢失用户点击或双向覆盖。运行期 Rust 读取点击后切换的勾选值发
+  // 单向事件，前端采用并 best-effort 持久化；初始化失败时菜单保持禁用，下次启动重试。
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+    (async () => {
+      try {
+        const { listen } = await import("@tauri-apps/api/event");
+        if (cancelled) {
+          return;
+        }
+        const stopListening = await listen<WordWrapChanged>(
+          WORD_WRAP_CHANGED_EVENT,
+          ({ payload }) => {
+            setWordWrapEnabled(payload.enabled);
+            persistWordWrapPreference(payload.enabled);
+          },
+        );
+        if (cancelled) {
+          stopListening();
+          return;
+        }
+        unlisten = stopListening;
+        await initializeWordWrapMenu(wordWrapEnabledRef.current);
+      } catch {
+        // 初始化失败：编辑器仍按前端偏好工作，菜单保持禁用。
+      }
+    })();
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
 
   // 恢复完成后，标签集合（顺序/身份/路径）或活动标签变化即提交新的清单投影。generation
   // 进程内单调递增，迟到的异步提交在 Rust 侧被拒绝；写入失败只显示非模态提示。
@@ -2367,6 +2413,7 @@ function App() {
                   setSession((current) => updateDocumentContent(current, content));
                 }}
                 onScroll={handleEditorScroll}
+                wordWrapEnabled={wordWrapEnabled}
               />
             </div>
           )}

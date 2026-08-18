@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { tags } from "@lezer/highlight";
 import { startCompletion, currentCompletions } from "@codemirror/autocomplete";
 import { EditorView } from "@codemirror/view";
+import { undo } from "@codemirror/commands";
 import { Editor, textoraSyntaxHighlightStyle } from "./Editor";
 
 describe("Editor", () => {
@@ -184,6 +185,200 @@ describe("Editor", () => {
     expect(textoraSyntaxHighlightStyle.style([tags.meta])).toEqual(
       expect.any(String),
     );
+  });
+});
+
+describe("Editor word wrap reconfiguration", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+
+  beforeEach(() => {
+    (
+      globalThis as typeof globalThis & {
+        IS_REACT_ACT_ENVIRONMENT: boolean;
+      }
+    ).IS_REACT_ACT_ENVIRONMENT = true;
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  function viewOf(element: HTMLElement): EditorView {
+    const editor = element.querySelector<HTMLElement>(".cm-editor");
+    if (!editor) throw new Error(".cm-editor not found");
+    const view = EditorView.findFromDOM(editor);
+    if (!view) throw new Error("EditorView not found");
+    return view;
+  }
+
+  async function renderEditor(wordWrapEnabled?: boolean) {
+    const onChange = vi.fn();
+    await act(async () => {
+      root.render(
+        <Editor
+          content="long line"
+          disabled={false}
+          language="plain-text"
+          onChange={onChange}
+          wordWrapEnabled={wordWrapEnabled}
+        />,
+      );
+    });
+    return { onChange, editable: container.querySelector<HTMLElement>(".cm-content")! };
+  }
+
+  it("installs line wrapping by default", async () => {
+    await renderEditor();
+    expect(
+      container.querySelector(".cm-content")?.classList.contains("cm-lineWrapping"),
+    ).toBe(true);
+  });
+
+  it("honors a disabled preference on first mount", async () => {
+    await renderEditor(false);
+    expect(
+      container.querySelector(".cm-content")?.classList.contains("cm-lineWrapping"),
+    ).toBe(false);
+  });
+
+  it("toggles word wrap without replacing the editor instance or editing the document", async () => {
+    const { onChange, editable } = await renderEditor(true);
+    expect(editable.classList.contains("cm-lineWrapping")).toBe(true);
+
+    await act(async () => {
+      root.render(
+        <Editor
+          content="long line"
+          disabled={false}
+          language="plain-text"
+          onChange={onChange}
+          wordWrapEnabled={false}
+        />,
+      );
+    });
+    expect(container.querySelector(".cm-content")).toBe(editable);
+    expect(editable.classList.contains("cm-lineWrapping")).toBe(false);
+    expect(container.querySelector(".cm-line")?.textContent).toBe("long line");
+    expect(onChange).not.toHaveBeenCalled();
+
+    await act(async () => {
+      root.render(
+        <Editor
+          content="long line"
+          disabled={false}
+          language="plain-text"
+          onChange={onChange}
+          wordWrapEnabled
+        />,
+      );
+    });
+    expect(container.querySelector(".cm-content")).toBe(editable);
+    expect(editable.classList.contains("cm-lineWrapping")).toBe(true);
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("keeps selection and undo history across word wrap reconfiguration", async () => {
+    const onChange = vi.fn();
+    await act(async () => {
+      root.render(
+        <Editor
+          content=""
+          disabled={false}
+          language="plain-text"
+          onChange={onChange}
+          wordWrapEnabled
+        />,
+      );
+    });
+    const view = viewOf(container);
+    container.querySelector<HTMLElement>(".cm-content")?.focus();
+    await act(async () => {
+      view.dispatch({
+        changes: { from: 0, insert: "hello" },
+        userEvent: "input.type",
+      });
+      view.dispatch({ selection: { anchor: 2, head: 5 } });
+    });
+    // 打字本身触发一次 onChange；后续重配不得再触发（上游脏状态契约）。
+    expect(onChange).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      root.render(
+        <Editor
+          content="hello"
+          disabled={false}
+          language="plain-text"
+          onChange={onChange}
+          wordWrapEnabled={false}
+        />,
+      );
+    });
+
+    expect(view.state.doc.toString()).toBe("hello");
+    expect(view.state.selection.main.from).toBe(2);
+    expect(view.state.selection.main.to).toBe(5);
+    expect(onChange).toHaveBeenCalledTimes(1);
+
+    // 一次撤销直接回到输入前内容：重配没有增加任何撤销步骤。
+    let undone = false;
+    await act(async () => {
+      undone = undo(view);
+    });
+    expect(undone).toBe(true);
+    expect(view.state.doc.toString()).toBe("");
+  });
+
+  it("skips reconfiguration when the preference value is unchanged", async () => {
+    const onChange = vi.fn();
+    await act(async () => {
+      root.render(
+        <Editor
+          content="long line"
+          disabled={false}
+          language="plain-text"
+          onChange={onChange}
+          wordWrapEnabled
+        />,
+      );
+    });
+    const view = viewOf(container);
+    const dispatchSpy = vi.spyOn(view, "dispatch");
+
+    // 同值重渲染（含挂载后首跑）不产生任何重配事务。
+    await act(async () => {
+      root.render(
+        <Editor
+          content="long line"
+          disabled={false}
+          language="plain-text"
+          onChange={onChange}
+          wordWrapEnabled
+        />,
+      );
+    });
+    expect(dispatchSpy).not.toHaveBeenCalled();
+
+    await act(async () => {
+      root.render(
+        <Editor
+          content="long line"
+          disabled={false}
+          language="plain-text"
+          onChange={onChange}
+          wordWrapEnabled={false}
+        />,
+      );
+    });
+    expect(dispatchSpy).toHaveBeenCalledTimes(1);
+    expect(
+      container.querySelector(".cm-content")?.classList.contains("cm-lineWrapping"),
+    ).toBe(false);
+    expect(onChange).not.toHaveBeenCalled();
   });
 });
 

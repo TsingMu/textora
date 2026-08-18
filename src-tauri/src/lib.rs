@@ -2,7 +2,9 @@ use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{
     Emitter, Manager,
-    menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu},
+    menu::{
+        AboutMetadata, CheckMenuItem, Menu, MenuItem, MenuItemKind, PredefinedMenuItem, Submenu,
+    },
 };
 
 pub mod document;
@@ -27,6 +29,15 @@ struct ExitGuard {
 const APP_QUIT_MENU_ID: &str = "textora-app-quit";
 const APP_EXIT_REQUESTED_EVENT: &str = "textora-app-exit-requested";
 const MAIN_WINDOW_LABEL: &str = "main";
+const APP_WORD_WRAP_MENU_ID: &str = "textora-word-wrap";
+const WORD_WRAP_CHANGED_EVENT: &str = "textora-word-wrap-changed";
+
+/// 原生 View > Word Wrap 切换事件载荷：携带点击后切换的明确勾选值，前端直接采用。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WordWrapChanged {
+    enabled: bool,
+}
 
 #[tauri::command]
 fn health_check() -> HealthStatus {
@@ -44,6 +55,32 @@ fn request_app_exit(app: tauri::AppHandle, guard: tauri::State<'_, ExitGuard>) {
         .programmatic_exit_requested
         .store(true, Ordering::SeqCst);
     app.exit(0);
+}
+
+/// 按 View 子菜单中的固定 id 取出 Word Wrap check item。
+fn word_wrap_menu_item(app_handle: &tauri::AppHandle) -> Option<CheckMenuItem<tauri::Wry>> {
+    let menu = app_handle.menu()?;
+    let view_submenu = menu.items().ok()?.into_iter().find_map(|kind| match kind {
+        MenuItemKind::Submenu(sub) if sub.text().ok().as_deref() == Some("View") => Some(sub),
+        _ => None,
+    })?;
+    match view_submenu.get(APP_WORD_WRAP_MENU_ID)? {
+        MenuItemKind::Check(item) => Some(item),
+        _ => None,
+    }
+}
+
+/// 前端在注册 `textora-word-wrap-changed` 监听并同步偏好后调用：把菜单勾选设置为当前
+/// 偏好并启用菜单。只接受布尔值，不回写前端偏好、不产生菜单事件；失败时菜单保持禁用，
+/// 下次应用启动重新尝试。
+#[tauri::command]
+fn initialize_word_wrap_menu(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    let item =
+        word_wrap_menu_item(&app).ok_or_else(|| "Word Wrap menu item is unavailable".to_owned())?;
+    item.set_checked(enabled)
+        .map_err(|error| error.to_string())?;
+    item.set_enabled(true).map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 /// 用户发起的退出一律先拦截并交给前端判断，避免依赖前端异步同步的保护状态在时序窗口内
@@ -106,6 +143,15 @@ fn build_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wr
         true,
         Some("CmdOrCtrl+Q"),
     )?;
+    // 门禁：默认勾选但禁用，前端完成事件监听注册与偏好同步后经受限命令启用。
+    let word_wrap_item = CheckMenuItem::with_id(
+        app_handle,
+        APP_WORD_WRAP_MENU_ID,
+        "Word Wrap",
+        false,
+        true,
+        None::<&str>,
+    )?;
     let window_menu = Submenu::with_id_and_items(
         app_handle,
         "Window",
@@ -162,7 +208,11 @@ fn build_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wr
                 app_handle,
                 "View",
                 true,
-                &[&PredefinedMenuItem::fullscreen(app_handle, None)?],
+                &[
+                    &word_wrap_item,
+                    &PredefinedMenuItem::separator(app_handle)?,
+                    &PredefinedMenuItem::fullscreen(app_handle, None)?,
+                ],
             )?,
             &window_menu,
             &help_menu,
@@ -192,8 +242,24 @@ pub fn run() {
         })
         .menu(build_app_menu)
         .on_menu_event(|app_handle, event| {
-            if event.id().as_ref() == APP_QUIT_MENU_ID {
+            let id = event.id().as_ref();
+            if id == APP_QUIT_MENU_ID {
                 emit_app_exit_requested(app_handle);
+            } else if id == APP_WORD_WRAP_MENU_ID {
+                // macOS check item 点击时已先切换自身勾选；读取切换后的值单向通知前端。
+                let Some(item) = word_wrap_menu_item(app_handle) else {
+                    return;
+                };
+                let Ok(enabled) = item.is_checked() else {
+                    return;
+                };
+                if app_handle
+                    .emit(WORD_WRAP_CHANGED_EVENT, WordWrapChanged { enabled })
+                    .is_err()
+                {
+                    // 事件发送失败：恢复点击前勾选，前端状态保持不变。
+                    let _ = item.set_checked(!enabled);
+                }
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -216,7 +282,8 @@ pub fn run() {
             ipc::force_overwrite,
             ipc::check_target_exists,
             ipc::close_document,
-            request_app_exit
+            request_app_exit,
+            initialize_word_wrap_menu
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

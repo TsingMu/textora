@@ -20,6 +20,7 @@ import {
   prepareSaveAs,
   previewSaveTarget,
   refreshExternalDocument,
+  initializeWordWrapMenu,
   restoreNextSessionDocument,
   retryExternalReload,
   saveAsAt,
@@ -246,6 +247,14 @@ describe("session restore IPC", () => {
     invokeMock.mockResolvedValue({ kind: "done" });
     await expect(restoreNextSessionDocument()).resolves.toEqual({ kind: "done" });
     expect(invokeMock).toHaveBeenCalledWith("restore_next_session_document");
+  });
+
+  it("initializes the word wrap menu with a restricted boolean only", async () => {
+    invokeMock.mockResolvedValue(undefined);
+    await initializeWordWrapMenu(false);
+    expect(invokeMock).toHaveBeenCalledWith("initialize_word_wrap_menu", {
+      enabled: false,
+    });
   });
 
   it("submits projections with trusted document ids and a monotonic generation", async () => {

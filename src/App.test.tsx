@@ -45,6 +45,7 @@ const tauriEventMock = vi.hoisted(() => ({
         },
       ) => void)
     | undefined,
+  wordWrapHandler: undefined as ((payload: { enabled: boolean }) => void) | undefined,
   unlisten: vi.fn(),
 }));
 const mermaidPreviewMock = vi.hoisted(() => ({
@@ -127,12 +128,18 @@ vi.mock("@tauri-apps/api/event", () => ({
       tauriEventMock.exitRequestedHandler = () => handler({ payload: null });
     } else if (event === "textora-external-document-changed") {
       tauriEventMock.externalChangeHandler = (payload) => handler({ payload });
+    } else if (event === "textora-word-wrap-changed") {
+      tauriEventMock.wordWrapHandler = (payload) => handler({ payload });
     }
     return tauriEventMock.unlisten;
   },
 }));
 vi.mock("./mermaidPreview", () => mermaidPreviewMock);
 import App from "./App";
+import {
+  installLocalStorageStub,
+  removeLocalStorageStub,
+} from "./test/localStorageStub";
 
 function setupInvoke() {
   mermaidPreviewMock.renderMermaidPreview.mockClear();
@@ -160,6 +167,9 @@ function setupInvoke() {
       return buffer;
     }
     if (cmd === "request_app_exit") {
+      return undefined;
+    }
+    if (cmd === "initialize_word_wrap_menu") {
       return undefined;
     }
     if (cmd === "prepare_save_as") {
@@ -228,6 +238,7 @@ function resetTauriWindowMock() {
   tauriWindowMock.unlisten.mockReset();
   tauriEventMock.exitRequestedHandler = undefined;
   tauriEventMock.externalChangeHandler = undefined;
+  tauriEventMock.wordWrapHandler = undefined;
   tauriEventMock.unlisten.mockReset();
 }
 
@@ -6791,5 +6802,247 @@ describe("App session restore", () => {
       notice?.querySelector<HTMLButtonElement>(".notice-dismiss")?.click();
     });
     expect(container.querySelector(".notice-session")).toBeNull();
+  });
+});
+
+describe("App word wrap preference", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+  let storage: Storage;
+
+  beforeEach(() => {
+    (
+      globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
+    ).IS_REACT_ACT_ENVIRONMENT = true;
+    invokeMock.mockReset();
+    resetTauriWindowMock();
+    setupInvoke();
+    storage = installLocalStorageStub();
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+    removeLocalStorageStub();
+  });
+
+  function hasLineWrapping(): boolean {
+    return (
+      container.querySelector(".cm-content")?.classList.contains("cm-lineWrapping") ??
+      false
+    );
+  }
+
+  async function emitWordWrapEvent(enabled: boolean) {
+    await vi.waitFor(() => {
+      expect(tauriEventMock.wordWrapHandler).toBeTypeOf("function");
+    });
+    await act(async () => {
+      tauriEventMock.wordWrapHandler?.({ enabled });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  }
+
+  function menuInitCalls(): unknown[][] {
+    return invokeMock.mock.calls.filter((call) => call[0] === "initialize_word_wrap_menu");
+  }
+
+  it("enables line wrapping by default and initializes the menu with the stored preference", async () => {
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    expect(hasLineWrapping()).toBe(true);
+    await vi.waitFor(() => {
+      expect(menuInitCalls()).toHaveLength(1);
+    });
+    expect(menuInitCalls()[0]).toEqual([
+      "initialize_word_wrap_menu",
+      { enabled: true },
+    ]);
+  });
+
+  it("applies a disabled stored preference on first paint without remount flash", async () => {
+    storage.setItem("textora.wordWrapEnabled", "false");
+
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    expect(hasLineWrapping()).toBe(false);
+    await vi.waitFor(() => {
+      expect(menuInitCalls()).toHaveLength(1);
+    });
+    expect(menuInitCalls()[0]).toEqual([
+      "initialize_word_wrap_menu",
+      { enabled: false },
+    ]);
+  });
+
+  it("adopts menu toggle events, persists, and keeps content and dirty state untouched", async () => {
+    await act(async () => {
+      root.render(<App />);
+    });
+    const editable = container.querySelector<HTMLElement>(".cm-content")!;
+    await act(async () => {
+      editable.textContent = "keep";
+      editable.dispatchEvent(
+        new InputEvent("input", {
+          bubbles: true,
+          inputType: "insertText",
+          data: "keep",
+        }),
+      );
+      await Promise.resolve();
+    });
+    expect(container.querySelector(".statusbar")?.textContent).toContain("Modified");
+
+    await emitWordWrapEvent(false);
+
+    expect(hasLineWrapping()).toBe(false);
+    expect(storage.getItem("textora.wordWrapEnabled")).toBe("false");
+    expect(container.querySelector(".cm-line")?.textContent).toBe("keep");
+    expect(container.querySelector(".statusbar")?.textContent).toContain("Modified");
+
+    await emitWordWrapEvent(true);
+
+    expect(hasLineWrapping()).toBe(true);
+    expect(storage.getItem("textora.wordWrapEnabled")).toBe("true");
+    expect(container.querySelector(".cm-line")?.textContent).toBe("keep");
+  });
+
+  it("keeps the preference across mode and tab switches", async () => {    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        return {
+          id: "doc-md",
+          path: "/tmp/notes.md",
+          displayName: "notes.md",
+          byteCount: 4,
+          encoding: "utf8",
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 4, sha256: "md" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode("# hi").buffer;
+      }
+      if (cmd === "initialize_word_wrap_menu") {
+        return undefined;
+      }
+      if (cmd === "refresh_external_document") {
+        return null;
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await act(async () => {
+      root.render(<App />);
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    // Preview 模式下仍可切换偏好：左侧源码区立即生效。
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".markdown-preview-toggle")?.click();
+    });
+    expect(container.querySelector(".markdown-preview-pane")).not.toBeNull();
+    expect(hasLineWrapping()).toBe(true);
+
+    await emitWordWrapEvent(false);
+    expect(hasLineWrapping()).toBe(false);
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".markdown-preview-toggle")?.click();
+    });
+    expect(container.querySelector(".markdown-preview-pane")).toBeNull();
+    expect(hasLineWrapping()).toBe(false);
+
+    // 新建标签与标签切换后同一偏好继续生效。
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".new-tab-button")?.click();
+    });
+    expect(hasLineWrapping()).toBe(false);
+    await act(async () => {
+      container.querySelectorAll<HTMLButtonElement>(".document-tab-select")[0]?.click();
+    });
+    expect(hasLineWrapping()).toBe(false);
+    expect(storage.getItem("textora.wordWrapEnabled")).toBe("false");
+  });
+
+  it("toggles word wrap while the active document is read-only", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        return {
+          id: "doc-ro",
+          path: "/tmp/readonly.txt",
+          displayName: "readonly.txt",
+          byteCount: 4,
+          encoding: "utf8",
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 4, sha256: "ro" },
+          readOnly: true,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode("keep").buffer;
+      }
+      if (cmd === "initialize_word_wrap_menu") {
+        return undefined;
+      }
+      if (cmd === "refresh_external_document") {
+        return null;
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await act(async () => {
+      root.render(<App />);
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    expect(container.querySelector(".readonly-badge")).not.toBeNull();
+
+    await emitWordWrapEvent(false);
+
+    expect(hasLineWrapping()).toBe(false);
+    expect(container.querySelector(".cm-line")?.textContent).toBe("keep");
+    expect(container.querySelector(".readonly-badge")).not.toBeNull();
+  });
+
+  it("keeps the editor working when menu initialization fails", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "initialize_word_wrap_menu") {
+        throw new Error("menu unavailable");
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    await vi.waitFor(() => {
+      expect(menuInitCalls()).toHaveLength(1);
+    });
+    // 初始化失败：无阻塞提示，编辑器仍按前端偏好工作且可编辑。
+    expect(hasLineWrapping()).toBe(true);
+    expect(container.querySelector(".notice-session")).toBeNull();
+    const editable = container.querySelector<HTMLElement>(".cm-content");
+    expect(editable?.getAttribute("contenteditable")).toBe("true");
   });
 });

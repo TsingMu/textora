@@ -38,6 +38,18 @@ export type OpenDocumentSelection =
 
 export const EXTERNAL_DOCUMENT_CHANGED_EVENT = "textora-external-document-changed";
 
+export const WORD_WRAP_CHANGED_EVENT = "textora-word-wrap-changed";
+
+/** 原生 `View > Word Wrap` 切换事件载荷：Rust 读取点击后切换的勾选值。 */
+export type WordWrapChanged = {
+  enabled: boolean;
+};
+
+/** 前端注册菜单事件监听并同步偏好后调用：设置菜单勾选并启用菜单（受限布尔命令）。 */
+export async function initializeWordWrapMenu(enabled: boolean): Promise<void> {
+  return invoke<void>("initialize_word_wrap_menu", { enabled });
+}
+
 export type ExternalDocumentChanged = {
   documentId: string;
   kind: "content" | "metadata" | "missing" | "reloadFailed";

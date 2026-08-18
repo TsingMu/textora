@@ -32,6 +32,8 @@ type EditorProps = {
   onChange: (content: string) => void;
   /** 源码区主动滚动时回调当前顶部可见源码行（0-based）；无法确定时为 `null`。 */
   onScroll?: (topLine: number | null) => void;
+  /** 是否软换行；`false` 时每个逻辑行保持单行并允许横向滚动。只改变显示，不改文档。 */
+  wordWrapEnabled?: boolean;
 };
 
 export type EditorHandle = {
@@ -431,6 +433,11 @@ function editorExtensionsForLanguage(language: LanguageMode): Extension {
   return extensions;
 }
 
+/** 软换行扩展内容：开启装 `EditorView.lineWrapping`，关闭装空扩展（横向滚动）。 */
+function wordWrapExtensionFor(enabled: boolean): Extension {
+  return enabled ? EditorView.lineWrapping : [];
+}
+
 export const textoraSyntaxHighlightStyle = HighlightStyle.define([
   { tag: tags.keyword, color: "var(--syntax-keyword)" },
   { tag: [tags.atom, tags.bool, tags.number], color: "var(--syntax-atom)" },
@@ -455,7 +462,7 @@ export const textoraSyntaxHighlightStyle = HighlightStyle.define([
 ]);
 
 export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(
-  { content, disabled = false, language, onChange, onScroll },
+  { content, disabled = false, language, onChange, onScroll, wordWrapEnabled = true },
   ref,
 ) {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -465,7 +472,9 @@ export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(
   const isSyncingContentRef = useRef(false);
   const availabilityRef = useRef(new Compartment());
   const languageCompartmentRef = useRef(new Compartment());
+  const wordWrapCompartmentRef = useRef(new Compartment());
   const languageRef = useRef(language);
+  const wordWrapAppliedRef = useRef(wordWrapEnabled);
 
   onChangeRef.current = onChange;
   onScrollRef.current = onScroll;
@@ -527,7 +536,7 @@ export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(
           EditorView.editable.of(!disabled),
         ]),
         keymap.of([...defaultKeymap, ...historyKeymap]),
-        EditorView.lineWrapping,
+        wordWrapCompartmentRef.current.of(wordWrapExtensionFor(wordWrapEnabled)),
         EditorView.contentAttributes.of({
           "aria-label": "Text editor",
           spellcheck: "false",
@@ -633,6 +642,21 @@ export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(
       ),
     });
   }, [language]);
+
+  // 软换行偏好只通过 compartment 重配生效：不重建编辑器、不改内容/撤销/选区；同值跳过，
+  // 避免挂载后与初值相同的重复重配事务。
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view || wordWrapAppliedRef.current === wordWrapEnabled) {
+      return;
+    }
+    wordWrapAppliedRef.current = wordWrapEnabled;
+    view.dispatch({
+      effects: wordWrapCompartmentRef.current.reconfigure(
+        wordWrapExtensionFor(wordWrapEnabled),
+      ),
+    });
+  }, [wordWrapEnabled]);
 
   return <div className="editor-host" ref={hostRef} />;
 });
