@@ -234,6 +234,79 @@ textarea {
   min-width: 0;
 }
 
+.editor-with-ruler {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+}
+
+.editor-with-ruler > .editor-host {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+}
+
+/* 标尺已承担顶部定位与分隔；显示标尺时去掉源码区原有的 20px 顶部留白。 */
+.editor-with-ruler.has-column-ruler .cm-content {
+  padding-top: 0;
+}
+
+/* CJK/emoji 回退字形的原生 advance 通常不是主等宽字体的精确两倍。 */
+.cm-wide-display-cluster {
+  display: inline-block;
+  width: 2ch;
+  vertical-align: baseline;
+}
+
+/* 横向列标尺：刻度位置全部由 JS 按列号计算，样式只负责层级与外观。 */
+.column-ruler {
+  position: relative;
+  flex: none;
+  height: 18px;
+  overflow: hidden;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface);
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 9px;
+  line-height: 1;
+  color: var(--text-muted);
+  user-select: none;
+}
+
+.column-ruler-tick {
+  position: absolute;
+  top: 0;
+  width: 1px;
+}
+
+.column-ruler-tick.is-base {
+  bottom: auto;
+  height: 5px;
+  background: var(--border-subtle);
+}
+
+.column-ruler-tick.is-mid {
+  bottom: auto;
+  height: 9px;
+  background: var(--text-muted);
+}
+
+.column-ruler-tick.is-major {
+  bottom: 0;
+  height: 100%;
+  background: var(--text-muted);
+}
+
+/* 数字相对刻度偏移绘制，不改变相邻刻度间距。 */
+.column-ruler-label {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  white-space: nowrap;
+}
+
 .editor-panel.has-markdown-preview,
 .editor-panel.has-mermaid-preview {
   display: grid;

@@ -5,9 +5,19 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { tags } from "@lezer/highlight";
 import { startCompletion, currentCompletions } from "@codemirror/autocomplete";
+import { EditorSelection } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { undo } from "@codemirror/commands";
 import { Editor, textoraSyntaxHighlightStyle } from "./Editor";
+
+// jsdom 不实现 Range 几何。CodeMirror 以 requestAnimationFrame 调度文本测量，
+// 缺失的 getClientRects 会在断言或卸载之后以非确定性未处理错误浮出。
+if (!("getClientRects" in Range.prototype)) {
+  Object.defineProperty(Range.prototype, "getClientRects", {
+    configurable: true,
+    value: () => [],
+  });
+}
 
 describe("Editor", () => {
   let container: HTMLDivElement;
@@ -62,6 +72,43 @@ describe("Editor", () => {
     expect(container.querySelector(".cm-content")).toBe(editable);
     expect(document.activeElement).toBe(editable);
     expect(container.querySelector(".cm-line")?.textContent).toBe("a");
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("wraps wide grapheme clusters in two-column visual cells", async () => {
+    const onChange = vi.fn();
+    await act(async () => {
+      root.render(
+        <Editor
+          content="测试a👍"
+          disabled={false}
+          language="plain-text"
+          onChange={onChange}
+        />,
+      );
+    });
+
+    const wideCells = Array.from(
+      container.querySelectorAll<HTMLElement>(".cm-wide-display-cluster"),
+    );
+    expect(wideCells.map((cell) => cell.textContent)).toEqual(["测", "试", "👍"]);
+    expect(container.querySelector(".cm-line")?.textContent).toBe("测试a👍");
+
+    await act(async () => {
+      root.render(
+        <Editor
+          content="a中"
+          disabled={false}
+          language="plain-text"
+          onChange={onChange}
+        />,
+      );
+    });
+    expect(
+      Array.from(
+        container.querySelectorAll<HTMLElement>(".cm-wide-display-cluster"),
+      ).map((cell) => cell.textContent),
+    ).toEqual(["中"]);
     expect(onChange).not.toHaveBeenCalled();
   });
 
@@ -333,6 +380,143 @@ describe("Editor word wrap reconfiguration", () => {
     expect(view.state.doc.toString()).toBe("");
   });
 
+  it("shows the column ruler only while word wrap is disabled", async () => {
+    const { onChange, editable } = await renderEditor(true);
+    expect(container.querySelector(".column-ruler")).toBeNull();
+
+    await renderEditor(false);
+    expect(container.querySelector(".column-ruler")).not.toBeNull();
+    expect(container.querySelector(".editor-with-ruler")?.classList).toContain(
+      "has-column-ruler",
+    );
+    // 标尺出现不重建编辑器实例。
+    expect(container.querySelector(".cm-content")).toBe(editable);
+
+    await renderEditor(true);
+    expect(container.querySelector(".column-ruler")).toBeNull();
+    expect(container.querySelector(".editor-with-ruler")?.classList).not.toContain(
+      "has-column-ruler",
+    );
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("keeps the ruler empty rather than crashing when layout is unmeasurable", async () => {
+    await renderEditor(false);
+    const ruler = container.querySelector(".column-ruler");
+    expect(ruler).not.toBeNull();
+    // jsdom 无布局：度量守卫返回空刻度而不是异常。
+    expect(ruler?.querySelector(".column-ruler-tick")).toBeNull();
+  });
+
+  it("aligns column 1 to the actual line insertion point rather than the content box", async () => {
+    await renderEditor(false);
+    const view = viewOf(container);
+    vi.spyOn(view, "defaultCharacterWidth", "get").mockReturnValue(10);
+    view.scrollDOM.getBoundingClientRect = () =>
+      ({ left: 100, width: 500 }) as DOMRect;
+    view.contentDOM.getBoundingClientRect = () =>
+      ({ left: 140 }) as DOMRect;
+    const coordsAtPosSpy = vi.spyOn(view, "coordsAtPos").mockReturnValue({
+      left: 148,
+      right: 148,
+      top: 0,
+      bottom: 20,
+    });
+
+    await act(async () => {
+      view.scrollDOM.dispatchEvent(new Event("scroll"));
+      await Promise.resolve();
+    });
+
+    expect(coordsAtPosSpy).toHaveBeenCalledWith(0);
+    expect(
+      container.querySelector<HTMLElement>(".column-ruler-tick")?.style.left,
+    ).toBe("58px");
+  });
+
+  it("realigns the ruler when the line-number gutter widens as the line count grows", async () => {
+    // 布局桩：可控矩形 + 手动触发的 ResizeObserver（jsdom 两者都没有）。
+    const observed: Element[] = [];
+    const observerCallbacks: ResizeObserverCallback[] = [];
+    class FakeResizeObserver {
+      constructor(callback: ResizeObserverCallback) {
+        observerCallbacks.push(callback);
+      }
+      observe(target: Element) {
+        observed.push(target);
+      }
+      unobserve() {}
+      disconnect() {}
+    }
+    (
+      window as unknown as { ResizeObserver: unknown }
+    ).ResizeObserver = FakeResizeObserver;
+
+    try {
+      const onChange = vi.fn();
+      const nineLines = "1\n2\n3\n4\n5\n6\n7\n8\n9";
+      await act(async () => {
+        root.render(
+          <Editor
+            content={nineLines}
+            disabled={false}
+            language="plain-text"
+            onChange={onChange}
+            wordWrapEnabled={false}
+          />,
+        );
+      });
+      const view = viewOf(container);
+      const charWidthSpy = vi
+        .spyOn(view, "defaultCharacterWidth", "get")
+        .mockReturnValue(10);
+      let insertionLeft = 40;
+      view.scrollDOM.getBoundingClientRect = () =>
+        ({ left: 0, width: 500 }) as DOMRect;
+      vi.spyOn(view, "coordsAtPos").mockImplementation(() => ({
+        left: insertionLeft,
+        right: insertionLeft,
+        top: 0,
+        bottom: 20,
+      }));
+
+      const fireResizeObservers = () =>
+        act(async () => {
+          for (const callback of observerCallbacks) {
+            callback([], {} as ResizeObserver);
+          }
+          await Promise.resolve();
+        });
+
+      await fireResizeObservers();
+      const firstTick = () =>
+        container.querySelector<HTMLElement>(".column-ruler-tick");
+      expect(firstTick()?.style.left).toBe("50px");
+
+      // 模拟行数 9→10 后 gutter 变宽：CodeMirror 的行数布局不是本用例的验证目标，
+      // 直接改变内容左边界并触发 gutter observer，避免真实文档替换遗留异步 geometry update。
+      insertionLeft = 48;
+      await fireResizeObservers();
+
+      // 标尺第 1 列跟随新的 gutter 宽度重新对齐。
+      expect(firstTick()?.style.left).toBe("58px");
+      // gutter 被纳入观察：其宽度变化能触发重测。
+      expect(
+        observed.some((element) => element.classList.contains("cm-gutters")),
+      ).toBe(true);
+      expect(charWidthSpy).toHaveBeenCalled();
+
+      // 恢复全局桩之前先卸载 Editor；保留 React root 供 afterEach 正常销毁。
+      await act(async () => {
+        root.render(null);
+        await Promise.resolve();
+      });
+    } finally {
+      delete (window as unknown as { ResizeObserver: unknown }).ResizeObserver;
+      vi.restoreAllMocks();
+    }
+  });
+
   it("skips reconfiguration when the preference value is unchanged", async () => {
     const onChange = vi.fn();
     await act(async () => {
@@ -379,6 +563,178 @@ describe("Editor word wrap reconfiguration", () => {
       container.querySelector(".cm-content")?.classList.contains("cm-lineWrapping"),
     ).toBe(false);
     expect(onChange).not.toHaveBeenCalled();
+  });
+});
+
+describe("Editor cursor position notifications", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+
+  beforeEach(() => {
+    (
+      globalThis as typeof globalThis & {
+        IS_REACT_ACT_ENVIRONMENT: boolean;
+      }
+    ).IS_REACT_ACT_ENVIRONMENT = true;
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  function viewOf(element: HTMLElement): EditorView {
+    const editor = element.querySelector<HTMLElement>(".cm-editor");
+    if (!editor) throw new Error(".cm-editor not found");
+    const view = EditorView.findFromDOM(editor);
+    if (!view) throw new Error("EditorView not found");
+    return view;
+  }
+
+  async function renderPositionEditor(
+    onCursorPosition: (position: unknown) => void,
+  ) {
+    await act(async () => {
+      root.render(
+        <Editor
+          content={"ab\ncd"}
+          disabled={false}
+          language="plain-text"
+          onChange={vi.fn()}
+          onCursorPosition={onCursorPosition}
+        />,
+      );
+    });
+    return viewOf(container);
+  }
+
+  it("reports the initial cursor position on mount", async () => {
+    const onCursorPosition = vi.fn();
+    await renderPositionEditor(onCursorPosition);
+    expect(onCursorPosition).toHaveBeenCalledTimes(1);
+    expect(onCursorPosition).toHaveBeenLastCalledWith({ line: 1, column: 1 });
+  });
+
+  it("reports the main selection head for selection, document, and multi-cursor changes", async () => {
+    const onCursorPosition = vi.fn();
+    const view = await renderPositionEditor(onCursorPosition);
+
+    await act(async () => {
+      view.dispatch({ selection: { anchor: 0, head: 5 } });
+    });
+    expect(onCursorPosition).toHaveBeenLastCalledWith({ line: 2, column: 3 });
+
+    // 反向选择显示用户正在移动的 head 端。
+    await act(async () => {
+      view.dispatch({ selection: { anchor: 5, head: 2 } });
+    });
+    expect(onCursorPosition).toHaveBeenLastCalledWith({ line: 1, column: 3 });
+
+    // 文档变化后位置随选择映射更新。
+    await act(async () => {
+      view.dispatch({ selection: { anchor: 0, head: 5 } });
+      view.dispatch({
+        changes: { from: 0, insert: "a" },
+        userEvent: "input.type",
+      });
+    });
+    expect(onCursorPosition).toHaveBeenLastCalledWith({ line: 2, column: 3 });
+
+    // 矩形/多选区只报告 main 选择的 head（此时文档为 "aab\ncd"，head 5 在第 2 行偏移 1）。
+    await act(async () => {
+      view.dispatch({
+        selection: EditorSelection.create(
+          [
+            { anchor: 0, head: 0 },
+            { anchor: 4, head: 5 },
+          ],
+          1,
+        ),
+      });
+    });
+    expect(onCursorPosition).toHaveBeenLastCalledWith({ line: 2, column: 2 });
+  });
+
+  it("does not re-notify for repeated updates at the same position", async () => {
+    const onCursorPosition = vi.fn();
+    const view = await renderPositionEditor(onCursorPosition);
+    // 初始 {1,1} 一次。
+    expect(onCursorPosition).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      view.dispatch({ selection: { anchor: 0, head: 3 } });
+    });
+    expect(onCursorPosition).toHaveBeenCalledTimes(2);
+    expect(onCursorPosition).toHaveBeenLastCalledWith({ line: 2, column: 1 });
+
+    // 同位置重复派发不产生新通知。
+    await act(async () => {
+      view.dispatch({ selection: { anchor: 0, head: 3 } });
+      view.dispatch({});
+    });
+    expect(onCursorPosition).toHaveBeenCalledTimes(2);
+  });
+
+  it("clears the position on unmount", async () => {
+    const onCursorPosition = vi.fn();
+    await renderPositionEditor(onCursorPosition);
+    await act(async () => {
+      root.unmount();
+    });
+    expect(onCursorPosition).toHaveBeenLastCalledWith(null);
+  });
+
+  it("updates the position after deletions and undo", async () => {
+    const onCursorPosition = vi.fn();
+    const view = await renderPositionEditor(onCursorPosition);
+
+    await act(async () => {
+      view.dispatch({ selection: { anchor: 0, head: 3 } });
+    });
+    expect(onCursorPosition).toHaveBeenLastCalledWith({ line: 2, column: 1 });
+
+    // 删除换行符：head 映射到合并后行的第 3 列。
+    await act(async () => {
+      view.dispatch({
+        changes: { from: 2, to: 3 },
+        userEvent: "delete.backward",
+      });
+    });
+    expect(onCursorPosition).toHaveBeenLastCalledWith({ line: 1, column: 3 });
+
+    // 撤销恢复文档与选择：位置回到第 2 行第 1 列。
+    let undone = false;
+    await act(async () => {
+      undone = undo(view);
+    });
+    expect(undone).toBe(true);
+    expect(onCursorPosition).toHaveBeenLastCalledWith({ line: 2, column: 1 });
+  });
+
+  it("keeps reporting positions while the editor is read-only", async () => {
+    const onCursorPosition = vi.fn();
+    await act(async () => {
+      root.render(
+        <Editor
+          content={"ab\ncd"}
+          disabled
+          language="plain-text"
+          onChange={vi.fn()}
+          onCursorPosition={onCursorPosition}
+        />,
+      );
+    });
+    expect(onCursorPosition).toHaveBeenLastCalledWith({ line: 1, column: 1 });
+
+    const editor = container.querySelector<HTMLElement>(".cm-editor");
+    const view = EditorView.findFromDOM(editor!)!;
+    await act(async () => {
+      view.dispatch({ selection: { anchor: 0, head: 4 } });
+    });
+    expect(onCursorPosition).toHaveBeenLastCalledWith({ line: 2, column: 2 });
   });
 });
 

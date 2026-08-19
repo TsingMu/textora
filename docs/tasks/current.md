@@ -6,13 +6,130 @@
 
 ## 进行中
 
-（无）
+### 列标尺与光标位置 macOS 真实应用验收
+
+- **状态**：进行中
+- **开始日期**：2026-08-19
+- **Feature Spec**：`docs/features/editor-column-ruler-and-cursor-position.md`
+- **目标**：用户在 release `Textora.app` 中确认标尺与源码首列对齐、ASCII/Tab/中文列读数、横向滚动同步（gutter 固定）、软换行与 Preview/WYSIWYG 边界及状态栏 `Ln/Col` 表现，完成 Feature Spec 最后三项验收条件与文档收尾。
+- **范围**：真实应用视觉验收（关闭软换行后的长行与列对齐、窗口缩放/分栏后的重对齐、重启后偏好与标尺一致）；按实际结果勾选剩余验收条件并把 Feature Spec/README 改为已完成；必要时只做小修。
+- **非范围**：不新增设置项或新的实现任务。
+- **依赖**：已完成的列标尺与光标位置集成验收（自动化、release 构建与启动确认）。
+- **拆分检查**：仅剩人工真实验收与文档状态翻转。
+- **完成标准**：用户确认真实应用验收通过；Feature Spec 状态改为已完成且验收条件全部勾选；README 同步；`git diff --check` 通过。
+- **当前进度**：真实应用验收先后发现原点遗漏 CodeMirror 行内边距、刻度采用插入列语义导致输入 `12345` 后光标对应刻度 6，以及中文回退字体的实际 advance 只有约 1.66 个窄字符列。已改用真实行首插入坐标，把刻度定义为字符列右边界，标尺显示时移除源码区 20px 顶部留白；新增共享字素分段，将逻辑宽度为 2 的 CJK/emoji 完整字素簇包装为 `2ch` 视觉单元格，保持文档与选择偏移不变。`npm run test -- cursorPosition Editor columnRuler`（107 passed）、`npm run check`（487 passed）、`npm run tauri -- build` 与安装包签名校验通过；修正版已重新部署 `/Applications/Textora.app` 并启动（PID 84333）。等待用户复验中文宽度、刻度与首行间距；横向滚动及模式边界的其余人工验收尚未完成。原安装包备份位于 `/private/tmp/textora-deploy.uGr5vM/Textora.app`。
 
 ## 已承诺待办
 
 （无）
 
 ## 最近完成
+
+### 修复 gutter 重对齐回归测试的异步泄漏
+
+- **状态**：已完成
+- **开始日期**：2026-08-19
+- **完成日期**：2026-08-19
+- **Feature Spec**：`docs/features/editor-column-ruler-and-cursor-position.md`
+- **目标**：消除 gutter 重对齐测试因真实替换 CodeMirror 文档而遗留延迟 geometry update、导致完整测试套件间歇性失败的问题。
+- **范围**：测试直接模拟 gutter 变宽后的内容左边界并触发 ResizeObserver；恢复全局桩前先卸载 Editor；按真实结果修正文档验证记录。
+- **非范围**：不修改生产代码、标尺度量语义、Unicode 列宽、依赖、Rust/Tauri 或 capability。
+- **依赖**：已完成的 gutter 观察生产修复与现有回归测试。
+- **拆分检查**：单一测试生命周期缺陷及稳定性复验，保持为一个小任务。
+- **完成标准**：定向测试通过；连续多次 `npm run check` 均以 0 退出；`npm run build` 与 `git diff --check` 通过。
+- **结果**：gutter 回归测试不再把受控 CodeMirror 文档从 9 行真实替换为 10 行；改为直接把已桩化的内容左边界从 40px 改为 48px 并触发已捕获的 gutter ResizeObserver，仍验证标尺第 1 列重对齐且 gutter 被观察，同时不再产生与测试目标无关的延迟 geometry update。恢复 ResizeObserver/getter spy 前用 `root.render(null)` 卸载 Editor，保留 React root 供 afterEach 正常销毁。未修改生产代码。
+- **验证记录**：`npm run test -- cursorPosition columnRuler Editor` 通过（**104 passed / 0 failed**）；连续三次 `npm run check` 均通过（typecheck + vitest **484 passed / 0 failed**，每次退出码 0）；`npm run build` 与 `git diff --check` 通过。Vite 大 chunk 提示为既有。
+
+### 修复标尺测试生命周期与纯零宽字素列宽
+
+- **状态**：已完成
+- **开始日期**：2026-08-19
+- **完成日期**：2026-08-19
+- **Feature Spec**：`docs/features/editor-column-ruler-and-cursor-position.md`
+- **目标**：标尺 gutter 回归测试在恢复全局桩后仍可能有异步测量读取已恢复环境，威胁 `npm run check` 稳定退出；`cursorPosition` 把纯零宽字素（ZWSP/ZWJ/ZWNJ、孤立组合标记）计为 1 列。
+- **范围**：为 `Editor.test.tsx` 补 `Range.getClientRects` 几何桩，gutter 回归测试在恢复 `ResizeObserver` 与 getter spy 前先卸载 Editor 并清空异步测量；`clusterDisplayWidth` 无可见基础码点的字素返回 0 列，补 U+200B、U+200C/U+200D 与孤立组合标记测试；连续两次 `npm run check` 验证稳定后更正文档记录。
+- **非范围**：不改生产标尺/位置语义、Rust、依赖或 capability。
+- **依赖**：已完成的列标尺与光标位置切片及 gutter 重测修复。
+- **拆分检查**：一处测试稳定性修复加一处列宽小缺陷，保持为一个切片。
+- **完成标准**：新增测试通过；`npm run test -- cursorPosition columnRuler Editor`、连续两次 `npm run check`、`npm run build` 与 `git diff --check` 通过。
+- **结果**：`Editor.test.tsx` 文件头补 `Range.getClientRects` 几何桩（与 `App.test.tsx` 相同，消除 CodeMirror rAF 文本测量的非确定性未处理错误）；gutter 回归测试在 `finally` 恢复 `ResizeObserver` 与 getter spy 之前先 `root.unmount()` 并等待一个宏任务清空卸载/测量链。`clusterDisplayWidth` 对无可见基础码点的字素（ZWSP、ZWJ/ZWNJ 残段、孤立组合标记/变体选择符）返回 0 列，不再按 1 列推进；有基础码点的组合序列与 VS15/VS16 规则不变。
+- **验证记录**：`npm run test -- cursorPosition columnRuler Editor` 通过（**104 passed / 0 failed**，新增纯零宽字素用例：U+200B、U+200C+U+200D、`a​b` 不推进列、孤立组合标记不占列）；该任务当时记录连续两次 `npm run check` 通过，但后续独立审查在同一工作树复现一次失败、一次通过，确认真实 9→10 行文档替换仍会遗留延迟 geometry update；此测试稳定性问题由后续任务「修复 gutter 重对齐回归测试的异步泄漏」完成修复。`npm run build` 与 `git diff --check` 当时通过。
+
+### 修复列标尺 gutter 重测与 BMP emoji 宽度
+
+- **状态**：已完成
+- **开始日期**：2026-08-19
+- **完成日期**：2026-08-19
+- **Feature Spec**：`docs/features/editor-column-ruler-and-cursor-position.md`
+- **目标**：行号 gutter 因行数位数变化（9→10、99→100 行）变宽时列标尺不重测 `originLeft` 导致错位；无 VS16 的 BMP 默认 emoji（⌚、♿ 等）被按 1 列计算。
+- **范围**：标尺重测同时观察 `.cm-gutters`（gutter 宽度变化不改变 scroller 尺寸，必须单独观察）；显示列宽度加入 BMP `Emoji_Presentation` 展示集区间，VS15 仍强制 1 列；补「9→10 行 gutter 变宽后的对齐回归」与 ⌚/♿/VS15 宽度测试。
+- **非范围**：不改变标尺/位置其余语义、Rust、依赖或 capability。
+- **依赖**：已完成的列标尺与光标位置切片。
+- **拆分检查**：两处独立小缺陷的定点修复与回归，保持为一个切片。
+- **完成标准**：新增测试通过；`npm run test -- cursorPosition columnRuler Editor`、`npm run check`、`npm run build` 与 `git diff --check` 通过。
+- **结果**：`Editor` 列标尺重测的 ResizeObserver 现在同时观察 `.cm-gutters`——gutter 在 scroller 内部、其宽度变化（行数位数增长）不改变 scroller 尺寸，此前不触发重测，`originLeft` 保持过期导致标尺错位。`cursorPosition` 的宽字符区间加入 BMP `Emoji_Presentation` 展示集（⌚/♿/⏰/⚠ 等 30 余个区间），这些默认 emoji 呈现字符无 VS16 也占 2 列；VS15 强制 1 列的规则不变，非展示集的低位符号 emoji（如 ☺）仍按 1 列。
+- **验证记录**：`npm run test -- cursorPosition columnRuler Editor` 通过（**103 passed / 0 failed**，新增 2 用例：BMP 默认展示 emoji ⌚/♿ 及组合占 2 列而 VS15 仍强制 1 列；可控矩形 + 手动 ResizeObserver 桩下 9→10 行 gutter 变宽后标尺第 1 列从 40px 重对齐到 48px 且 `.cm-gutters` 被纳入观察）；`npm run check` 通过（typecheck + vitest **483 passed / 0 failed**）；`npm run build` 通过；`git diff --check` 通过。
+
+### 列标尺与光标位置集成验收及文档收尾
+
+- **状态**：自动化、release 构建与启动确认完成；macOS 真实应用视觉验收待执行（见「已承诺待办」）
+- **开始日期**：2026-08-19
+- **完成日期**：2026-08-19
+- **Feature Spec**：`docs/features/editor-column-ruler-and-cursor-position.md`
+- **目标**：完成列标尺与状态栏行列位置的组合验收（标尺对齐、滚动同步、模式/标签边界、重启后偏好与坐标语义一致），并同步文档状态。
+- **范围**：完整自动化回归、`npm run tauri -- build`、bundle/权限核验、macOS release 真实应用验收（ASCII/Tab/中文列对齐、横向滚动、软换行与 Preview/WYSIWYG 边界）、Feature Spec/README/backlog 收尾；只做必要小修。
+- **非范围**：不新增显示偏好、点击定位或其他编辑器能力。
+- **依赖**：已完成的状态栏位置与列标尺切片。
+- **拆分检查**：实现已交付，本任务只做组合验收与文档同步。
+- **完成标准**：Feature Spec 验收条件按真实结果勾选并改为已完成；完整验证链（含 release 构建与 macOS 真实验收）通过；`git diff --check` 通过。
+- **结果**：补齐两项映射验收条件的自动化：删除换行后 head 映射到合并行第 3 列、一次撤销恢复文档与选择后位置回到第 2 行第 1 列；只读编辑器仍持续上报位置（Ln 2, Col 2）。完整回归、release 构建、bundle/权限核验与 release 启动确认完成（验证实例已清理）。Feature Spec 状态改为「实现完成，macOS 真实应用验收待执行」，8 条可由自动化/代码确认的验收条件已勾选；标尺实际像素对齐、横向滚动视觉同步与 macOS 真实组合验收 3 条待人工执行——自动化环境无辅助访问权限且 jsdom 无布局，无法视觉判定。README 当前状态与文档导航同步；后续人工验收任务「列标尺与光标位置 macOS 真实应用验收」进入已承诺待办。
+- **验证记录**：`cargo fmt --manifest-path src-tauri/Cargo.toml --check` 通过；`cargo test --manifest-path src-tauri/Cargo.toml` 通过（**163 passed / 0 failed**）；`npm run check` 通过（typecheck + vitest **481 passed / 0 failed**，`Editor` 位置通知组现 6 用例含新增删除/撤销映射与只读上报）；`npm run build` 与 `npm run tauri -- build` 通过并生成 release `Textora.app`；bundle 校验 `CFBundleIdentifier=com.tsingmu.textora`、`CFBundleExecutable=textora`；`src-tauri/capabilities/` 无改动；release 应用可启动且验证实例已退出；`git diff --check` 通过。
+
+### 实现关闭软换行时的横向列标尺
+
+- **状态**：已完成
+- **开始日期**：2026-08-19
+- **完成日期**：2026-08-19
+- **Feature Spec**：`docs/features/editor-column-ruler-and-cursor-position.md`
+- **目标**：关闭 `Word Wrap` 时在源码编辑器上方显示与内容横向滚动同步的列标尺；开启软换行时隐藏。
+- **范围**：建立字符宽度/水平滚动快照与刻度视图（基础/5 列/10 列层级，10 列显示数字）；第 1 列与源码首个插入位置对齐，gutter 固定；窗口缩放、分栏与字体度量变化后重新对齐。
+- **非范围**：不新增显示偏好、点击定位或参考线；不修改位置语义、列块选择算法、Rust/Tauri、依赖或 capability。
+- **依赖**：已完成的状态栏行列位置切片（共享同一显示列契约）；既有全局 `wordWrapEnabled` 状态。
+- **拆分检查**：标尺与状态栏位置是可分别观察的行为；release 构建与 macOS 真实验收留给最终集成任务。
+- **完成标准**：聚焦自动化覆盖标尺刻度渲染、软换行/模式边界与水平滚动同步；`npm run check`、`npm run build` 与 `git diff --check` 通过。
+- **结果**：新增 `src/columnRuler.tsx`：`rulerTicksFor(metrics)` 纯函数按「列号 × 实际字符宽 − scrollLeft + originLeft」计算可视窗口刻度（每列基础、每 5 列中刻度、每 10 列强刻度并渲染十进制数字；数字相对刻度偏移绘制，不改变刻度间距；非正字符宽/可视宽返回空），`ColumnRuler` 展示组件渲染 `.column-ruler` 刻度层。`Editor` 在 `wordWrapEnabled === false` 时渲染标尺并经 `measureColumnRulerMetrics` 从 CodeMirror 实际布局测量（字符宽取 `view.defaultCharacterWidth`，第 1 列位置由内容/滚动容器实时矩形差 + scrollLeft 得出，含 gutter 与内容左内边距）；监听滚动与 `ResizeObserver`（容器尺寸、分栏、字体度量变化）重新对齐，gutter 固定不随滚动移动；度量不可用（如无布局环境）时渲染空标尺容器而不异常。布局改为 `editor-with-ruler` 弹性列容器（编辑器实例不变）。未改位置语义、列块选择、Rust/Tauri、依赖或 capability。
+- **验证记录**：`npm run check` 通过（typecheck + vitest **479 passed / 0 failed**，新增 `columnRuler` 6 用例：度量守卫、基础/5/10 刻度与数字、滚动 + gutter 偏移窗口平移、列中滚动部分可见列、组件刻度渲染含类名/位置/仅 10 列数字、空度量空容器；`Editor` 新增 2 用例：标尺随软换行开关出现/隐藏且不重建编辑器实例、无布局时空刻度不异常；App 1 用例：存储关闭软换行时源码与 Preview 左侧显示标尺、WYSIWYG 隐藏、返回恢复、菜单重新开启软换行后隐藏）；`npm run build` 通过；`git diff --check` 通过。下一任务「列标尺与光标位置集成验收及文档收尾」进入已承诺待办。
+
+### 在状态栏接入光标行列位置
+
+- **状态**：已完成
+- **开始日期**：2026-08-19
+- **完成日期**：2026-08-19
+- **Feature Spec**：`docs/features/editor-column-ruler-and-cursor-position.md`
+- **目标**：在活动 CodeMirror 源码视图的状态栏显示主选择头部的 1-based 逻辑行与 Unicode 显示列。
+- **范围**：建立显示列纯函数；由 Editor 在挂载、选择或文档变化时发出最小位置快照；App 只在源码视图显示 `Ln n, Col n`；覆盖 Tab、宽字符、emoji、组合字素、正反向选择、多选区、内容变化、标签及 Preview/WYSIWYG 边界。
+- **非范围**：不实现列标尺、水平滚动通知或字符宽度测量；不新增位置显示开关、跳转能力、选择长度或多光标列表；不修改列块选择算法、Rust/Tauri、依赖或 capability。
+- **依赖**：已确认的列标尺与光标行列位置规格；现有 Editor update listener 与状态栏。
+- **拆分检查**：只交付一个可独立观察的状态栏位置行为；列标尺及完整 release/真实应用验收分别留给后续任务。
+- **实施要点**：坐标事实从 Editor 当前状态派生；App 不维护第二套选择。相同位置避免重复通知，Editor 卸载时清除 App 中的陈旧位置。
+- **完成标准**：聚焦自动化覆盖坐标纯函数、Editor 通知及 App 状态栏/模式边界；`npm run check`、`npm run build` 与 `git diff --check` 通过。
+- **结果**：新增 `src/cursorPosition.ts`：`displayColumnBefore(prefix, tabSize)` 与 `cursorPositionFromFacts` 按 Unicode 字素簇（`Intl.Segmenter`，缺失时按码点安全退化）计算显示列——Tab 推进到下一 `tabSize` 制表位，East Asian Wide/Fullwidth 与高位 emoji 区间（≥ U+1F000）占 2 列，VS16 强制 2 列、VS15 强制 1 列，组合标记/变体选择符/ZWJ 不另计列，无法分类按 1 列。`Editor` 新增 `onCursorPosition` 通知：挂载即报初始位置，update listener 在 `selectionSet || docChanged` 时从当前状态派生并经行:列键去重（同值零通知），卸载时回调 `null` 清除调用方陈旧位置。App 以 `cursorPosition` 状态在状态栏语言名旁显示 `Ln n, Col n`，仅源码视图存在时非空（WYSIWYG 隐藏、Preview 左侧源码继续显示）；App 不维护第二套选择。未改列块选择、Rust/Tauri、依赖或 capability。
+- **验证记录**：`npm run check` 通过（typecheck + vitest **470 passed / 0 failed**，新增 `cursorPosition` 7 用例：空行/ASCII、Tab 制表位（含 tabSize 2 与连续 Tab）、宽/全角与半角片假名、emoji 代理对/ZWJ 家庭簇/VS16/VS15、组合标记不计列、控制字符安全退化、编辑器事实派生与前缀截断；`Editor` 通知 4 用例：挂载初始位置、正向/反向选择与文档变化映射、多选区只报 main head（"aab\ncd" 中 head 5 → Ln 2, Col 2）、同位置零重复通知、卸载回调 null；App 3 用例：空文档 Ln 1, Col 1 且输入后跟随至 Col 3 并保持 Modified、WYSIWYG 隐藏且返回源码恢复、Preview 下移动光标到 Col 4 后新建标签回到 Ln 1, Col 1 无陈旧坐标）；`npm run build` 通过；`git diff --check` 通过。下一任务「实现关闭软换行时的横向列标尺」进入已承诺待办。
+
+### 确认列标尺与光标行列位置规格
+
+- **状态**：已完成
+- **开始日期**：2026-08-19
+- **完成日期**：2026-08-19
+- **Feature Spec**：`docs/features/editor-column-ruler-and-cursor-position.md`
+- **目标**：确认源码编辑器列标尺与状态栏光标行列位置的统一坐标语义、显示边界、模式边界和可执行验收条件，并拆出首个小型实现任务。
+- **范围**：定义逻辑行、显示列、Tab、宽字符、组合字符、软换行、横向滚动、主选区、多标签和非源码模式规则；明确标尺刻度、状态栏文案、无活动源码视图时的行为及实现拆分。
+- **非范围**：不修改 React/CodeMirror 生产代码、样式、测试、依赖、Rust/Tauri 或构建配置；不同时规划显示开关、跳转到行列、字符偏移或未保存文档格式选择。
+- **依赖**：已完成的列块编辑、代码语法高亮、Markdown 源码模式、Preview 分栏和编辑器自动换行开关；现有 CodeMirror 选择与滚动能力。
+- **拆分检查**：本任务只交付规格与任务拆分；状态栏位置、列标尺和最终组合验收是可分别观察的结果，后续分别实施。
+- **完成标准**：规格不存在阻止首个实现任务的开放问题；状态栏与列标尺共享同一坐标契约但拆为独立任务；`current.md` 只保留一个后续待开始任务；README/backlog 链接与状态同步；`git diff --check` 通过。
+- **结果**：确认状态栏使用主选择 `head` 的 1-based 逻辑行与 Unicode 显示列；Tab 取 CodeMirror 当前 4 列制表位，宽/全角及 emoji 字素簇为 2 列，组合序列不重复计列。列标尺只在关闭软换行时显示并与源码水平滚动同步；Preview/Mermaid 源码适用，WYSIWYG 隐藏。实现拆为状态栏位置、列标尺和最终集成验收三个任务。
+- **验证记录**：复核现有 Editor update listener、选择、滚动、Word Wrap、Preview/WYSIWYG 模式和状态栏布局；仅修改规划文档，未运行测试或构建；`git diff --check` 通过。
 
 ### 自动换行 macOS 真实应用菜单与重启验收
 

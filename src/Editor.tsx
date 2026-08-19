@@ -11,17 +11,30 @@ import {
 import {
   type Command,
   crosshairCursor,
+  Decoration,
+  type DecorationSet,
   EditorView,
   keymap,
   rectangularSelection,
+  type ViewUpdate,
+  ViewPlugin,
 } from "@codemirror/view";
 import { defaultKeymap, historyKeymap } from "@codemirror/commands";
 import { acceptCompletion, closeCompletion } from "@codemirror/autocomplete";
 import { HighlightStyle, syntaxHighlighting, syntaxTree } from "@codemirror/language";
 import { tags } from "@lezer/highlight";
-import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { safeLanguageExtension } from "./languageExtensions";
 import type { LanguageMode } from "./languageRecognition";
+import {
+  cursorPositionFromFacts,
+  graphemeDisplaySegments,
+  type CursorPosition,
+} from "./cursorPosition";
+import {
+  ColumnRuler,
+  type ColumnRulerMetrics,
+} from "./columnRuler";
 import { unclosedOpeningFromLineSource, fenceContextAt, classifyFenceLine } from "./markdownFenceContext";
 import { markdownFenceLanguageCompletion } from "./markdownFenceLanguageCompletion";
 
@@ -32,6 +45,8 @@ type EditorProps = {
   onChange: (content: string) => void;
   /** 源码区主动滚动时回调当前顶部可见源码行（0-based）；无法确定时为 `null`。 */
   onScroll?: (topLine: number | null) => void;
+  /** 主选择 head 的 1-based 行列快照；挂载与选择/文档变化时通知，同值去重，卸载时为 `null`。 */
+  onCursorPosition?: (position: CursorPosition | null) => void;
   /** 是否软换行；`false` 时每个逻辑行保持单行并允许横向滚动。只改变显示，不改文档。 */
   wordWrapEnabled?: boolean;
 };
@@ -438,6 +453,75 @@ function wordWrapExtensionFor(enabled: boolean): Extension {
   return enabled ? EditorView.lineWrapping : [];
 }
 
+const wideDisplayClusterMark = Decoration.mark({
+  class: "cm-wide-display-cluster",
+});
+
+/**
+ * 将逻辑宽度为 2 的完整字素簇放进两个 `ch` 的视觉单元格。macOS 的 CJK/emoji
+ * 回退字体通常不是主等宽字体 advance 的精确两倍；只靠字体栈会使逻辑列与标尺漂移。
+ */
+function wideDisplayClusterDecorations(view: EditorView): DecorationSet {
+  const ranges: ReturnType<typeof wideDisplayClusterMark.range>[] = [];
+  for (const visibleRange of view.visibleRanges) {
+    const text = view.state.doc.sliceString(visibleRange.from, visibleRange.to);
+    for (const cluster of graphemeDisplaySegments(text)) {
+      if (cluster.width === 2) {
+        ranges.push(
+          wideDisplayClusterMark.range(
+            visibleRange.from + cluster.from,
+            visibleRange.from + cluster.to,
+          ),
+        );
+      }
+    }
+  }
+  return Decoration.set(ranges, true);
+}
+
+const wideDisplayClusterCells = ViewPlugin.fromClass(
+  class {
+    decorations: DecorationSet;
+
+    constructor(view: EditorView) {
+      this.decorations = wideDisplayClusterDecorations(view);
+    }
+
+    update(update: ViewUpdate) {
+      if (update.docChanged || update.viewportChanged) {
+        this.decorations = wideDisplayClusterDecorations(update.view);
+      }
+    }
+  },
+  { decorations: (plugin) => plugin.decorations },
+);
+
+/**
+ * 从 CodeMirror 实际布局测量列标尺度量：字符宽取编辑器默认字符宽度，第 1 列位置由
+ * 当前可见逻辑行的实际行首插入坐标与滚动容器矩形差 + 当前 `scrollLeft` 得出（含
+ * gutter、内容及行元素左内边距）。
+ * 不可测量（零字符宽或零可视宽，如无布局环境）时返回 `null`。
+ */
+function measureColumnRulerMetrics(view: EditorView): ColumnRulerMetrics | null {
+  const scrollerRect = view.scrollDOM.getBoundingClientRect();
+  const charWidth = view.defaultCharacterWidth;
+  if (!(charWidth > 0) || !(scrollerRect.width > 0)) {
+    return null;
+  }
+  const visibleLineStart = view.state.doc.lineAt(view.viewport.from).from;
+  const insertionCoords = view.coordsAtPos(visibleLineStart);
+  if (insertionCoords === null) {
+    return null;
+  }
+  return {
+    charWidth,
+    originLeft:
+      insertionCoords.left - scrollerRect.left + view.scrollDOM.scrollLeft,
+    scrollLeft: view.scrollDOM.scrollLeft,
+    visibleWidth: scrollerRect.width,
+  };
+}
+
 export const textoraSyntaxHighlightStyle = HighlightStyle.define([
   { tag: tags.keyword, color: "var(--syntax-keyword)" },
   { tag: [tags.atom, tags.bool, tags.number], color: "var(--syntax-atom)" },
@@ -462,14 +546,19 @@ export const textoraSyntaxHighlightStyle = HighlightStyle.define([
 ]);
 
 export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(
-  { content, disabled = false, language, onChange, onScroll, wordWrapEnabled = true },
+  { content, disabled = false, language, onChange, onScroll, onCursorPosition, wordWrapEnabled = true },
   ref,
 ) {
   const hostRef = useRef<HTMLDivElement>(null);
   const onChangeRef = useRef(onChange);
   const onScrollRef = useRef(onScroll);
+  const onCursorPositionRef = useRef(onCursorPosition);
   const viewRef = useRef<EditorView | null>(null);
   const isSyncingContentRef = useRef(false);
+  const lastPositionKeyRef = useRef<string | null>(null);
+  const [rulerMetrics, setRulerMetrics] = useState<ColumnRulerMetrics | null>(
+    null,
+  );
   const availabilityRef = useRef(new Compartment());
   const languageCompartmentRef = useRef(new Compartment());
   const wordWrapCompartmentRef = useRef(new Compartment());
@@ -478,7 +567,26 @@ export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(
 
   onChangeRef.current = onChange;
   onScrollRef.current = onScroll;
+  onCursorPositionRef.current = onCursorPosition;
   languageRef.current = language;
+
+  // 状态栏行列快照：只从当前编辑器状态派生；同值不重复通知，避免无关更新触发 React 状态写入。
+  function reportCursorPosition(state: EditorState) {
+    const head = state.selection.main.head;
+    const line = state.doc.lineAt(head);
+    const position = cursorPositionFromFacts({
+      lineNumber: line.number,
+      lineText: line.text,
+      headOffsetInLine: head - line.from,
+      tabSize: state.tabSize,
+    });
+    const key = `${position.line}:${position.column}`;
+    if (lastPositionKeyRef.current === key) {
+      return;
+    }
+    lastPositionKeyRef.current = key;
+    onCursorPositionRef.current?.(position);
+  }
 
   useImperativeHandle(ref, () => ({
     fillColumnBlockSequence() {
@@ -523,6 +631,7 @@ export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(
       extensions: [
         basicSetup,
         syntaxHighlighting(textoraSyntaxHighlightStyle),
+        wideDisplayClusterCells,
         columnBlockSelectionExtensions,
         markdownFenceAutoCloseFallbackExtension,
         Prec.high(
@@ -544,6 +653,9 @@ export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(
         EditorView.updateListener.of((update) => {
           if (update.docChanged && !isSyncingContentRef.current) {
             onChangeRef.current(update.state.doc.toString());
+          }
+          if (update.selectionSet || update.docChanged) {
+            reportCursorPosition(update.state);
           }
           if (update.viewportChanged) {
             const topLine = update.state.doc.lineAt(update.view.viewport.from).number - 1;
@@ -569,6 +681,8 @@ export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(
     });
     const view = new EditorView({ state, parent: hostRef.current });
     viewRef.current = view;
+    // 挂载即报告初始位置，供状态栏直接显示当前选择。
+    reportCursorPosition(view.state);
 
     // 源码区主动滚动时计算顶部可见源码行（0-based）并回调；节流交给调用方（App 的 rAF）。
     const handleScroll = () => {
@@ -588,6 +702,9 @@ export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(
       view.scrollDOM.removeEventListener("scroll", handleScroll);
       viewRef.current = null;
       view.destroy();
+      // 卸载时清除调用方持有的陈旧位置（如进入 WYSIWYG）。
+      lastPositionKeyRef.current = null;
+      onCursorPositionRef.current?.(null);
     };
   }, []);
 
@@ -658,5 +775,40 @@ export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(
     });
   }, [wordWrapEnabled]);
 
-  return <div className="editor-host" ref={hostRef} />;
+  // 列标尺：只在关闭软换行时测量并显示；水平滚动与容器尺寸变化（窗口缩放、分栏、字体
+  // 度量）后重新对齐。gutter 固定，`originLeft` 只随布局变化，不随滚动漂移。
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view || wordWrapEnabled) {
+      return;
+    }
+    const remeasure = () => {
+      setRulerMetrics(measureColumnRulerMetrics(view));
+    };
+    remeasure();
+    view.scrollDOM.addEventListener("scroll", remeasure, { passive: true });
+    const observer =
+      typeof ResizeObserver !== "undefined" ? new ResizeObserver(remeasure) : null;
+    observer?.observe(view.scrollDOM);
+    // 行号 gutter 在行数位数变化（9→10、99→100 行）时改变宽度：gutter 在 scroller
+    // 内部，不改变 scroller 尺寸，必须单独观察才能重算第 1 列的 `originLeft`。
+    const gutterElement = view.scrollDOM.querySelector(".cm-gutters");
+    if (gutterElement !== null) {
+      observer?.observe(gutterElement);
+    }
+    return () => {
+      view.scrollDOM.removeEventListener("scroll", remeasure);
+      observer?.disconnect();
+      setRulerMetrics(null);
+    };
+  }, [wordWrapEnabled]);
+
+  return (
+    <div
+      className={`editor-with-ruler${wordWrapEnabled ? "" : " has-column-ruler"}`}
+    >
+      {!wordWrapEnabled && <ColumnRuler metrics={rulerMetrics} />}
+      <div className="editor-host" ref={hostRef} />
+    </div>
+  );
 });

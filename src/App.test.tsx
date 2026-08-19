@@ -7046,3 +7046,257 @@ describe("App word wrap preference", () => {
     expect(editable?.getAttribute("contenteditable")).toBe("true");
   });
 });
+
+describe("App cursor position in the status bar", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+
+  beforeEach(() => {
+    (
+      globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
+    ).IS_REACT_ACT_ENVIRONMENT = true;
+    invokeMock.mockReset();
+    resetTauriWindowMock();
+    setupInvoke();
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  function positionText(): string | null {
+    return container.querySelector(".statusbar-position")?.textContent ?? null;
+  }
+
+  it("shows the initial position and follows typing in the current document", async () => {
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    expect(positionText()).toBe("Ln 1, Col 1");
+
+    const editable = container.querySelector<HTMLElement>(".cm-content")!;
+    await act(async () => {
+      editable.textContent = "ab";
+      editable.dispatchEvent(
+        new InputEvent("input", {
+          bubbles: true,
+          inputType: "insertText",
+          data: "ab",
+        }),
+      );
+      await Promise.resolve();
+    });
+
+    expect(positionText()).toBe("Ln 1, Col 3");
+    // 位置更新不影响内容脏状态语义。
+    expect(container.querySelector(".statusbar")?.textContent).toContain(
+      "Modified",
+    );
+  });
+
+  it("hides the position in WYSIWYG and restores it when returning to the source view", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        return {
+          id: "doc-md",
+          path: "/tmp/notes.md",
+          displayName: "notes.md",
+          byteCount: 4,
+          encoding: "utf8",
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 4, sha256: "md" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode("# hi").buffer;
+      }
+      if (cmd === "initialize_word_wrap_menu") {
+        return undefined;
+      }
+      if (cmd === "refresh_external_document") {
+        return null;
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await act(async () => {
+      root.render(<App />);
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    expect(positionText()).toBe("Ln 1, Col 1");
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".markdown-wysiwyg-toggle")?.click();
+    });
+    expect(positionText()).toBeNull();
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".markdown-wysiwyg-toggle")?.click();
+    });
+    expect(positionText()).toBe("Ln 1, Col 1");
+  });
+
+  it("keeps showing the position in Markdown Preview and does not leak across tabs", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        return {
+          id: "doc-md",
+          path: "/tmp/notes.md",
+          displayName: "notes.md",
+          byteCount: 4,
+          encoding: "utf8",
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 4, sha256: "md" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode("# hi").buffer;
+      }
+      if (cmd === "initialize_word_wrap_menu") {
+        return undefined;
+      }
+      if (cmd === "refresh_external_document") {
+        return null;
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await act(async () => {
+      root.render(<App />);
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".markdown-preview-toggle")?.click();
+    });
+    // Preview 左侧源码区仍存在：位置继续显示，并跟随光标移动。
+    const editorHost = container.querySelector<HTMLElement>(".cm-editor")!;
+    const view = EditorView.findFromDOM(editorHost)!;
+    await act(async () => {
+      view.dispatch({ selection: { anchor: 0, head: 3 } });
+    });
+    expect(positionText()).toBe("Ln 1, Col 4");
+
+    // 新建标签后位置跟随新文档，不显示上一视图的陈旧坐标。
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".new-tab-button")?.click();
+    });
+    expect(positionText()).toBe("Ln 1, Col 1");
+  });
+});
+
+describe("App column ruler", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+
+  beforeEach(() => {
+    (
+      globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
+    ).IS_REACT_ACT_ENVIRONMENT = true;
+    invokeMock.mockReset();
+    resetTauriWindowMock();
+    setupInvoke();
+    const storage = installLocalStorageStub();
+    storage.setItem("textora.wordWrapEnabled", "false");
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+    removeLocalStorageStub();
+  });
+
+  function ruler(): Element | null {
+    return container.querySelector(".column-ruler");
+  }
+
+  async function emitWordWrap(enabled: boolean) {
+    await vi.waitFor(() => {
+      expect(tauriEventMock.wordWrapHandler).toBeTypeOf("function");
+    });
+    await act(async () => {
+      tauriEventMock.wordWrapHandler?.({ enabled });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  }
+
+  it("shows the ruler in source and preview modes, hiding it in WYSIWYG and soft wrap", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        return {
+          id: "doc-md",
+          path: "/tmp/notes.md",
+          displayName: "notes.md",
+          byteCount: 4,
+          encoding: "utf8",
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 4, sha256: "md" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode("# hi").buffer;
+      }
+      if (cmd === "initialize_word_wrap_menu") {
+        return undefined;
+      }
+      if (cmd === "refresh_external_document") {
+        return null;
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await act(async () => {
+      root.render(<App />);
+    });
+    // 存储偏好为关闭软换行：源码视图上方出现标尺。
+    expect(ruler()).not.toBeNull();
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    // Markdown Preview 左侧源码区仍显示标尺。
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".markdown-preview-toggle")?.click();
+    });
+    expect(ruler()).not.toBeNull();
+
+    // WYSIWYG 没有源码编辑器：标尺隐藏。
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".markdown-wysiwyg-toggle")?.click();
+    });
+    expect(ruler()).toBeNull();
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".markdown-wysiwyg-toggle")?.click();
+    });
+    expect(ruler()).not.toBeNull();
+
+    // 重新开启软换行：标尺隐藏。
+    await emitWordWrap(true);
+    expect(ruler()).toBeNull();
+  });
+});

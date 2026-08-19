@@ -83,6 +83,7 @@ import {
   persistWordWrapPreference,
   readStoredWordWrapPreference,
 } from "./wordWrapPreference";
+import type { CursorPosition } from "./cursorPosition";
 import {
   collectMarkdownBlockMap,
   collectMarkdownMermaidBlocks,
@@ -225,6 +226,10 @@ function App() {
     string | null
   >(null);
   const [manifestNotice, setManifestNotice] = useState<string | null>(null);
+  // 主选择 head 的行列快照；只在 CodeMirror 源码视图存在时非空（Editor 卸载时清空）。
+  const [cursorPosition, setCursorPosition] = useState<CursorPosition | null>(
+    null,
+  );
   // 应用级软换行偏好：首次渲染的状态初始化阶段同步读取，首个编辑器实例直接取得正确值。
   const [wordWrapEnabled, setWordWrapEnabled] = useState(readStoredWordWrapPreference);
   const wordWrapEnabledRef = useRef(wordWrapEnabled);
@@ -2413,6 +2418,7 @@ function App() {
                   setSession((current) => updateDocumentContent(current, content));
                 }}
                 onScroll={handleEditorScroll}
+                onCursorPosition={setCursorPosition}
                 wordWrapEnabled={wordWrapEnabled}
               />
             </div>
@@ -2593,6 +2599,14 @@ function App() {
           <div>{session.isDirty ? "Modified" : "Saved"}</div>
           <div className="statusbar-details">
             <span className="statusbar-language">{languageDisplayName(activeLanguage)}</span>
+            {cursorPosition !== null && (
+              <>
+                <span className="format-settings-sep" aria-hidden="true">·</span>
+                <span className="statusbar-position" aria-label="Cursor position">
+                  Ln {cursorPosition.line}, Col {cursorPosition.column}
+                </span>
+              </>
+            )}
             <span className="format-settings-sep" aria-hidden="true">·</span>
             <button
               type="button"
