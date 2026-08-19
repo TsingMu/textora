@@ -1,6 +1,6 @@
 # 编辑器列标尺与光标行列位置
 
-> 状态：实现完成，macOS 真实应用验收待执行
+> 状态：已完成
 
 ## 背景与目标
 
@@ -52,13 +52,13 @@ Textora 已支持列块编辑与自动换行开关，但用户查看日志、定
 - [x] Tab、中文/全角字符、emoji、组合标记和普通字素簇按已确认显示列规则计算，无法分类时安全退化。
 - [x] 正向/反向非空选择及矩形多选区均显示主选择 `head` 的位置。
 - [x] 输入、删除、撤销/重做、标签切换、打开/恢复/外部采用内容及源码模式重新挂载后位置及时更新，且不改变内容或脏状态。（打开/恢复/外部采用与输入共用同一内容同步→docChanged→重算链路。）
-- [ ] 关闭自动换行后标尺出现，输入第 n 个窄字符后的光标与刻度 n 对齐；中文、全角字符及 emoji 的视觉单元格与 2 个窄字符列宽一致；基础、5 列与 10 列刻度层级清晰，10 列显示数字，首行与标尺之间无额外顶部空白。
-- [ ] 横向滚动时标尺与内容同步，gutter 不移动；窗口缩放、Preview 分栏和字体度量变化后仍保持对齐。
+- [x] 关闭自动换行后标尺出现，输入第 n 个窄字符后的光标与刻度 n 对齐；中文、全角字符及 emoji 的视觉单元格与 2 个窄字符列宽一致；基础、5 列与 10 列刻度层级清晰，10 列显示数字，首行与标尺之间无额外顶部空白。
+- [x] 横向滚动时标尺与内容同步，gutter 不移动；窗口缩放、Preview 分栏和字体度量变化后仍保持对齐。
 - [x] 开启软换行或进入 WYSIWYG 时标尺隐藏；状态栏位置在软换行源码与 Preview/Mermaid 源码中继续显示，在 WYSIWYG 中隐藏。
 - [x] 位置与标尺更新不触发 `onChange`、不新增撤销步骤、不修改选择、滚动、编码、换行或磁盘内容。
 - [x] 只读与忙碌状态可继续查看位置和标尺；切换标签或模式不会显示上一源码视图的陈旧坐标。
 - [x] 自动化覆盖显示列纯函数、Editor 选择/滚动通知、状态栏与模式/标签边界、标尺刻度及水平滚动同步。
-- [ ] `npm run check`、`npm run build`、`cargo test --manifest-path src-tauri/Cargo.toml`、`npm run tauri -- build` 与 `git diff --check` 通过；macOS release 真实应用验收覆盖 ASCII/Tab/中文、横向滚动、软换行及 Preview/WYSIWYG 边界。
+- [x] `npm run check`、`npm run build`、`cargo test --manifest-path src-tauri/Cargo.toml`、`npm run tauri -- build` 与 `git diff --check` 通过；macOS release 真实应用验收覆盖 ASCII/Tab/中文、横向滚动、软换行及 Preview/WYSIWYG 边界。
 
 ## 依赖与约束
 
@@ -91,3 +91,4 @@ Textora 已支持列块编辑与自动换行开关，但用户查看日志、定
 - 2026-08-19 macOS 真实应用首次视觉验收发现标尺第 1 列落在正文首字符左侧：原实现使用 `.cm-content` 容器边界，遗漏 CodeMirror 行元素的左内边距。修复为通过 `EditorView.coordsAtPos` 测量当前可见逻辑行的真实行首插入坐标；新增容器边界与实际插入点相差 8px 的回归，确保采用插入点。验证：`npm run test -- Editor columnRuler`（**96 passed / 0 failed**）、`npm run check`（typecheck + vitest **485 passed / 0 failed**）、`cargo test --manifest-path src-tauri/Cargo.toml`（**163 passed / 0 failed**）、`npm run tauri -- build` 与 `codesign --verify --deep --strict /Applications/Textora.app` 通过；修复版已重新部署并启动，实际像素对齐等待用户复验。
 - 2026-08-19 后续视觉验收确认刻度语义与期望相差一列，并指出首行与标尺间的 20px 内容留白冗余。按用户确认把刻度改为字符列右边界：输入第 5 个窄字符后的光标对应刻度 5；标尺显示时通过状态类移除源码区顶部留白，软换行开启且标尺隐藏时维持原布局。验证：`npm run test -- columnRuler Editor`（**96 passed / 0 failed**）、`npm run check`（typecheck + vitest **485 passed / 0 failed**）、`npm run tauri -- build` 与安装包签名校验通过；修正版已重新部署并启动，等待真实视觉复验。
 - 2026-08-19 中文视觉宽度复验发现 macOS 字体回退与逻辑列宽不一致；本机 13px Menlo 测量为窄字符约 7.83px、中文 13px，即中文只有约 1.66 个窄字符列。新增共享 `graphemeDisplaySegments`，位置计算与 CodeMirror 视觉装饰复用同一字素宽度事实；逻辑宽度为 2 的 CJK/emoji 完整字素簇渲染为 `2ch` 单元格，不改变源码、选择偏移、`onChange` 或保存内容。验证：`npm run test -- cursorPosition Editor columnRuler`（**107 passed / 0 failed**）、`npm run check`（typecheck + vitest **487 passed / 0 failed**）、`npm run tauri -- build` 与安装包签名校验通过；修正版已重新部署并启动，等待真实视觉复验。
+- 2026-08-19 用户确认修正版 macOS release 真实应用验收通过：窄字符刻度右边界、CJK 双列视觉单元格、首行与标尺间距、横向滚动与固定 gutter、窗口/Preview 布局重对齐、软换行及 Preview/WYSIWYG 显示边界、状态栏 `Ln/Col` 与重启后偏好均符合预期。规格状态改为已完成，全部验收条件勾选。

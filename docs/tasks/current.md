@@ -6,24 +6,28 @@
 
 ## 进行中
 
-### 列标尺与光标位置 macOS 真实应用验收
-
-- **状态**：进行中
-- **开始日期**：2026-08-19
-- **Feature Spec**：`docs/features/editor-column-ruler-and-cursor-position.md`
-- **目标**：用户在 release `Textora.app` 中确认标尺与源码首列对齐、ASCII/Tab/中文列读数、横向滚动同步（gutter 固定）、软换行与 Preview/WYSIWYG 边界及状态栏 `Ln/Col` 表现，完成 Feature Spec 最后三项验收条件与文档收尾。
-- **范围**：真实应用视觉验收（关闭软换行后的长行与列对齐、窗口缩放/分栏后的重对齐、重启后偏好与标尺一致）；按实际结果勾选剩余验收条件并把 Feature Spec/README 改为已完成；必要时只做小修。
-- **非范围**：不新增设置项或新的实现任务。
-- **依赖**：已完成的列标尺与光标位置集成验收（自动化、release 构建与启动确认）。
-- **拆分检查**：仅剩人工真实验收与文档状态翻转。
-- **完成标准**：用户确认真实应用验收通过；Feature Spec 状态改为已完成且验收条件全部勾选；README 同步；`git diff --check` 通过。
-- **当前进度**：真实应用验收先后发现原点遗漏 CodeMirror 行内边距、刻度采用插入列语义导致输入 `12345` 后光标对应刻度 6，以及中文回退字体的实际 advance 只有约 1.66 个窄字符列。已改用真实行首插入坐标，把刻度定义为字符列右边界，标尺显示时移除源码区 20px 顶部留白；新增共享字素分段，将逻辑宽度为 2 的 CJK/emoji 完整字素簇包装为 `2ch` 视觉单元格，保持文档与选择偏移不变。`npm run test -- cursorPosition Editor columnRuler`（107 passed）、`npm run check`（487 passed）、`npm run tauri -- build` 与安装包签名校验通过；修正版已重新部署 `/Applications/Textora.app` 并启动（PID 84333）。等待用户复验中文宽度、刻度与首行间距；横向滚动及模式边界的其余人工验收尚未完成。原安装包备份位于 `/private/tmp/textora-deploy.uGr5vM/Textora.app`。
+（无）
 
 ## 已承诺待办
 
 （无）
 
 ## 最近完成
+
+### 列标尺与光标位置 macOS 真实应用验收
+
+- **状态**：已完成
+- **开始日期**：2026-08-19
+- **完成日期**：2026-08-19
+- **Feature Spec**：`docs/features/editor-column-ruler-and-cursor-position.md`
+- **目标**：用户在 release `Textora.app` 中确认标尺与源码列对齐、ASCII/Tab/中文列读数、横向滚动同步（gutter 固定）、软换行与 Preview/WYSIWYG 边界及状态栏 `Ln/Col` 表现，完成 Feature Spec 最后三项验收条件与文档收尾。
+- **范围**：真实应用视觉验收（关闭软换行后的长行与列对齐、窗口缩放/分栏后的重对齐、重启后偏好与标尺一致）；按实际结果勾选剩余验收条件并把 Feature Spec/README 改为已完成；必要时只做小修。
+- **非范围**：不新增设置项或新的实现任务。
+- **依赖**：已完成的列标尺与光标位置集成验收（自动化、release 构建与启动确认）。
+- **拆分检查**：仅剩人工真实验收与文档状态翻转。
+- **完成标准**：用户确认真实应用验收通过；Feature Spec 状态改为已完成且验收条件全部勾选；README 同步；`git diff --check` 通过。
+- **结果**：真实验收期间完成三项必要小修：原点改用 CodeMirror 实际行首插入坐标；刻度改为字符列右边界并去除标尺下方额外顶部留白；逻辑宽度为 2 的 CJK/emoji 字素簇使用 `2ch` 视觉单元格。用户确认修正版 macOS release 中窄字符与宽字符刻度、横向滚动、固定 gutter、布局重对齐、软换行与模式边界、状态栏位置及重启恢复均通过；Feature Spec 全部验收条件、状态、README 与 backlog 已同步完成。
+- **验证记录**：`npm run test -- cursorPosition Editor columnRuler` 通过（**107 passed / 0 failed**）；`npm run check` 通过（typecheck + vitest **487 passed / 0 failed**）；`cargo test --manifest-path src-tauri/Cargo.toml` 通过（**163 passed / 0 failed**）；`npm run tauri -- build` 通过；部署后的 `/Applications/Textora.app` 经 `codesign --verify --deep --strict` 校验并成功启动；用户于 2026-08-19 确认 macOS release 真实应用验收通过；`git diff --check` 通过。原安装包备份位于 `/private/tmp/textora-deploy.uGr5vM/Textora.app`。
 
 ### 修复 gutter 重对齐回归测试的异步泄漏
 
