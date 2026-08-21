@@ -2,14 +2,17 @@ import { describe, expect, it } from "vitest";
 import { updateDocumentContent } from "./documentSession";
 import {
   activeDocument,
+  addOpenedDocumentTab,
   addUntitledTab,
   appendRestoredTab,
+  clearTabSyntaxMode,
   closeTabCleanly,
   createInitialTabSession,
   finalizeRestoredTabs,
   setMarkdownPreviewOpen,
   setMarkdownWysiwygOpen,
   setMermaidPreviewOpen,
+  setTabSyntaxMode,
   switchActiveTab,
   updateActiveDocument,
 } from "./tabSession";
@@ -243,5 +246,74 @@ describe("tab session", () => {
     expect(kept.tabs[0].document.displayName).toBe("Untitled 2");
     expect(kept.tabs[0].document.content).toBe("scratch");
     expect(kept.nextUntitledNumber).toBe(3);
+  });
+});
+
+describe("tab syntax mode", () => {
+  it("defaults every new tab to plain text", () => {
+    let state = createInitialTabSession();
+    expect(state.tabs[0].syntaxMode).toBe("plain-text");
+
+    state = addUntitledTab(state);
+    expect(state.tabs[1].syntaxMode).toBe("plain-text");
+
+    const opened = addOpenedDocumentTab(
+      state,
+      restoredDescriptor("doc-x", "/tmp/x.ts", "x.ts"),
+      "let x;",
+    );
+    expect(opened.tabs[2].syntaxMode).toBe("plain-text");
+  });
+
+  it("applies the mode only to the target unsaved tab without touching others", () => {
+    let state = createInitialTabSession();
+    state = addUntitledTab(state);
+
+    state = setTabSyntaxMode(state, "tab-1", "java");
+    expect(state.tabs[0].syntaxMode).toBe("java");
+    expect(state.tabs[1].syntaxMode).toBe("plain-text");
+    expect(state.tabs[0].document.isDirty).toBe(false);
+
+    state = setTabSyntaxMode(state, "tab-2", "markdown");
+    expect(state.tabs[0].syntaxMode).toBe("java");
+    expect(state.tabs[1].syntaxMode).toBe("markdown");
+  });
+
+  it("ignores selections for saved tabs, unknown tabs and repeated modes", () => {
+    let state = createInitialTabSession();
+    const opened = addOpenedDocumentTab(
+      state,
+      restoredDescriptor("doc-y", "/tmp/y.md", "y.md"),
+      "beta",
+    );
+    const savedTabId = opened.tabs[1].tabId;
+
+    const rejected = setTabSyntaxMode(opened, savedTabId, "java");
+    expect(rejected).toBe(opened);
+    expect(rejected.tabs[1].syntaxMode).toBe("plain-text");
+
+    const unknown = setTabSyntaxMode(opened, "tab-missing", "java");
+    expect(unknown).toBe(opened);
+
+    const first = setTabSyntaxMode(opened, opened.tabs[0].tabId, "sql");
+    const repeated = setTabSyntaxMode(first, first.tabs[0].tabId, "sql");
+    expect(repeated).toBe(first);
+  });
+
+  it("clears the temporary mode only on the target tab after a successful save", () => {
+    let state = createInitialTabSession();
+    state = addUntitledTab(state);
+    state = setTabSyntaxMode(state, "tab-1", "java");
+    state = setTabSyntaxMode(state, "tab-2", "sql");
+
+    const cleared = clearTabSyntaxMode(state, "tab-1");
+    expect(cleared.tabs[0].syntaxMode).toBe("plain-text");
+    expect(cleared.tabs[1].syntaxMode).toBe("sql");
+
+    // 已是默认值或未命中 tabId 时保持原引用，不产生新状态。
+    const repeated = clearTabSyntaxMode(cleared, "tab-1");
+    expect(repeated).toBe(cleared);
+    const unknown = clearTabSyntaxMode(cleared, "tab-missing");
+    expect(unknown).toBe(cleared);
   });
 });

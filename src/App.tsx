@@ -21,18 +21,25 @@ import {
 } from "./documentSession";
 import { Editor, type EditorHandle } from "./Editor";
 import { MarkdownWysiwygEditor } from "./MarkdownWysiwygEditor";
-import { detectLanguage, languageDisplayName } from "./languageRecognition";
+import {
+  detectLanguage,
+  isLanguageMode,
+  languageDisplayName,
+  suggestedSaveFileName,
+} from "./languageRecognition";
 import {
   activeDocument,
   addOpenedDocumentTab,
   addUntitledTab,
   appendRestoredTab,
+  clearTabSyntaxMode,
   closeTabCleanly,
   createInitialTabSession,
   finalizeRestoredTabs,
   setMarkdownPreviewOpen,
   setMarkdownWysiwygOpen,
   setMermaidPreviewOpen,
+  setTabSyntaxMode,
   switchActiveTab,
   updateActiveDocument,
   updateDocumentByTabId,
@@ -68,9 +75,12 @@ import {
   selectAndOpenDocument,
   updateOpenFilesManifest,
   initializeWordWrapMenu,
+  updateSyntaxMenu,
   type DocumentCommandError,
   EXTERNAL_DOCUMENT_CHANGED_EVENT,
   type ExternalDocumentChanged,
+  SYNTAX_MODE_CHANGED_EVENT,
+  type SyntaxModeChanged,
   WORD_WRAP_CHANGED_EVENT,
   type WordWrapChanged,
   type EncodingChoice,
@@ -105,6 +115,18 @@ import {
 const initialTabs = createInitialTabSession();
 // 启动恢复收尾只允许移除这个初始占位标签，且仅在仍未被用户触碰时。
 const initialPlaceholderTabId = initialTabs.tabs[0].tabId;
+
+// `@tauri-apps/api/event` 的动态导入必须全应用共用同一个进行中的 Promise：mount 阶段
+// 多个效应并发 `import()` 同一模块时，第二次并发导入在测试环境的模块 mock 下会绕过
+// mock 拿到原生模块。收敛到单一导入点可保证两个菜单监听拿到同一（被 mock 的）模块。
+let tauriEventModulePromise: Promise<typeof import("@tauri-apps/api/event")> | null =
+  null;
+
+function importTauriEventApi(): Promise<typeof import("@tauri-apps/api/event")> {
+  tauriEventModulePromise ??= import("@tauri-apps/api/event");
+  return tauriEventModulePromise;
+}
+
 type ConflictOperationStatus = "idle" | "canceling" | "reloading" | "overwriting";
 type FileMissingOperationStatus = "idle" | "keeping" | "discarding";
 type FileMissingTarget = {
@@ -173,6 +195,11 @@ function App() {
   const activeTab = tabSession.tabs.find(
     (tab) => tab.tabId === tabSession.activeTabId,
   );
+  // 未保存活动标签的临时语法模式；已保存标签为 null（源码高亮仍按实际路径识别）。
+  const activeSyntaxMode =
+    activeTab !== undefined && activeTab.document.path === null
+      ? activeTab.syntaxMode
+      : null;
   const [health, setHealth] = useState<HealthStatus | null>(null);
   const [backendUnavailable, setBackendUnavailable] = useState(false);
   const [conflictOperation, setConflictOperation] = useState<{
@@ -232,6 +259,8 @@ function App() {
   );
   // 应用级软换行偏好：首次渲染的状态初始化阶段同步读取，首个编辑器实例直接取得正确值。
   const [wordWrapEnabled, setWordWrapEnabled] = useState(readStoredWordWrapPreference);
+  // 原生 View > Syntax 监听注册完成后置位；此前不同步菜单，菜单保持初始禁用。
+  const [syntaxMenuArmed, setSyntaxMenuArmed] = useState(false);
   const wordWrapEnabledRef = useRef(wordWrapEnabled);
   const sessionRef = useRef(session);
   const tabSessionRef = useRef(tabSession);
@@ -788,7 +817,7 @@ function App() {
     let unlisten: (() => void) | undefined;
     (async () => {
       try {
-        const { listen } = await import("@tauri-apps/api/event");
+        const { listen } = await importTauriEventApi();
         if (cancelled) {
           return;
         }
@@ -807,6 +836,48 @@ function App() {
         await initializeWordWrapMenu(wordWrapEnabledRef.current);
       } catch {
         // 初始化失败：编辑器仍按前端偏好工作，菜单保持禁用。
+      }
+    })();
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
+  // 原生 View > Syntax 选择监听：先注册监听并武装同步，再由活动标签同步效应启用菜单，
+  // 避免初始化窗口内丢失用户点击或产生不可信勾选。事件只携带固定模式清单内的明确
+  // `LanguageMode`，且仅在活动标签未保存、应用未处于交互锁定时采用；已保存标签由
+  // reducer 拒绝，不允许覆盖实际路径识别。注册失败时菜单保持禁用，编辑不受影响。
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+    (async () => {
+      try {
+        const eventModule = await importTauriEventApi();
+        const { listen } = eventModule;
+        if (cancelled) {
+          return;
+        }
+        const stopListening = await listen<SyntaxModeChanged>(
+          SYNTAX_MODE_CHANGED_EVENT,
+          ({ payload }) => {
+            const mode = payload?.mode;
+            if (!isLanguageMode(mode) || busyRef.current) {
+              return;
+            }
+            setTabSession((current) =>
+              setTabSyntaxMode(current, current.activeTabId, mode),
+            );
+          },
+        );
+        if (cancelled) {
+          stopListening();
+          return;
+        }
+        unlisten = stopListening;
+        setSyntaxMenuArmed(true);
+      } catch {
+        // 注册失败：菜单保持禁用，标签临时模式与高亮不受影响。
       }
     })();
     return () => {
@@ -1403,12 +1474,25 @@ function App() {
   async function openSaveAsPanel() {
     const current = sessionRef.current;
     const documentId = current.path === null ? null : current.id;
+    // 首次保存（无路径标签）的建议文件名：以打开面板时的完整显示名与临时语法模式为
+    // 准，打开时一次算好；面板锁定标签切换，准备期间活动标签不会变化，prepare 失败后
+    // 重新选择目录仍保留该建议后缀。
+    const firstSaveTab =
+      current.path === null
+        ? tabSessionRef.current.tabs.find(
+            (tab) => tab.tabId === tabSessionRef.current.activeTabId,
+          )
+        : undefined;
+    const suggestedName =
+      firstSaveTab !== undefined
+        ? suggestedSaveFileName(current.displayName, firstSaveTab.syntaxMode)
+        : null;
     const revision = saveAsPanelRevisionRef.current + 1;
     saveAsPanelRevisionRef.current = revision;
     setSaveAsPanel({
       open: true,
       status: "preparing",
-      fileName: current.displayName,
+      fileName: suggestedName ?? current.displayName,
       directory: null,
       replacePending: false,
       errorMessage: null,
@@ -1419,7 +1503,7 @@ function App() {
       setSaveAsPanel({
         open: true,
         status: "idle",
-        fileName: draft.fileName,
+        fileName: suggestedName ?? draft.fileName,
         directory: draft.directory,
         replacePending: false,
         errorMessage: null,
@@ -1505,6 +1589,11 @@ function App() {
       });
       setSaveAsPanel((value) => ({ ...value, open: false, status: "idle" }));
       setSession((value) => commitSavedAs(value, descriptor));
+      // 首次保存成功：清除该标签的临时语法模式，此后语言、高亮与原生菜单按实际路径
+      // 识别；取消、冲突等待或失败路径不会走到这里，临时选择保持不变。
+      setTabSession((current) =>
+        clearTabSyntaxMode(current, tabSessionRef.current.activeTabId),
+      );
       if (closeIntent !== null) {
         await finishCloseIntent(closeIntent, [
           closeIntent.active.documentId,
@@ -2036,6 +2125,22 @@ function App() {
     fileMissingPending !== null ||
     closeConfirmPending;
   busyRef.current = busy;
+
+  // 活动标签语法状态同步原生 View > Syntax：监听武装前与启动恢复期间不同步，菜单保持
+  // 初始禁用。活动标签未保存且未处于交互锁定时启用并唯一勾选其临时模式；已保存标签或
+  // 锁定期间（保存面板、冲突等待等 busy）禁用全部模式项并清除勾选，解锁后随本效应恢复。
+  // 同步失败不回滚标签状态，菜单保持最后可信状态，不阻止编辑。
+  useEffect(() => {
+    if (!syntaxMenuArmed || sessionRestore === "pending") {
+      return;
+    }
+    const available = activeSyntaxMode !== null && !busy;
+    void updateSyntaxMenu(
+      available,
+      available ? activeSyntaxMode : null,
+    ).catch(() => {});
+  }, [syntaxMenuArmed, sessionRestore, activeSyntaxMode, busy]);
+
   const editorLocked =
     sessionRestore === "pending" ||
     session.openStatus === "loading" ||
@@ -2052,7 +2157,10 @@ function App() {
     !session.readOnly && !busy && (session.path === null || session.isDirty);
   const canSaveAs = session.path !== null && !busy;
   const canEdit = !editorLocked;
+  // 文件身份语言：驱动 Markdown/Mermaid 等格式专属能力，永远来自实际路径或显示名识别。
   const activeLanguage = detectLanguage(session.path, session.displayName);
+  // 有效源码高亮语言：未保存标签采用会话内临时选择，其余沿用文件身份识别。
+  const activeHighlightLanguage = activeSyntaxMode ?? activeLanguage;
   const markdownPreviewOpen = activeTab?.markdownPreviewOpen ?? false;
   const markdownWysiwygOpen = activeTab?.markdownWysiwygOpen ?? false;
   const markdownWysiwygVisible =
@@ -2413,7 +2521,7 @@ function App() {
                 ref={editorRef}
                 content={session.content}
                 disabled={editorLocked}
-                language={activeLanguage}
+                language={activeHighlightLanguage}
                 onChange={(content) => {
                   setSession((current) => updateDocumentContent(current, content));
                 }}
@@ -2598,7 +2706,7 @@ function App() {
         <footer className="statusbar">
           <div>{session.isDirty ? "Modified" : "Saved"}</div>
           <div className="statusbar-details">
-            <span className="statusbar-language">{languageDisplayName(activeLanguage)}</span>
+            <span className="statusbar-language">{languageDisplayName(activeHighlightLanguage)}</span>
             {cursorPosition !== null && (
               <>
                 <span className="format-settings-sep" aria-hidden="true">·</span>

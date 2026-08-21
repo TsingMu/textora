@@ -50,6 +50,24 @@ export async function initializeWordWrapMenu(enabled: boolean): Promise<void> {
   return invoke<void>("initialize_word_wrap_menu", { enabled });
 }
 
+export const SYNTAX_MODE_CHANGED_EVENT = "textora-syntax-mode-changed";
+
+/** 原生 `View > Syntax` 选择事件载荷：Rust 从固定模式 ID 表发出的明确模式。 */
+export type SyntaxModeChanged = {
+  mode: string;
+};
+
+/**
+ * 同步原生 `View > Syntax` 子菜单（受限命令）：活动标签可操作时启用并唯一勾选
+ * `checkedMode`，否则禁用全部模式项并清除勾选；`checkedMode` 仅接受固定模式清单。
+ */
+export async function updateSyntaxMenu(
+  available: boolean,
+  checkedMode: string | null,
+): Promise<void> {
+  return invoke<void>("update_syntax_menu", { available, checkedMode });
+}
+
 export type ExternalDocumentChanged = {
   documentId: string;
   kind: "content" | "metadata" | "missing" | "reloadFailed";

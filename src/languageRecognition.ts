@@ -25,6 +25,36 @@ export type LanguageMode =
   | "mermaid"
   | "plain-text";
 
+/**
+ * 受支持模式的固定清单（含 `Plain Text`），顺序即原生 `View > Syntax` 子菜单顺序；
+ * 原生菜单事件载荷必须命中其中一项才被前端采用。
+ */
+export const LANGUAGE_MODES: readonly LanguageMode[] = [
+  "plain-text",
+  "javascript",
+  "typescript",
+  "json",
+  "html",
+  "css",
+  "rust",
+  "python",
+  "java",
+  "shell",
+  "sql",
+  "toml",
+  "yaml",
+  "markdown",
+  "mermaid",
+];
+
+/** 校验未知来源的值（如原生菜单事件载荷）是否为受支持的 {@link LanguageMode}。 */
+export function isLanguageMode(value: unknown): value is LanguageMode {
+  return (
+    typeof value === "string" &&
+    (LANGUAGE_MODES as readonly string[]).includes(value)
+  );
+}
+
 /** 完整文件名（小写）到语言模式的映射，优先于扩展名匹配。 */
 const KNOWN_FILE_NAMES: Readonly<Record<string, LanguageMode>> = {
   "package.json": "json",
@@ -81,6 +111,41 @@ const DISPLAY_NAMES: Readonly<Record<LanguageMode, string>> = {
   mermaid: "Mermaid",
   "plain-text": "Plain Text",
 };
+
+/** 各非普通文本模式的首选后缀（不含点），只用于未保存标签首次保存的建议文件名。 */
+const PREFERRED_SUFFIXES: Readonly<
+  Record<Exclude<LanguageMode, "plain-text">, string>
+> = {
+  javascript: "js",
+  typescript: "ts",
+  json: "json",
+  html: "html",
+  css: "css",
+  rust: "rs",
+  python: "py",
+  java: "java",
+  shell: "sh",
+  sql: "sql",
+  toml: "toml",
+  yaml: "yaml",
+  markdown: "md",
+  mermaid: "mmd",
+};
+
+/**
+ * 未保存标签首次保存的建议文件名：非 `Plain Text` 模式在完整显示名（含 `Untitled 2`
+ * 编号）后直接追加首选后缀；`Plain Text` 不追加，保持显示名原样。不替换或纠正显示名
+ * 中的任何字符，用户最终输入始终优先。
+ */
+export function suggestedSaveFileName(
+  displayName: string,
+  mode: LanguageMode,
+): string {
+  if (mode === "plain-text") {
+    return displayName;
+  }
+  return `${displayName}.${PREFERRED_SUFFIXES[mode]}`;
+}
 
 /** 取路径最后一段作为文件名；同时识别 `/` 与 `\` 以兼容 Windows 风格路径片段。 */
 function basename(path: string): string {

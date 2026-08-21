@@ -25,6 +25,7 @@ Textora 是一款 macOS 个人文本工作台，把 Windows 内网工作中常�
 - `docs/features/multi-tab-session.md`：已完成的多标签会话规格
 - `docs/features/column-block-editing.md`：已完成的列块编辑规格
 - `docs/features/code-syntax-highlighting.md`：已完成的代码文本识别与最小语法高亮规格
+- `docs/features/unsaved-document-language-mode.md`：已确认的未保存文档语法模式规格
 - `docs/features/editor-word-wrap.md`：已完成的编辑器自动换行开关规格
 - `docs/features/editor-column-ruler-and-cursor-position.md`：已完成的编辑器列标尺与光标行列位置规格
 - `docs/features/external-file-change-sync.md`：已完成的外部文件变更实时同步规格

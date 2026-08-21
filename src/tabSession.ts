@@ -3,11 +3,14 @@ import {
   createNewDocument,
   type DocumentSession,
 } from "./documentSession";
+import type { LanguageMode } from "./languageRecognition";
 import type { DocumentDescriptor } from "./platform";
 
 export type DocumentTab = {
   tabId: string;
   document: DocumentSession;
+  /** 未保存标签的会话内临时语法模式；已保存标签忽略此字段，仍按实际路径识别。 */
+  syntaxMode: LanguageMode;
   markdownPreviewOpen: boolean;
   markdownWysiwygOpen: boolean;
   mermaidPreviewOpen: boolean;
@@ -26,6 +29,7 @@ export function createInitialTabSession(): TabSessionState {
       {
         tabId: "tab-1",
         document: createNewDocument("untitled-1"),
+        syntaxMode: "plain-text",
         markdownPreviewOpen: false,
         markdownWysiwygOpen: false,
         mermaidPreviewOpen: false,
@@ -44,6 +48,7 @@ function untitledDisplayName(number: number): string {
 function createUntitledTab(tabId: string, number: number): DocumentTab {
   return {
     tabId,
+    syntaxMode: "plain-text",
     markdownPreviewOpen: false,
     markdownWysiwygOpen: false,
     mermaidPreviewOpen: false,
@@ -114,6 +119,7 @@ export function addOpenedDocumentTab(
       ...state.tabs,
       {
         tabId,
+        syntaxMode: "plain-text",
         markdownPreviewOpen: false,
         markdownWysiwygOpen: false,
         mermaidPreviewOpen: false,
@@ -142,6 +148,7 @@ export function appendRestoredTab(
       ...state.tabs,
       {
         tabId,
+        syntaxMode: "plain-text",
         markdownPreviewOpen: false,
         markdownWysiwygOpen: false,
         mermaidPreviewOpen: false,
@@ -270,6 +277,50 @@ export function setMermaidPreviewOpen(
     }
     changed = true;
     return { ...tab, mermaidPreviewOpen: open };
+  });
+  return changed ? { ...state, tabs } : state;
+}
+
+/**
+ * 设置一个未保存标签的会话内临时语法模式。选择只属于 `path === null` 的标签；已保存
+ * 标签或未命中 tabId 一律保持原状态。模式只影响源码高亮与状态栏，不产生脏状态。
+ */
+export function setTabSyntaxMode(
+  state: TabSessionState,
+  tabId: string,
+  mode: LanguageMode,
+): TabSessionState {
+  let changed = false;
+  const tabs = state.tabs.map((tab) => {
+    if (
+      tab.tabId !== tabId ||
+      tab.document.path !== null ||
+      tab.syntaxMode === mode
+    ) {
+      return tab;
+    }
+    changed = true;
+    return { ...tab, syntaxMode: mode };
+  });
+  return changed ? { ...state, tabs } : state;
+}
+
+/**
+ * 首次保存成功后清除标签的临时语法模式，使语言、高亮与原生菜单改由实际路径识别。与
+ * {@link setTabSyntaxMode} 不同，这里不检查 `path`：调用点在同一批次内先提交带路径的
+ * 可信描述符再清除，若先检查会因路径已非空而拒绝清除。
+ */
+export function clearTabSyntaxMode(
+  state: TabSessionState,
+  tabId: string,
+): TabSessionState {
+  let changed = false;
+  const tabs = state.tabs.map((tab) => {
+    if (tab.tabId !== tabId || tab.syntaxMode === "plain-text") {
+      return tab;
+    }
+    changed = true;
+    return { ...tab, syntaxMode: "plain-text" as const };
   });
   return changed ? { ...state, tabs } : state;
 }

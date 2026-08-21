@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   detectLanguage,
+  isLanguageMode,
   languageDisplayName,
+  LANGUAGE_MODES,
+  suggestedSaveFileName,
   type LanguageMode,
 } from "./languageRecognition";
 
@@ -117,5 +120,79 @@ describe("languageDisplayName", () => {
   it("未识别文件经 detectLanguage 后展示为 Plain Text", () => {
     const mode = detectLanguage(null, "notes.xyz");
     expect(languageDisplayName(mode)).toBe("Plain Text");
+  });
+});
+
+describe("isLanguageMode", () => {
+  it("固定清单包含 Plain Text 与全部源码模式且不重复", () => {
+    expect(LANGUAGE_MODES).toHaveLength(15);
+    expect(LANGUAGE_MODES[0]).toBe("plain-text");
+    expect(new Set(LANGUAGE_MODES).size).toBe(LANGUAGE_MODES.length);
+    for (const mode of LANGUAGE_MODES) {
+      expect(languageDisplayName(mode)).not.toBe("");
+    }
+  });
+
+  it("接受清单内模式并拒绝未知载荷", () => {
+    for (const mode of LANGUAGE_MODES) {
+      expect(isLanguageMode(mode)).toBe(true);
+    }
+    for (const value of [
+      "",
+      "cobol",
+      "java2",
+      "textora-syntax-java",
+      "Plain Text",
+      undefined,
+      null,
+      7,
+      {},
+    ]) {
+      expect(isLanguageMode(value)).toBe(false);
+    }
+  });
+});
+
+describe("suggestedSaveFileName", () => {
+  it("为全部 15 种模式固定首选后缀边界", () => {
+    const expectedSuffixes: Record<LanguageMode, string | null> = {
+      "plain-text": null,
+      javascript: "js",
+      typescript: "ts",
+      json: "json",
+      html: "html",
+      css: "css",
+      rust: "rs",
+      python: "py",
+      java: "java",
+      shell: "sh",
+      sql: "sql",
+      toml: "toml",
+      yaml: "yaml",
+      markdown: "md",
+      mermaid: "mmd",
+    };
+    expect(LANGUAGE_MODES).toHaveLength(
+      Object.keys(expectedSuffixes).length,
+    );
+    for (const mode of LANGUAGE_MODES) {
+      const suffix = expectedSuffixes[mode];
+      expect(suggestedSaveFileName("Untitled", mode)).toBe(
+        suffix === null ? "Untitled" : `Untitled.${suffix}`,
+      );
+    }
+  });
+
+  it("直接追加完整显示名，不替换编号或其他字符", () => {
+    expect(suggestedSaveFileName("Untitled 2", "plain-text")).toBe(
+      "Untitled 2",
+    );
+    expect(suggestedSaveFileName("Untitled 2", "java")).toBe("Untitled 2.java");
+    expect(suggestedSaveFileName("Untitled 12", "mermaid")).toBe(
+      "Untitled 12.mmd",
+    );
+    expect(suggestedSaveFileName("Draft v2", "markdown")).toBe(
+      "Draft v2.md",
+    );
   });
 });

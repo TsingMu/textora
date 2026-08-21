@@ -46,6 +46,7 @@ const tauriEventMock = vi.hoisted(() => ({
       ) => void)
     | undefined,
   wordWrapHandler: undefined as ((payload: { enabled: boolean }) => void) | undefined,
+  syntaxModeHandler: undefined as ((payload: { mode: string }) => void) | undefined,
   unlisten: vi.fn(),
 }));
 const mermaidPreviewMock = vi.hoisted(() => ({
@@ -130,6 +131,8 @@ vi.mock("@tauri-apps/api/event", () => ({
       tauriEventMock.externalChangeHandler = (payload) => handler({ payload });
     } else if (event === "textora-word-wrap-changed") {
       tauriEventMock.wordWrapHandler = (payload) => handler({ payload });
+    } else if (event === "textora-syntax-mode-changed") {
+      tauriEventMock.syntaxModeHandler = (payload) => handler({ payload });
     }
     return tauriEventMock.unlisten;
   },
@@ -170,6 +173,9 @@ function setupInvoke() {
       return undefined;
     }
     if (cmd === "initialize_word_wrap_menu") {
+      return undefined;
+    }
+    if (cmd === "update_syntax_menu") {
       return undefined;
     }
     if (cmd === "prepare_save_as") {
@@ -239,6 +245,7 @@ function resetTauriWindowMock() {
   tauriEventMock.exitRequestedHandler = undefined;
   tauriEventMock.externalChangeHandler = undefined;
   tauriEventMock.wordWrapHandler = undefined;
+  tauriEventMock.syntaxModeHandler = undefined;
   tauriEventMock.unlisten.mockReset();
 }
 
@@ -7298,5 +7305,760 @@ describe("App column ruler", () => {
     // 重新开启软换行：标尺隐藏。
     await emitWordWrap(true);
     expect(ruler()).toBeNull();
+  });
+});
+
+describe("App syntax mode menu", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+
+  beforeEach(() => {
+    (
+      globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
+    ).IS_REACT_ACT_ENVIRONMENT = true;
+    invokeMock.mockReset();
+    resetTauriWindowMock();
+    setupInvoke();
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  function syntaxMenuCalls(): unknown[][] {
+    return invokeMock.mock.calls.filter((call) => call[0] === "update_syntax_menu");
+  }
+
+  function lastSyntaxMenuCall(): unknown[] {
+    const calls = syntaxMenuCalls();
+    return calls[calls.length - 1];
+  }
+
+  function statusLanguage(): string {
+    return container.querySelector(".statusbar-language")?.textContent ?? "";
+  }
+
+  async function emitSyntaxMode(mode: string) {
+    await vi.waitFor(() => {
+      expect(tauriEventMock.syntaxModeHandler).toBeTypeOf("function");
+    });
+    await act(async () => {
+      tauriEventMock.syntaxModeHandler?.({ mode });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  }
+
+  async function clickTabButton(selector: string, index: number) {
+    await act(async () => {
+      container.querySelectorAll<HTMLButtonElement>(selector)[index]?.click();
+      await Promise.resolve();
+    });
+  }
+
+  it("initializes the menu with Plain Text for a fresh untitled tab", async () => {
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    expect(statusLanguage()).toBe("Plain Text");
+    await vi.waitFor(() => {
+      expect(syntaxMenuCalls().length).toBeGreaterThan(0);
+    });
+    expect(lastSyntaxMenuCall()).toEqual([
+      "update_syntax_menu",
+      { available: true, checkedMode: "plain-text" },
+    ]);
+  });
+
+  it("adopts a selection on the active unsaved tab without dirtying it", async () => {
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    await emitSyntaxMode("java");
+
+    expect(statusLanguage()).toBe("Java");
+    await vi.waitFor(() => {
+      expect(lastSyntaxMenuCall()).toEqual([
+        "update_syntax_menu",
+        { available: true, checkedMode: "java" },
+      ]);
+    });
+    // 临时选择不产生脏状态，也不改动内容。
+    expect(container.querySelector(".statusbar")?.textContent).not.toContain(
+      "Modified",
+    );
+    expect(container.querySelector(".cm-line")?.textContent).toBe("");
+  });
+
+  it("keeps per-tab isolation and resyncs the menu after tab changes", async () => {
+    await act(async () => {
+      root.render(<App />);
+    });
+    await emitSyntaxMode("java");
+
+    await clickTabButton(".new-tab-button", 0);
+    expect(statusLanguage()).toBe("Plain Text");
+    await vi.waitFor(() => {
+      expect(lastSyntaxMenuCall()).toEqual([
+        "update_syntax_menu",
+        { available: true, checkedMode: "plain-text" },
+      ]);
+    });
+
+    await emitSyntaxMode("sql");
+    expect(statusLanguage()).toBe("SQL");
+
+    // 切回第一个标签：恢复各自的临时选择，菜单勾选同步。
+    await clickTabButton(".document-tab-select", 0);
+    expect(statusLanguage()).toBe("Java");
+    await vi.waitFor(() => {
+      expect(lastSyntaxMenuCall()).toEqual([
+        "update_syntax_menu",
+        { available: true, checkedMode: "java" },
+      ]);
+    });
+
+    // 关闭第二个标签后活动标签仍是 Untitled，菜单保持一致。
+    await clickTabButton(".document-tab-close", 1);
+    expect(statusLanguage()).toBe("Java");
+    expect(container.querySelector(".document-tab.is-active")?.textContent).toContain(
+      "Untitled",
+    );
+  });
+
+  it("disables the menu for saved tabs and refuses to override their language", async () => {
+    await act(async () => {
+      root.render(<App />);
+    });
+    await vi.waitFor(() => {
+      expect(syntaxMenuCalls().length).toBeGreaterThan(0);
+    });
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    await vi.waitFor(() => {
+      expect(statusLanguage()).toBe("Plain Text");
+      expect(
+        container.querySelector(".document-tab.is-active")?.textContent,
+      ).toContain("notes.txt");
+    });
+    await vi.waitFor(() => {
+      expect(lastSyntaxMenuCall()).toEqual([
+        "update_syntax_menu",
+        { available: false, checkedMode: null },
+      ]);
+    });
+
+    await emitSyntaxMode("java");
+    expect(statusLanguage()).toBe("Plain Text");
+    expect(lastSyntaxMenuCall()).toEqual([
+      "update_syntax_menu",
+      { available: false, checkedMode: null },
+    ]);
+  });
+
+  it("ignores unsupported mode payloads", async () => {
+    await act(async () => {
+      root.render(<App />);
+    });
+    await vi.waitFor(() => {
+      expect(syntaxMenuCalls().length).toBeGreaterThan(0);
+    });
+    const callsBefore = syntaxMenuCalls().length;
+
+    await emitSyntaxMode("cobol");
+
+    expect(statusLanguage()).toBe("Plain Text");
+    expect(syntaxMenuCalls().length).toBe(callsBefore);
+  });
+
+  it("survives menu sync failures without blocking the editor state", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "update_syntax_menu") {
+        throw new Error("menu unavailable");
+      }
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      return undefined;
+    });
+    await act(async () => {
+      root.render(<App />);
+    });
+    await vi.waitFor(() => {
+      expect(syntaxMenuCalls().length).toBeGreaterThan(0);
+    });
+
+    await emitSyntaxMode("rust");
+
+    expect(statusLanguage()).toBe("Rust");
+    expect(container.querySelector(".cm-content")).not.toBeNull();
+  });
+
+  it("keeps temporary Markdown and Mermaid modes out of format-specific entries", async () => {
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    await emitSyntaxMode("markdown");
+    expect(statusLanguage()).toBe("Markdown");
+    expect(container.querySelector(".markdown-preview-toggle")).toBeNull();
+    expect(container.querySelector(".markdown-wysiwyg-toggle")).toBeNull();
+
+    await emitSyntaxMode("mermaid");
+    expect(statusLanguage()).toBe("Mermaid");
+    expect(container.querySelector(".mermaid-preview-toggle")).toBeNull();
+  });
+
+  it("ignores menu selections while the session restore is still pending", async () => {
+    sessionCommandsMock.restoreSteps = [new Promise<never>(() => {})];
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    await emitSyntaxMode("java");
+
+    expect(statusLanguage()).toBe("Plain Text");
+    expect(syntaxMenuCalls()).toHaveLength(0);
+  });
+
+  it("disables the menu while the save panel is open and restores it after cancel", async () => {
+    await act(async () => {
+      root.render(<App />);
+    });
+    await emitSyntaxMode("java");
+    await vi.waitFor(() => {
+      expect(lastSyntaxMenuCall()).toEqual([
+        "update_syntax_menu",
+        { available: true, checkedMode: "java" },
+      ]);
+    });
+
+    // 首次保存面板打开即进入交互锁定：菜单禁用并清除勾选。
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".save-button")?.click();
+    });
+    await vi.waitFor(() => {
+      expect(container.querySelector(".save-as-dialog")).not.toBeNull();
+    });
+    await vi.waitFor(() => {
+      expect(lastSyntaxMenuCall()).toEqual([
+        "update_syntax_menu",
+        { available: false, checkedMode: null },
+      ]);
+    });
+
+    // 锁定期间菜单事件被忽略，不改变标签临时模式。
+    await emitSyntaxMode("sql");
+    expect(statusLanguage()).toBe("Java");
+    expect(lastSyntaxMenuCall()).toEqual([
+      "update_syntax_menu",
+      { available: false, checkedMode: null },
+    ]);
+
+    // 取消面板解锁后恢复可用并重新勾选原临时模式。
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(".save-as-dialog .confirm-cancel")
+        ?.click();
+    });
+    await vi.waitFor(() => {
+      expect(container.querySelector(".save-as-dialog")).toBeNull();
+    });
+    await vi.waitFor(() => {
+      expect(lastSyntaxMenuCall()).toEqual([
+        "update_syntax_menu",
+        { available: true, checkedMode: "java" },
+      ]);
+    });
+  });
+
+  it("keeps the menu disabled while a save conflict is pending", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        return {
+          id: "doc-menu-conflict",
+          path: "/tmp/conflict.txt",
+          displayName: "conflict.txt",
+          byteCount: 5,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 5, sha256: "old" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode("Hello").buffer;
+      }
+      if (cmd === "save_document") {
+        throw { code: "save-conflict-content-changed", message: "conflict" };
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+    await act(async () => {
+      root.render(<App />);
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    await vi.waitFor(() => {
+      expect(statusLanguage()).toBe("Plain Text");
+      expect(
+        container.querySelector(".document-tab.is-active")?.textContent,
+      ).toContain("conflict.txt");
+    });
+
+    await act(async () => {
+      const editable = container.querySelector<HTMLElement>(".cm-content");
+      editable!.textContent = "Local edit";
+      editable!.dispatchEvent(
+        new InputEvent("input", {
+          bubbles: true,
+          inputType: "insertText",
+          data: "Local edit",
+        }),
+      );
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".save-button")?.click();
+    });
+
+    // 冲突等待期间处于交互锁定：菜单保持禁用且无勾选。
+    await vi.waitFor(() => {
+      expect(container.querySelector(".notice-conflict")).not.toBeNull();
+    });
+    await vi.waitFor(() => {
+      expect(lastSyntaxMenuCall()).toEqual([
+        "update_syntax_menu",
+        { available: false, checkedMode: null },
+      ]);
+    });
+  });
+});
+
+describe("App first-save suggested file name", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+
+  beforeEach(() => {
+    (
+      globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
+    ).IS_REACT_ACT_ENVIRONMENT = true;
+    invokeMock.mockReset();
+    resetTauriWindowMock();
+    setupInvoke();
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  function statusLanguage(): string {
+    return container.querySelector(".statusbar-language")?.textContent ?? "";
+  }
+
+  function syntaxMenuCalls(): unknown[][] {
+    return invokeMock.mock.calls.filter((call) => call[0] === "update_syntax_menu");
+  }
+
+  function lastSyntaxMenuCall(): unknown[] {
+    const calls = syntaxMenuCalls();
+    return calls[calls.length - 1];
+  }
+
+  async function emitSyntaxMode(mode: string) {
+    await vi.waitFor(() => {
+      expect(tauriEventMock.syntaxModeHandler).toBeTypeOf("function");
+    });
+    await act(async () => {
+      tauriEventMock.syntaxModeHandler?.({ mode });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  }
+
+  /** 打开首次保存面板并等待准备完成（输入框变为可用），返回文件名输入框。 */
+  async function openFirstSavePanel(): Promise<HTMLInputElement | null> {
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".save-button")?.click();
+    });
+    return vi.waitFor(() => {
+      const input = container.querySelector<HTMLInputElement>(
+        '.save-as-dialog input[type="text"]',
+      );
+      expect(input?.disabled ?? true).toBe(false);
+      return input;
+    });
+  }
+
+  async function setPanelFileName(
+    input: HTMLInputElement | null | undefined,
+    value: string,
+  ) {
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        "value",
+      )?.set;
+      setter?.call(input, value);
+      input?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  }
+
+  async function clickPanelButton(selector: string) {
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(`.save-as-dialog ${selector}`)
+        ?.click();
+    });
+  }
+
+  it("prefills the suggested file name from the temporary syntax mode", async () => {
+    await act(async () => {
+      root.render(<App />);
+    });
+    await emitSyntaxMode("java");
+
+    const input = await openFirstSavePanel();
+
+    expect(input?.value).toBe("Untitled.java");
+    expect(statusLanguage()).toBe("Java");
+    await clickPanelButton(".confirm-cancel");
+  });
+
+  it("keeps the suggested suffix after prepare fails and the directory is re-picked", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "prepare_save_as") {
+        throw { code: "save-failed", message: "prepare failed" };
+      }
+      if (cmd === "pick_save_directory") {
+        return { id: "grant-default", displayName: "tmp" };
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+    await act(async () => {
+      root.render(<App />);
+    });
+    await emitSyntaxMode("java");
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".save-button")?.click();
+    });
+
+    // 准备失败后面板仍可操作并显示错误，文件名保留打开时算好的建议后缀。
+    const input = await vi.waitFor(() => {
+      const el = container.querySelector<HTMLInputElement>(
+        '.save-as-dialog input[type="text"]',
+      );
+      expect(el?.disabled ?? true).toBe(false);
+      return el;
+    });
+    expect(input?.value).toBe("Untitled.java");
+    expect(
+      container.querySelector(".save-as-validation[role='alert']")?.textContent,
+    ).toBeTruthy();
+
+    // 重新选择目录成功后建议名不被覆盖回显示名。
+    await clickPanelButton(".save-as-location-button");
+    await vi.waitFor(() => {
+      expect(
+        invokeMock.mock.calls.some((call) => call[0] === "pick_save_directory"),
+      ).toBe(true);
+    });
+    await vi.waitFor(() => {
+      expect(container.querySelector(".save-as-location")?.textContent).toContain(
+        "tmp",
+      );
+    });
+    expect(input?.value).toBe("Untitled.java");
+    await clickPanelButton(".confirm-cancel");
+  });
+
+  it("keeps full numbered display names and appends nothing for Plain Text", async () => {
+    await act(async () => {
+      root.render(<App />);
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".new-tab-button")?.click();
+    });
+    await emitSyntaxMode("sql");
+    expect(
+      container.querySelector(".document-tab.is-active")?.textContent,
+    ).toContain("Untitled 2");
+
+    const sqlInput = await openFirstSavePanel();
+    expect(sqlInput?.value).toBe("Untitled 2.sql");
+    await clickPanelButton(".confirm-cancel");
+
+    // 未选择模式的带编号标签：建议名保持完整显示名，不追加后缀也不丢编号。
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".new-tab-button")?.click();
+    });
+    const plainNumberedInput = await openFirstSavePanel();
+    expect(plainNumberedInput?.value).toBe("Untitled 3");
+    await clickPanelButton(".confirm-cancel");
+
+    // 切回第一个 Plain Text 标签同样不带后缀。
+    await act(async () => {
+      container.querySelectorAll<HTMLButtonElement>(".document-tab-select")[0]?.click();
+    });
+    const plainInput = await openFirstSavePanel();
+    expect(plainInput?.value).toBe("Untitled");
+    await clickPanelButton(".confirm-cancel");
+  });
+
+  it("saves the user-edited name, re-detects the language and clears the temporary mode", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "prepare_save_as") {
+        return {
+          fileName: "notes",
+          directory: { id: "grant-default", displayName: "tmp" },
+        };
+      }
+      if (cmd === "preview_save_target") {
+        return { exists: false, isCurrentPath: false, occupiedTabId: null };
+      }
+      if (cmd === "save_document_as_at") {
+        return {
+          id: "untitled-1",
+          path: "/tmp/notes",
+          displayName: "notes",
+          byteCount: 0,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 0, sha256: "new" },
+          readOnly: false,
+        };
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await act(async () => {
+      root.render(<App />);
+    });
+    await emitSyntaxMode("java");
+
+    const input = await openFirstSavePanel();
+    await setPanelFileName(input, "notes");
+    await clickPanelButton(".confirm-save");
+
+    await vi.waitFor(() => {
+      expect(
+        container.querySelector(".document-tab.is-active")?.textContent,
+      ).toContain("notes");
+    });
+    // 无后缀保存成功：语言按实际路径退化为 Plain Text，菜单禁用。
+    expect(statusLanguage()).toBe("Plain Text");
+    await vi.waitFor(() => {
+      expect(lastSyntaxMenuCall()).toEqual([
+        "update_syntax_menu",
+        { available: false, checkedMode: null },
+      ]);
+    });
+    const saveCall = invokeMock.mock.calls.find(
+      (call) => call[0] === "save_document_as_at",
+    );
+    expect(saveCall?.[2]).toMatchObject({
+      headers: { "textora-file-name": "notes" },
+    });
+
+    // 保存成功后 Save As 的初始名来自实际文件，不再使用临时建议。
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".save-as-button")?.click();
+    });
+    const saveAsInput = await vi.waitFor(() => {
+      const input = container.querySelector<HTMLInputElement>(
+        '.save-as-dialog input[type="text"]',
+      );
+      expect(input?.disabled ?? true).toBe(false);
+      return input;
+    });
+    expect(saveAsInput?.value).toBe("notes");
+    await clickPanelButton(".confirm-cancel");
+  });
+
+  it("keeps the temporary mode when the save-as panel is cancelled", async () => {
+    await act(async () => {
+      root.render(<App />);
+    });
+    await emitSyntaxMode("java");
+
+    const input = await openFirstSavePanel();
+    expect(input?.value).toBe("Untitled.java");
+    await clickPanelButton(".confirm-cancel");
+
+    expect(container.querySelector(".save-as-dialog")).toBeNull();
+    expect(statusLanguage()).toBe("Java");
+    await vi.waitFor(() => {
+      expect(lastSyntaxMenuCall()).toEqual([
+        "update_syntax_menu",
+        { available: true, checkedMode: "java" },
+      ]);
+    });
+  });
+
+  it("keeps the temporary mode when directory selection is cancelled", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "prepare_save_as") {
+        return { fileName: "Untitled", directory: null };
+      }
+      if (cmd === "pick_save_directory") {
+        return null;
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await act(async () => {
+      root.render(<App />);
+    });
+    await emitSyntaxMode("java");
+
+    const input = await openFirstSavePanel();
+    expect(input?.value).toBe("Untitled.java");
+    await clickPanelButton(".save-as-location-button");
+
+    expect(container.querySelector(".save-as-dialog")).toBeNull();
+    expect(statusLanguage()).toBe("Java");
+    await vi.waitFor(() => {
+      expect(lastSyntaxMenuCall()).toEqual([
+        "update_syntax_menu",
+        { available: true, checkedMode: "java" },
+      ]);
+    });
+  });
+
+  it("keeps the temporary mode when the first save fails", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "prepare_save_as") {
+        return {
+          fileName: "Untitled",
+          directory: { id: "grant-default", displayName: "tmp" },
+        };
+      }
+      if (cmd === "preview_save_target") {
+        return { exists: false, isCurrentPath: false, occupiedTabId: null };
+      }
+      if (cmd === "save_document_as_at") {
+        throw { code: "save-failed", message: "disk full" };
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await act(async () => {
+      root.render(<App />);
+    });
+    await emitSyntaxMode("java");
+
+    const input = await openFirstSavePanel();
+    expect(input?.value).toBe("Untitled.java");
+    await clickPanelButton(".confirm-save");
+
+    await vi.waitFor(() => {
+      expect(container.querySelector(".save-as-validation")).not.toBeNull();
+    });
+    // 失败后面板保留，临时 Java 模式与建议名不变；面板打开处于交互锁定，菜单禁用。
+    expect(container.querySelector(".save-as-dialog")).not.toBeNull();
+    expect(statusLanguage()).toBe("Java");
+    expect(
+      container.querySelector<HTMLInputElement>(
+        '.save-as-dialog input[type="text"]',
+      )?.value,
+    ).toBe("Untitled.java");
+    expect(lastSyntaxMenuCall()).toEqual([
+      "update_syntax_menu",
+      { available: false, checkedMode: null },
+    ]);
+  });
+
+  it("keeps the temporary mode while waiting for the replace confirmation", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "prepare_save_as") {
+        return {
+          fileName: "Untitled",
+          directory: { id: "grant-default", displayName: "tmp" },
+        };
+      }
+      if (cmd === "preview_save_target") {
+        return { exists: true, isCurrentPath: false, occupiedTabId: null };
+      }
+      if (cmd === "save_document_as_at") {
+        return {
+          id: "untitled-1",
+          path: "/tmp/saved.txt",
+          displayName: "saved.txt",
+          byteCount: 0,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: 0, sha256: "new" },
+          readOnly: false,
+        };
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await act(async () => {
+      root.render(<App />);
+    });
+    await emitSyntaxMode("java");
+
+    const input = await openFirstSavePanel();
+    expect(input?.value).toBe("Untitled.java");
+    await clickPanelButton(".confirm-save");
+
+    await vi.waitFor(() => {
+      expect(container.querySelector(".save-as-replace-warning")).not.toBeNull();
+    });
+    // 目标冲突等待期间临时模式保留；面板打开处于交互锁定，菜单禁用。
+    expect(statusLanguage()).toBe("Java");
+    expect(
+      container.querySelector<HTMLInputElement>(
+        '.save-as-dialog input[type="text"]',
+      )?.value,
+    ).toBe("Untitled.java");
+    expect(lastSyntaxMenuCall()).toEqual([
+      "update_syntax_menu",
+      { available: false, checkedMode: null },
+    ]);
+
+    await clickPanelButton(".confirm-replace");
+    // 确认替换并成功后：按实际路径（.txt）识别，临时模式清除，菜单禁用。
+    await vi.waitFor(() => {
+      expect(statusLanguage()).toBe("Plain Text");
+    });
+    await vi.waitFor(() => {
+      expect(lastSyntaxMenuCall()).toEqual([
+        "update_syntax_menu",
+        { available: false, checkedMode: null },
+      ]);
+    });
   });
 });
