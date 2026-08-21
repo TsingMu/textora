@@ -1,6 +1,6 @@
 # 未保存文档语法模式
 
-> 状态：已确认
+> 状态：已完成
 
 ## 背景与目标
 
@@ -83,12 +83,12 @@ Textora 已能根据已保存文件的文件名或扩展名启用语法高亮，
 - [x] 多个 Untitled 标签的临时模式相互独立；切换、关闭和新建标签后菜单勾选与当前标签一致，新标签不继承选择。
 - [x] 已保存标签禁用 `Syntax` 子菜单并始终按实际文件名或扩展名识别；无法通过菜单覆盖。
 - [x] 临时选择 Markdown 或 Mermaid 只改变源码高亮与状态栏，不开放对应 Preview/WYSIWYG 专属入口。
-- [ ] 非 `Plain Text` 的 Untitled 首次保存时按映射预填带后缀的建议文件名；带编号的 Untitled 显示名保持完整。
-- [ ] 用户删除建议后缀或输入其他后缀后可按该名称保存，应用不自动追加或纠正；成功后语言按实际路径重新识别。
-- [ ] 首次保存取消或失败后临时模式保留；成功后清除临时模式，后续 Save As 不再使用临时建议。
+- [x] 非 `Plain Text` 的 Untitled 首次保存时按映射预填带后缀的建议文件名；带编号的 Untitled 显示名保持完整。
+- [x] 用户删除建议后缀或输入其他后缀后可按该名称保存，应用不自动追加或纠正；成功后语言按实际路径重新识别。
+- [x] 首次保存取消或失败后临时模式保留；成功后清除临时模式，后续 Save As 不再使用临时建议。
 - [x] 菜单同步或事件发送失败不会修改内容或阻止编辑，并且不会让可操作菜单展示与当前标签不一致的可信假象。
-- [ ] 自动化覆盖模式/后缀映射、标签隔离、CodeMirror 动态重配、菜单同步、保存成功/取消/失败及 Markdown/Mermaid 模式边界。
-- [ ] `npm run check`、`npm run build`、`cargo fmt --manifest-path src-tauri/Cargo.toml --check`、`cargo test --manifest-path src-tauri/Cargo.toml`、`npm run tauri -- build` 与 `git diff --check` 通过；macOS release 真实应用验收覆盖原生菜单、标签切换及首次保存建议。
+- [x] 自动化覆盖模式/后缀映射、标签隔离、CodeMirror 动态重配、菜单同步、保存成功/取消/失败及 Markdown/Mermaid 模式边界。
+- [x] `npm run check`、`npm run build`、`cargo fmt --manifest-path src-tauri/Cargo.toml --check`、`cargo test --manifest-path src-tauri/Cargo.toml`、`npm run tauri -- build` 与 `git diff --check` 通过；macOS release 真实应用验收覆盖原生菜单、标签切换及首次保存建议。
 
 ## 依赖与约束
 
@@ -106,11 +106,12 @@ Textora 已能根据已保存文件的文件名或扩展名启用语法高亮，
 
 1. **确认未保存文档语法模式规格**（已完成）：确认模式清单、菜单边界、标签状态所有权、格式专属能力边界、首选后缀和保存成功/失败规则；只修改规划文档。
 2. **接入未保存标签临时语法模式与原生菜单**（已完成）：交付 `View > Syntax` 选择、单标签临时状态、CodeMirror 高亮/状态栏更新、标签切换同步及失败保护；不修改首次保存文件名。
-3. **首次保存采用语法模式建议文件名**：按模式映射预填 Untitled 首次保存文件名，保证用户输入优先，并覆盖成功清除、取消/失败保留及实际路径重新识别；不改变已保存文档 Save As。
-4. **语法模式集成验收与文档收尾**：执行完整自动化、release 构建和 macOS 真实应用验收，核对菜单/标签/首次保存组合行为并同步规格、README 与 backlog；只做必要小修。
+3. **首次保存采用语法模式建议文件名**（已完成）：按模式映射预填 Untitled 首次保存文件名，保证用户输入优先，并覆盖成功清除、取消/失败保留及实际路径重新识别；不改变已保存文档 Save As。
+4. **语法模式集成验收与文档收尾**（已完成）：执行完整自动化、release 构建和 macOS 真实应用验收，核对菜单/标签/首次保存组合行为并同步规格、README 与 backlog；只做必要小修。
 
 ## 验证记录
 
 - 2026-08-21 完成规格确认：复核现有 `LanguageMode`/语言扩展、`DocumentTab` 标签 UI 状态、CodeMirror 动态重配、原生 `View` 菜单桥接，以及 Untitled 首次保存目标面板。确认临时模式只属于无路径标签、每个标签独立且不持久化；Markdown/Mermaid 临时选择不开放格式专属模式；首选后缀只作为首次保存面板初始建议，用户最终输入优先。功能拆为菜单与临时高亮、首次保存建议、最终集成验收三个实现切片。本轮只修改规划文档，未修改生产代码、实现性测试、依赖或构建配置，未运行测试或构建。
 - 2026-08-21 完成「接入未保存标签临时语法模式与原生菜单」：新增原生 `View > Syntax` 固定 15 模式单选子菜单（`src-tauri/src/lib.rs` 的 `SYNTAX_MODES`/`update_syntax_menu` 命令与点击单选修复、事件失败回滚），`DocumentTab` 增加 `syntaxMode` 会话状态（新建/打开/恢复默认 `plain-text`，`setTabSyntaxMode` 仅作用于未保存标签），前端经 `activeHighlightLanguage` 驱动 CodeMirror 高亮与状态栏，文件身份语言继续独立门控 Preview/WYSIWYG；监听注册武装后才同步菜单，`busyRef` 与会话恢复 pending 期间忽略菜单事件。自动化覆盖模式清单校验、标签隔离、脏状态/内容不变、已保存标签禁用、不支持载荷忽略、同步失败保护及 Markdown/Mermaid 边界。验证：`cargo fmt --manifest-path src-tauri/Cargo.toml --check`、`cargo test --manifest-path src-tauri/Cargo.toml`（165 passed / 0 failed）、`npm run check`（500 passed / 0 failed，24 个测试文件）、`npm run build`、`git diff --check` 全部通过；`npm run tauri -- build` 与 macOS 真实应用验收留待最终集成验收任务。
 - 2026-08-21 完成「首次保存采用语法模式建议文件名」：`suggestedSaveFileName` 固定 15 模式首选后缀并在完整 Untitled 显示名后直接追加（`Plain Text` 不追加、编号保留），首次保存面板准备完成时对无路径标签一次设置建议名，已保存 Save As 仍用 Rust 草稿名；`clearTabSyntaxMode` 仅在保存成功取得带路径可信描述符后清除临时模式，取消、目录取消、目标冲突等待与失败保留；保存后语言、状态栏与原生菜单按实际路径重识别，用户编辑过的文件名不被覆盖。验证：定向单测 49 passed、新增 App 集成用例 7 passed；`npm run check`（510 passed / 0 failed）、`npm run build`、`git diff --check` 通过；release 构建与真实应用验收留待最终集成验收任务。
+- 2026-08-21 完成集成验收与文档收尾：完整回归首次暴露 `Editor.test.ts` 把 CodeMirror 增量解析是否在同一调度片内追上 EOF 当作产品契约，造成偶发 `null`；保留相邻强制解析用例对语法树路径的覆盖，将该用例收窄为“树已追上则使用树、未追上则回退文本扫描，用户按 Enter 均能立即自动闭合”，未修改生产逻辑。最终 `npm run check`（513 passed / 0 failed）、`npm run build`、Rust fmt/test（167 passed / 0 failed）、`npm run tauri -- build` 与 `git diff --check` 通过；release bundle 经本地 ad-hoc 签名后 `codesign --verify --deep --strict` 通过。Computer Use 在该 release `Textora.app` 中确认：已保存标签禁用 `Syntax`；两个 Untitled 分别保持 Java/SQL 且新标签默认 Plain Text；临时 Markdown/Mermaid 不开放专属入口；保存面板建议 `Untitled.java` 与 `Untitled 2.sql` 并在面板期间禁用菜单；取消后保留临时模式；用户将 SQL 建议改为 `.md` 后按最终名称保存，状态与 Markdown 专属入口按实际路径切换，后续 Save As 使用实际文件名；仅选择临时模式的干净标签关闭时不触发未保存确认。验收临时文件已清理。
