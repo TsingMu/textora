@@ -184,6 +184,18 @@ export function detectLanguage(
   return KNOWN_EXTENSIONS[ext] ?? "plain-text";
 }
 
+/**
+ * 返回文档当前用于高亮、状态栏与格式专属能力的有效语言。未保存文档采用标签会话内
+ * 的临时 Syntax；一旦文档具有路径，实际文件名识别始终优先且临时值不再生效。
+ */
+export function effectiveDocumentLanguage(
+  path: string | null,
+  displayName: string,
+  syntaxMode: LanguageMode,
+): LanguageMode {
+  return path === null ? syntaxMode : detectLanguage(path, displayName);
+}
+
 /** 返回语言模式对应的状态栏展示名（如 `TypeScript`、`Plain Text`）。 */
 export function languageDisplayName(mode: LanguageMode): string {
   return DISPLAY_NAMES[mode];

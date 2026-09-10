@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   detectLanguage,
+  effectiveDocumentLanguage,
   isLanguageMode,
   languageDisplayName,
   LANGUAGE_MODES,
@@ -90,6 +91,26 @@ describe("detectLanguage", () => {
 
   it("Untitled 路径为 null 时按显示名退化为普通文本", () => {
     expect(detectLanguage(null, "Untitled")).toBe("plain-text");
+  });
+});
+
+describe("effectiveDocumentLanguage", () => {
+  it("uses the selected Syntax for Untitled documents", () => {
+    expect(effectiveDocumentLanguage(null, "Untitled", "markdown")).toBe(
+      "markdown",
+    );
+    expect(effectiveDocumentLanguage(null, "Untitled 2", "mermaid")).toBe(
+      "mermaid",
+    );
+  });
+
+  it("uses the saved path and ignores a stale temporary Syntax", () => {
+    expect(
+      effectiveDocumentLanguage("/tmp/notes.txt", "notes.txt", "markdown"),
+    ).toBe("plain-text");
+    expect(
+      effectiveDocumentLanguage("/tmp/README.md", "README.md", "mermaid"),
+    ).toBe("markdown");
   });
 });
 

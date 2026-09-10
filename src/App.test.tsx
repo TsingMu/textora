@@ -205,6 +205,10 @@ vi.mock("prettier/standalone", async (importOriginal) => {
       prettierGate.run(() => actual.format(...args)),
   };
 });
+
+afterEach(() => {
+  prettierGate.reset();
+});
 import App from "./App";
 import {
   installLocalStorageStub,
@@ -7753,19 +7757,147 @@ describe("App syntax mode menu", () => {
     expect(container.querySelector(".cm-content")).not.toBeNull();
   });
 
-  it("keeps temporary Markdown and Mermaid modes out of format-specific entries", async () => {
+  it("gives an Untitled Markdown tab the same Preview, WYSIWYG, and Format capabilities", async () => {
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    const content = "# Draft\n\n```js\nconst value={ok:true}\n```";
+    const editable = container.querySelector<HTMLElement>(".cm-content");
+    const view = editable === null ? null : EditorView.findFromDOM(editable);
+    expect(view).not.toBeNull();
+    await act(async () => {
+      view?.dispatch({
+        changes: { from: 0, to: view.state.doc.length, insert: content },
+        selection: EditorSelection.cursor(content.indexOf("const")),
+      });
+    });
+
+    await emitSyntaxMode("markdown");
+    expect(statusLanguage()).toBe("Markdown");
+    expect(container.querySelector(".markdown-preview-toggle")).not.toBeNull();
+    expect(container.querySelector(".markdown-wysiwyg-toggle")).not.toBeNull();
+    expect(container.querySelector(".format-fence-button")).not.toBeNull();
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".format-fence-button")?.click();
+    });
+    expect(view?.state.doc.toString()).toContain(
+      "const value = { ok: true };",
+    );
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".markdown-preview-toggle")?.click();
+    });
+    expect(container.querySelector(".markdown-preview-pane")).not.toBeNull();
+    expect(container.querySelector(".markdown-preview-content")?.innerHTML).toContain(
+      "<h1>Draft</h1>",
+    );
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".markdown-wysiwyg-toggle")?.click();
+    });
+    expect(container.querySelector(".markdown-preview-pane")).toBeNull();
+    expect(container.querySelector(".markdown-wysiwyg-editor")).not.toBeNull();
+
+    await emitSyntaxMode("plain-text");
+    expect(statusLanguage()).toBe("Plain Text");
+    expect(container.querySelector(".markdown-preview-toggle")).toBeNull();
+    expect(container.querySelector(".markdown-wysiwyg-editor")).toBeNull();
+    expect(container.querySelector(".cm-content")?.textContent).toContain("# Draft");
+  });
+
+  it("gives each Untitled tab the format capabilities selected by its own Syntax", async () => {
     await act(async () => {
       root.render(<App />);
     });
 
     await emitSyntaxMode("markdown");
-    expect(statusLanguage()).toBe("Markdown");
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".markdown-preview-toggle")?.click();
+      container.querySelector<HTMLButtonElement>(".new-tab-button")?.click();
+    });
+    expect(statusLanguage()).toBe("Plain Text");
     expect(container.querySelector(".markdown-preview-toggle")).toBeNull();
-    expect(container.querySelector(".markdown-wysiwyg-toggle")).toBeNull();
 
     await emitSyntaxMode("mermaid");
     expect(statusLanguage()).toBe("Mermaid");
-    expect(container.querySelector(".mermaid-preview-toggle")).toBeNull();
+    const mermaidToggle = container.querySelector<HTMLButtonElement>(
+      ".mermaid-preview-toggle",
+    );
+    expect(mermaidToggle).not.toBeNull();
+
+    const editable = container.querySelector<HTMLElement>(".cm-content");
+    const view = editable === null ? null : EditorView.findFromDOM(editable);
+    await act(async () => {
+      view?.dispatch({ changes: { from: 0, insert: "flowchart TD\nA-->B" } });
+      mermaidToggle?.click();
+    });
+    await vi.waitFor(() => {
+      expect(container.querySelector(".mermaid-preview-content")?.innerHTML).toContain(
+        "A--&gt;B",
+      );
+    });
+
+    await clickTabButton(".document-tab-select", 0);
+    expect(statusLanguage()).toBe("Markdown");
+    expect(container.querySelector(".markdown-preview-pane")).not.toBeNull();
+    expect(container.querySelector(".mermaid-preview-pane")).toBeNull();
+  });
+
+  it("discards delayed Markdown formatting after the Untitled Syntax changes", async () => {
+    const content = "```js\nconst value={ok:true}\n```";
+    await act(async () => {
+      root.render(<App />);
+    });
+    const editable = container.querySelector<HTMLElement>(".cm-content");
+    const view = editable === null ? null : EditorView.findFromDOM(editable);
+    await act(async () => {
+      view?.dispatch({
+        changes: { from: 0, insert: content },
+        selection: EditorSelection.cursor(content.indexOf("const")),
+      });
+    });
+    await emitSyntaxMode("markdown");
+
+    prettierGate.arm();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".format-fence-button")?.click();
+    });
+    await prettierGate.waitUntilStarted();
+    await emitSyntaxMode("plain-text");
+    await act(async () => {
+      prettierGate.release();
+      await prettierGate.waitUntilCompleted();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(view?.state.doc.toString()).toBe(content);
+    expect(container.querySelector(".format-fence-button")).toBeNull();
+    expect(container.querySelector(".notice-format-fence")).toBeNull();
+  });
+
+  it("clears Markdown format feedback when the Untitled Syntax changes", async () => {
+    const content = "```xml\n<node/>\n```";
+    await act(async () => {
+      root.render(<App />);
+    });
+    const editable = container.querySelector<HTMLElement>(".cm-content");
+    const view = editable === null ? null : EditorView.findFromDOM(editable);
+    await act(async () => {
+      view?.dispatch({
+        changes: { from: 0, insert: content },
+        selection: EditorSelection.cursor(content.indexOf("<node")),
+      });
+    });
+    await emitSyntaxMode("markdown");
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".format-fence-button")?.click();
+    });
+    expect(container.querySelector(".notice-format-fence")).not.toBeNull();
+
+    await emitSyntaxMode("plain-text");
+    expect(container.querySelector(".notice-format-fence")).toBeNull();
   });
 
   it("ignores menu selections while the session restore is still pending", async () => {

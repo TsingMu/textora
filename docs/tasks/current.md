@@ -12,6 +12,30 @@
 
 ## 最近完成
 
+### Syntax 专属能力组合回归与发布收尾
+
+- **状态**：已完成
+- **开始日期**：2026-09-10
+- **完成日期**：2026-09-10
+- **Feature Spec**：`docs/features/unsaved-document-language-mode.md`
+- **目标**：完成新能力的完整回归、release 构建、macOS 真实交互验收和文档收尾。
+- **范围**：完整前后端验证、release bundle 构建与签名、真实应用验证 Untitled Markdown/Mermaid 主要流程、同步 README/Feature/current 状态并部署已验收版本。
+- **非范围**：新增主要行为或扩大支持语言。
+- **结果**：实现与全部自动化通过；新 release 已完成临时签名并部署到 `/Applications/Textora.app`。真实应用确认 Untitled 选择 Markdown 后可使用 Preview、WYSIWYG 与 fenced code Format，选择 Mermaid 后可渲染预览，且标签间 Syntax 和预览状态隔离。经用户授权，验收创建的 `Untitled` 与 `Untitled 2` 未保存临时标签已选择“不保存”关闭，原有四个已保存标签保持打开。
+- **验证记录**：定向测试 **205 passed / 0 failed**；`npm run check` 独立复跑 **538 passed / 0 failed**；`npm run build`、`cargo fmt --manifest-path src-tauri/Cargo.toml --check`、Rust tests（**167 passed / 0 failed**）、`npm run tauri -- build`、release 与安装版本 `codesign --verify --deep --strict`、安装前后二进制 SHA-256 一致及 `git diff --check` 通过。安装版本 SHA-256 为 `6edc1315bc57f62fb1a975f801d7399fa72c68760c5844d10c6e03d9aaaf6c2e`，旧安装备份位于 `/private/tmp/Textora.app.syntax-capability-backup`。
+
+### Untitled 复用所选 Syntax 的格式专属能力
+
+- **状态**：已完成
+- **开始日期**：2026-09-10
+- **完成日期**：2026-09-10
+- **Feature Spec**：`docs/features/unsaved-document-language-mode.md`
+- **目标**：使用 `+` 新建 Untitled 标签并选择 Syntax 后，可使用与直接打开对应格式文件相同的已有功能。
+- **范围**：统一未保存临时 Syntax 与已保存路径识别的有效语言判定；让 Markdown Preview/WYSIWYG/Format/编辑辅助及 Mermaid Preview 复用该判定；覆盖模式切换、标签隔离和异步格式化失效保护。
+- **非范围**：新增语言或格式能力、允许 Syntax 覆盖已保存文件、持久化临时模式、改变首次保存建议与保存后按实际路径重识别规则、release 部署与人工验收。
+- **结果**：新增有效文档语言契约，Untitled 使用标签 Syntax、已保存文档仍强制按实际路径识别；App 的源码语言、状态栏与 Markdown/Mermaid 专属入口统一采用该结果。自动化确认 Untitled Markdown 可预览、进入 WYSIWYG、格式化 fenced code，Untitled Mermaid 可本地预览；模式切换立即卸载旧能力且不改源码，多标签保持各自模式与预览状态，异步 Format 在 Syntax 离开 Markdown 后零修改且不残留提示。
+- **验证记录**：定向 `npm test -- --run src/languageRecognition.test.ts src/App.test.tsx` 通过（**205 passed / 0 failed**）；`npm run check` 独立复跑通过（**538 passed / 0 failed**，24 个测试文件）；`npm run build` 通过；`git diff --check` 通过。一次将完整测试与生产构建并行执行时有 4 个无断言失败的 5 秒超时，独立复跑全部通过，判定为资源争用而非回归。
+
 ### 修复格式化异步提交竞态
 
 - **状态**：已完成
@@ -23,33 +47,3 @@
 - **非范围**：新增格式化语言、改变既有「格式化期间文档变化」的 fence 重定位语义、锁死保存/切标签入口。
 - **结果**：App 捕获格式化发起标签与文档身份，并在异步结果提交前校验活动上下文、只读与交互锁；Editor 同时校验当前挂载视图，并沿用既有 fence 内容重定位保护。标签切换或 WYSIWYG 卸载后的迟到结果零修改，且不会把旧操作提示挂到新活动文档；保存挂起期间返回的结果被拒绝，避免磁盘旧内容与已清洁会话新内容不一致。测试闸门以格式化器开始/完成信号确定性复现两个竞态，临时诊断文件与调试日志已移除。
 - **验证记录**：`npm run check` 通过（**533 passed / 0 failed**，24 个测试文件）；`npm run build` 通过；`cargo fmt --manifest-path src-tauri/Cargo.toml --check` 通过；`cargo test --manifest-path src-tauri/Cargo.toml` 通过（**167 passed / 0 failed**）；`git diff --check` 通过。
-
-### 通用 Format 组合回归与文档收尾
-
-- **状态**：已完成
-- **开始日期**：2026-09-10
-- **完成日期**：2026-09-10
-- **Feature Spec**：`docs/features/markdown-fenced-code-formatting.md`
-- **目标**：在完整回归与 macOS release 真实应用中确认通用 `Format` 的组合行为，并完成 Feature 验收与文档收尾。
-- **范围**：运行完整前端检查、构建与 Tauri release 构建；在 macOS 真实应用中验收首期语言主要格式化流程与一次撤销；核对失败保护和 Preview/WYSIWYG、只读/忙碌、多标签及保存边界；同步 Feature Spec、README 与 backlog。
-- **非范围**：新增语言、别名或任何格式化行为。
-- **依赖**：已完成的通用入口/JSON 迁移、prettier、sql-formatter 与 shfmt WASM 接入。
-- **拆分检查**：本任务只负责组合回归、真实平台确认与文档状态翻转，未新增主要行为。
-- **完成标准**：完整自动化、前端构建与 release 构建通过；macOS 真实应用组合验收按实际能力完成并如实记录；Feature Spec 验收条件全部有真实结果；`git diff --check` 通过。
-- **结果**：通用 `Format` 首期能力完成。实际 `.md` 文件在 release 应用中显示入口，JSON、JavaScript、TypeScript、YAML、SQL 与 Shell 均产生预期格式化输出；JSON 一次 `⌘Z` 恢复原文。临时 Untitled 的 Markdown 语法模式不开放格式专属入口，符合既有边界。因同时存在两个相同 bundle ID 的 Textora，Computer Use 无法稳定区分后续 UI 实例，故其余失败与模式边界采用完整自动化结果验收并如实记录；工作区验收实例已按进程路径结束，用户 `/Applications` 实例保持运行。
-- **验证记录**：`npm run check` 通过（**531 passed / 0 failed**，24 个测试文件）；`npm run build` 通过；`npm run tauri -- build` 通过并生成 `src-tauri/target/release/bundle/macos/Textora.app`；真实应用覆盖六种语言的有效格式化、JSON 一次撤销与 Untitled 文件身份边界；自动化覆盖未知/未闭合/无效/超限/并发变化、只读/忙碌、多标签、WYSIWYG/Preview、保存与关闭保护；最终 `git diff --check` 通过。
-
-### shfmt WASM 接入 Shell 格式化
-
-- **状态**：已完成
-- **开始日期**：2026-09-10
-- **完成日期**：2026-09-10
-- **Feature Spec**：`docs/features/markdown-fenced-code-formatting.md`
-- **目标**：`Format` 能按规格固定风格格式化闭合的 Shell fenced code block。
-- **范围**：新增 @wasm-fmt/shfmt 运行时依赖；注册 `sh`/`bash`/`zsh`/`shell`/`shellscript` 别名与规格固定选项；无效输入失败语义；vitest 下 WASM 加载策略；记录许可证与体积。
-- **非范围**：其他语言；自定义 Shell 选项；简化改写（`-s` simplify）行为。
-- **依赖**：完成「通用 Format 入口与 JSON 迁移」。
-- **拆分检查**：独立依赖、独立可观察结果，单语言族一个任务。
-- **完成标准**：Shell 别名映射单元覆盖、有效输入确定性输出断言、无效输入零修改通过；许可证与体积记录于验证记录；`npm run check` 与 `git diff --check` 通过。
-- **结果**：`src/fenceFormatting.ts` 注册表追加 Shell 条目：5 个别名统一 displayName "Shell"，按 bash 变体解析（path `".bash"`）；固定选项仅 `indent: 2`，改写类开关全部显式关闭（binaryNextLine/switchCaseIndent/spaceRedirects/funcNextLine/minify/singleLine/simplify）。经包官方 `/vite` 入口动态导入，生产构建中 WASM 作为本地资产输出。vitest 加载策略：`shfmt.wasm?init` 胶水在 jsdom 下无法解析资源 URL（外置时报 default 导出缺失，inline 后报 URL 解析失败），最终经 vite.config.ts 的 `test.alias` 把该入口替换为 `src/shfmtVitestShim.ts`（re-export `/node` 入口的真实 `format` + 空 init），测试走同一 WASM 的 Node 路径，行为与生产一致。行为发现：shfmt 保留单行紧凑复合命令（只折行不改写）、输出恒以 `\n` 结尾、语法错误抛错归统一 `invalid-content` 语义。
-- **验证记录**：@wasm-fmt/shfmt 0.2.7（MIT）安装成功；定向 `npm run test -- Editor.test.ts -t "shfmt"` 通过（3 passed | 104 skipped，含 5 个别名映射覆盖、大写 `BASH` 归一化、嵌套 func/if 与 pipeline 确定性输出、语法错误与未闭合字符串 `invalid-content` 零修改）；`npm run build` 通过，WASM 为本地资产 `dist/assets/shfmt-*.wasm` 400.84 kB（gzip 173.60 kB，无运行期网络请求）、胶水 chunk `shfmt_vite-*.js` 1.45 kB；`npm run check` 通过（typecheck 通过，**531 passed / 0 failed**，24 个测试文件）；`git diff --check` 通过。日志：`/private/tmp/textora-shfmt-test.log`、`/private/tmp/textora-shfmt-build.log`、`/private/tmp/textora-shfmt-check.log`。

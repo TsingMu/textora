@@ -23,7 +23,7 @@ import { Editor, type EditorHandle } from "./Editor";
 import type { FenceFormatFailure } from "./fenceFormatting";
 import { MarkdownWysiwygEditor } from "./MarkdownWysiwygEditor";
 import {
-  detectLanguage,
+  effectiveDocumentLanguage,
   isLanguageMode,
   languageDisplayName,
   suggestedSaveFileName,
@@ -945,11 +945,11 @@ function App() {
     setMixedLineEndingConfirmed(session.lineEnding !== "mixed");
   }, [session.id, session.encoding, session.lineEnding]);
 
-  // 把 Format 提示绑定到活动文档身份：切换标签、另存为（路径/身份变化）或文档替换时清除，
-  // 避免跨标签或跨文档残留。
+  // 把 Format 提示绑定到活动文档及其有效语言：切换标签、Syntax、另存为或文档替换时清除，
+  // 避免旧 Markdown 操作的提示残留到其他标签或格式。
   useEffect(() => {
     setFormatNotice(null);
-  }, [session.id, session.path]);
+  }, [session.id, session.path, activeSyntaxMode]);
 
   // 窗口关闭拦截 + 聚焦缺失检查（合并到同一 effect 以共享一次 dynamic import）。
   useEffect(() => {
@@ -1915,7 +1915,12 @@ function App() {
       return (
         current.activeTabId === formatTabId &&
         tab !== undefined &&
-        tab.document.id === formatDocumentId
+        tab.document.id === formatDocumentId &&
+        effectiveDocumentLanguage(
+          tab.document.path,
+          tab.document.displayName,
+          tab.syntaxMode,
+        ) === "markdown"
       );
     };
     formatInFlightRef.current = true;
@@ -2206,10 +2211,13 @@ function App() {
     !session.readOnly && !busy && (session.path === null || session.isDirty);
   const canSaveAs = session.path !== null && !busy;
   const canEdit = !editorLocked;
-  // 文件身份语言：驱动 Markdown/Mermaid 等格式专属能力，永远来自实际路径或显示名识别。
-  const activeLanguage = detectLanguage(session.path, session.displayName);
-  // 有效源码高亮语言：未保存标签采用会话内临时选择，其余沿用文件身份识别。
-  const activeHighlightLanguage = activeSyntaxMode ?? activeLanguage;
+  // 有效语言统一驱动高亮、状态栏和格式专属能力：Untitled 采用用户选择的 Syntax，
+  // 已保存标签始终按实际路径识别。
+  const activeLanguage = effectiveDocumentLanguage(
+    session.path,
+    session.displayName,
+    activeTab?.syntaxMode ?? "plain-text",
+  );
   const markdownPreviewOpen = activeTab?.markdownPreviewOpen ?? false;
   const markdownWysiwygOpen = activeTab?.markdownWysiwygOpen ?? false;
   const markdownWysiwygVisible =
@@ -2570,7 +2578,7 @@ function App() {
                 ref={editorRef}
                 content={session.content}
                 disabled={editorLocked}
-                language={activeHighlightLanguage}
+                language={activeLanguage}
                 onChange={(content) => {
                   setSession((current) => updateDocumentContent(current, content));
                 }}
@@ -2755,7 +2763,7 @@ function App() {
         <footer className="statusbar">
           <div>{session.isDirty ? "Modified" : "Saved"}</div>
           <div className="statusbar-details">
-            <span className="statusbar-language">{languageDisplayName(activeHighlightLanguage)}</span>
+            <span className="statusbar-language">{languageDisplayName(activeLanguage)}</span>
             {cursorPosition !== null && (
               <>
                 <span className="format-settings-sep" aria-hidden="true">·</span>

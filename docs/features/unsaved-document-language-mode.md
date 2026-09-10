@@ -1,12 +1,12 @@
 # 未保存文档语法模式
 
-> 状态：已完成
+> 状态：已完成（格式专属能力一致性扩展于 2026-09-10 完成）
 
 ## 背景与目标
 
 Textora 已能根据已保存文件的文件名或扩展名启用语法高亮，但新建的 Untitled 标签在首次保存前只能按普通文本显示。用户临时编写 Java、SQL、JSON、Markdown 等内容时，需要先保存并命名文件才能获得相应高亮，打断了快速记录和草拟流程。
 
-本功能目标是在 macOS 原生菜单中为当前未保存标签选择临时语法模式，使高亮与状态栏立即反映选择；不同 Untitled 标签彼此独立。首次保存时，应用按所选模式预填一个带默认后缀的建议文件名，但不强制追加、修正或覆盖用户输入。保存成功后，文档格式重新由实际文件名或扩展名识别。
+本功能目标是在 macOS 原生菜单中为当前未保存标签选择临时语法模式，使高亮、状态栏和该格式已有的专属能力立即反映选择；不同 Untitled 标签彼此独立。首次保存时，应用按所选模式预填一个带默认后缀的建议文件名，但不强制追加、修正或覆盖用户输入。保存成功后，文档格式重新由实际文件名或扩展名识别。
 
 ## 范围
 
@@ -14,6 +14,7 @@ Textora 已能根据已保存文件的文件名或扩展名启用语法高亮，
 - 语法选择只对当前 `path === null` 的未保存标签可用；已关联路径的标签禁用该菜单并继续按实际文件名或扩展名识别。
 - 每个未保存标签独立保存当前会话内的临时语法模式；新建标签默认 `Plain Text`，不会继承其他标签的选择。
 - 选择后立即重配置当前 CodeMirror 源码高亮，并在状态栏显示对应语言名。
+- 未保存标签选择 Markdown 后，开放与已保存 Markdown 文件相同的 Preview、WYSIWYG、fenced code Format 和 Markdown 编辑辅助；选择 Mermaid 后开放与已保存 Mermaid 文件相同的 Preview。其他模式同样复用该语言当前已有的专属能力，不建立第二套能力清单。
 - 临时选择不修改文本内容、不产生脏状态、不进入撤销历史，也不改变编码、换行或只读语义。
 - Untitled 首次保存打开目标面板时，若选择了非 `Plain Text` 模式，则以该标签显示名加首选后缀作为初始建议文件名。
 - 用户可以修改或删除建议后缀，也可以输入其他后缀；应用按用户最终输入保存，不自动追加或纠正。
@@ -47,22 +48,22 @@ Textora 已能根据已保存文件的文件名或扩展名启用语法高亮，
 - 不把临时模式保存为应用级默认值、用户偏好、启动恢复清单或用户文件元数据。
 - 不根据内容自动猜测语言，不提供自定义后缀映射或新增语言包。
 - 不强制追加、替换或校验用户输入的文件后缀。
-- 不因临时选择 Markdown 或 Mermaid 而开放 Preview、WYSIWYG、Mermaid Preview 或其他格式专属入口；这些能力在首次保存成功前仍以实际文件身份为准。
-- 不新增格式化、补全、诊断、LSP、项目级语言设置或全局默认语法模式。
+- 不新增现有对应格式文件尚不具备的格式化、补全、诊断、LSP、项目级语言设置或全局默认语法模式。
 - 不改变 Rust 文件读写、编码检测、换行转换、冲突检测、原子保存或 capability 权限。
 
 ## 用户流程
 
 1. 用户新建或切换到一个 Untitled 标签。
 2. 用户在 macOS 菜单栏选择 `View > Syntax > Java`（或其他模式）。
-3. 当前编辑器立即使用 Java 语法高亮，状态栏显示 `Java`；内容、脏状态和撤销历史不变。
+3. 当前编辑器立即使用 Java 语法高亮，状态栏显示 `Java`；若所选模式已有格式专属能力，其入口也立即可用；内容、脏状态和撤销历史不变。
 4. 用户切换到另一个 Untitled 标签，该标签仍显示自己的选择或默认 `Plain Text`；切回后恢复原选择。
 5. 用户首次保存 Java 草稿，目标面板初始文件名建议为 `Untitled.java`（带编号的标签相应为 `Untitled 2.java`）。
 6. 用户可以接受建议、删除后缀或输入其他名称。保存成功后，Textora 按实际文件名重新识别语言；取消或失败则继续保留临时 Java 模式。
 
 ## 行为规则与边界情况
 
-- 当前有效源码高亮语言为：未保存标签采用其临时选择，已保存标签采用既有 `detectLanguage(path, displayName)` 结果。文件格式专属能力仍只采用实际文件身份的识别结果，避免临时高亮静默扩大为 Markdown/Mermaid 编辑模式。
+- 当前有效语言为：未保存标签采用其临时选择，已保存标签采用既有 `detectLanguage(path, displayName)` 结果。源码高亮、状态栏与格式专属能力统一使用这一结果，避免同一标签出现“显示为 Markdown 但没有 Markdown 功能”的割裂状态。
+- 临时模式切换后，不属于新模式的专属界面立即卸载；各 Preview/WYSIWYG 的开关状态仍归当前标签所有，切回相应模式时按该标签原状态恢复。切换不得把派生预览写入源码或绕过脏状态、保存与撤销链路。
 - `Plain Text` 是显式可选模式，也是每个新 Untitled 标签的默认值；选择它会移除该标签的临时语言扩展。
 - 原生 `Syntax` 子菜单在没有可操作的未保存活动标签时整体禁用。切换标签、新建、打开、首次保存成功及关闭标签后，菜单可用状态与唯一勾选项必须跟随当前活动标签同步。
 - 菜单事件必须携带明确的 `LanguageMode`，前端只在当前活动标签仍未保存且模式受支持时采用；不得依赖前后端分别循环切换或按菜单顺序推断状态。
@@ -82,12 +83,14 @@ Textora 已能根据已保存文件的文件名或扩展名启用语法高亮，
 - [x] 在未保存标签选择任一首期模式后，源码高亮与状态栏立即更新，内容、脏状态、选择和撤销历史不变。
 - [x] 多个 Untitled 标签的临时模式相互独立；切换、关闭和新建标签后菜单勾选与当前标签一致，新标签不继承选择。
 - [x] 已保存标签禁用 `Syntax` 子菜单并始终按实际文件名或扩展名识别；无法通过菜单覆盖。
-- [x] 临时选择 Markdown 或 Mermaid 只改变源码高亮与状态栏，不开放对应 Preview/WYSIWYG 专属入口。
+- [x] 临时选择 Markdown 后立即开放 Preview、WYSIWYG、fenced code Format 与 Markdown 编辑辅助，行为、失败保护和源码权威边界与已保存 Markdown 文件一致。
+- [x] 临时选择 Mermaid 后立即开放 Mermaid Preview，渲染、错误退化、源码编辑与标签隔离行为和已保存 Mermaid 文件一致。
+- [x] 从 Markdown/Mermaid 切换为其他 Syntax 时旧专属界面立即隐藏且不修改源码；不同 Untitled 标签仍只使用各自所选模式与能力状态。
 - [x] 非 `Plain Text` 的 Untitled 首次保存时按映射预填带后缀的建议文件名；带编号的 Untitled 显示名保持完整。
 - [x] 用户删除建议后缀或输入其他后缀后可按该名称保存，应用不自动追加或纠正；成功后语言按实际路径重新识别。
 - [x] 首次保存取消或失败后临时模式保留；成功后清除临时模式，后续 Save As 不再使用临时建议。
 - [x] 菜单同步或事件发送失败不会修改内容或阻止编辑，并且不会让可操作菜单展示与当前标签不一致的可信假象。
-- [x] 自动化覆盖模式/后缀映射、标签隔离、CodeMirror 动态重配、菜单同步、保存成功/取消/失败及 Markdown/Mermaid 模式边界。
+- [x] 自动化覆盖模式/后缀映射、标签隔离、CodeMirror 动态重配、菜单同步、保存成功/取消/失败，以及 Untitled Markdown/Mermaid 专属能力一致性与切换边界。
 - [x] `npm run check`、`npm run build`、`cargo fmt --manifest-path src-tauri/Cargo.toml --check`、`cargo test --manifest-path src-tauri/Cargo.toml`、`npm run tauri -- build` 与 `git diff --check` 通过；macOS release 真实应用验收覆盖原生菜单、标签切换及首次保存建议。
 
 ## 依赖与约束
@@ -100,7 +103,7 @@ Textora 已能根据已保存文件的文件名或扩展名启用语法高亮，
 
 ## 开放问题
 
-暂无阻止首版实现的问题。首期已确认：复用全部现有语言模式；入口为原生 `View > Syntax`；选择仅属于单个未保存标签且不持久化；只改变源码高亮和状态栏；首次保存仅预填首选后缀，用户最终输入优先；保存成功后恢复实际路径识别。
+暂无阻止实现的问题。复用全部现有语言模式；入口为原生 `View > Syntax`；选择仅属于单个未保存标签且不持久化；统一驱动源码高亮、状态栏和已有格式专属能力；首次保存仅预填首选后缀，用户最终输入优先；保存成功后恢复实际路径识别。
 
 ## 任务拆分
 
@@ -108,6 +111,8 @@ Textora 已能根据已保存文件的文件名或扩展名启用语法高亮，
 2. **接入未保存标签临时语法模式与原生菜单**（已完成）：交付 `View > Syntax` 选择、单标签临时状态、CodeMirror 高亮/状态栏更新、标签切换同步及失败保护；不修改首次保存文件名。
 3. **首次保存采用语法模式建议文件名**（已完成）：按模式映射预填 Untitled 首次保存文件名，保证用户输入优先，并覆盖成功清除、取消/失败保留及实际路径重新识别；不改变已保存文档 Save As。
 4. **语法模式集成验收与文档收尾**（已完成）：执行完整自动化、release 构建和 macOS 真实应用验收，核对菜单/标签/首次保存组合行为并同步规格、README 与 backlog；只做必要小修。
+5. **Untitled 复用所选 Syntax 的格式专属能力**（已完成）：统一有效语言判定，接入 Markdown/Mermaid 已有入口和派生视图，覆盖模式切换、标签隔离与异步保护；不新增任何格式能力。
+6. **Syntax 专属能力组合回归与发布收尾**（已完成）：完整回归、release 构建、macOS 真实应用验收与文档状态更新；不新增主要行为。
 
 ## 验证记录
 
@@ -115,3 +120,5 @@ Textora 已能根据已保存文件的文件名或扩展名启用语法高亮，
 - 2026-08-21 完成「接入未保存标签临时语法模式与原生菜单」：新增原生 `View > Syntax` 固定 15 模式单选子菜单（`src-tauri/src/lib.rs` 的 `SYNTAX_MODES`/`update_syntax_menu` 命令与点击单选修复、事件失败回滚），`DocumentTab` 增加 `syntaxMode` 会话状态（新建/打开/恢复默认 `plain-text`，`setTabSyntaxMode` 仅作用于未保存标签），前端经 `activeHighlightLanguage` 驱动 CodeMirror 高亮与状态栏，文件身份语言继续独立门控 Preview/WYSIWYG；监听注册武装后才同步菜单，`busyRef` 与会话恢复 pending 期间忽略菜单事件。自动化覆盖模式清单校验、标签隔离、脏状态/内容不变、已保存标签禁用、不支持载荷忽略、同步失败保护及 Markdown/Mermaid 边界。验证：`cargo fmt --manifest-path src-tauri/Cargo.toml --check`、`cargo test --manifest-path src-tauri/Cargo.toml`（165 passed / 0 failed）、`npm run check`（500 passed / 0 failed，24 个测试文件）、`npm run build`、`git diff --check` 全部通过；`npm run tauri -- build` 与 macOS 真实应用验收留待最终集成验收任务。
 - 2026-08-21 完成「首次保存采用语法模式建议文件名」：`suggestedSaveFileName` 固定 15 模式首选后缀并在完整 Untitled 显示名后直接追加（`Plain Text` 不追加、编号保留），首次保存面板准备完成时对无路径标签一次设置建议名，已保存 Save As 仍用 Rust 草稿名；`clearTabSyntaxMode` 仅在保存成功取得带路径可信描述符后清除临时模式，取消、目录取消、目标冲突等待与失败保留；保存后语言、状态栏与原生菜单按实际路径重识别，用户编辑过的文件名不被覆盖。验证：定向单测 49 passed、新增 App 集成用例 7 passed；`npm run check`（510 passed / 0 failed）、`npm run build`、`git diff --check` 通过；release 构建与真实应用验收留待最终集成验收任务。
 - 2026-08-21 完成集成验收与文档收尾：完整回归首次暴露 `Editor.test.ts` 把 CodeMirror 增量解析是否在同一调度片内追上 EOF 当作产品契约，造成偶发 `null`；保留相邻强制解析用例对语法树路径的覆盖，将该用例收窄为“树已追上则使用树、未追上则回退文本扫描，用户按 Enter 均能立即自动闭合”，未修改生产逻辑。最终 `npm run check`（513 passed / 0 failed）、`npm run build`、Rust fmt/test（167 passed / 0 failed）、`npm run tauri -- build` 与 `git diff --check` 通过；release bundle 经本地 ad-hoc 签名后 `codesign --verify --deep --strict` 通过。Computer Use 在该 release `Textora.app` 中确认：已保存标签禁用 `Syntax`；两个 Untitled 分别保持 Java/SQL 且新标签默认 Plain Text；临时 Markdown/Mermaid 不开放专属入口；保存面板建议 `Untitled.java` 与 `Untitled 2.sql` 并在面板期间禁用菜单；取消后保留临时模式；用户将 SQL 建议改为 `.md` 后按最终名称保存，状态与 Markdown 专属入口按实际路径切换，后续 Save As 使用实际文件名；仅选择临时模式的干净标签关闭时不触发未保存确认。验收临时文件已清理。
+- 2026-09-10 用户新增需求：通过 `+` 创建 Untitled 后，选择 Syntax 应与直接打开对应格式文件一样获得已有功能。规格据此把“格式专属能力只认实际文件身份”改为“高亮、状态栏和格式专属能力统一使用有效语言”；保存建议、会话隔离、源码权威、保存成功后按实际路径重识别等既有规则不变。
+- 2026-09-10 完成格式专属能力一致性扩展与发布验收：新增 `effectiveDocumentLanguage`，Untitled 采用标签 Syntax，已保存标签仍按实际路径；App 的高亮、状态栏和 Markdown/Mermaid 专属能力统一使用该结果。自动化覆盖 Untitled Markdown Preview/WYSIWYG/Format、Untitled Mermaid Preview、模式切换、标签隔离和异步格式化失效；`npm run check`（538 passed / 0 failed）、`npm run build`、Rust fmt/test（167 passed / 0 failed）、`npm run tauri -- build`、release 与安装版本严格签名校验、`git diff --check` 通过。release 已部署到 `/Applications/Textora.app`；真实应用使用两个临时 Untitled 标签确认 Markdown Preview 渲染、WYSIWYG 块编辑视图、JavaScript fence Format 输出，以及 Mermaid Preview 本地 SVG 渲染和标签能力隔离。
