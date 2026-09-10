@@ -15,8 +15,8 @@ Textora 已支持 Markdown 源码高亮、左右分栏预览、预览代码块�
 - 支持 fence 前 0–3 个空格；首版不解析引用或列表前缀中的嵌套 fence。
 - 用户在源码编辑器中以单一空光标位于有效 opening fence 行末按 Enter 时，若该 opening fence 尚无匹配 closing fence，则自动插入空内容行和匹配的 closing fence，并把光标放在内容行。
 - 自动生成的 closing fence 保持 opening fence 的字符、长度和行首缩进。
-- Markdown 源码单栏、Preview 左侧源码编辑器、Plain Text 标签和其他源码语言标签使用同一自动闭合行为；WYSIWYG 模式不执行自动闭合或 JSON 格式化。
-- Markdown 源码视图提供显式 `Format JSON` 工具栏入口。光标位于闭合的 `json` fenced code block 内容区时，格式化整个代码块内容为 2 空格缩进的标准 JSON。
+- Markdown 源码单栏、Preview 左侧源码编辑器、Plain Text 标签和其他源码语言标签使用同一自动闭合行为；WYSIWYG 模式不执行自动闭合或格式化。
+- Markdown 源码视图提供显式 `Format` 工具栏入口（通用格式化入口，语言支持与失败语义见 `docs/features/markdown-fenced-code-formatting.md`；首期语言为 `json`）。光标位于闭合的 `json` fenced code block 内容区时，格式化整个代码块内容为 2 空格缩进的标准 JSON。
 - 格式化作为单次 CodeMirror 编辑事务提交，可由一次撤销恢复；保存、脏状态与关闭保护继续走现有链路。
 - 无效 JSON、非 `json` fence、光标不在 fence 内容区或 fence 未闭合时，显示非阻塞提示且不修改源码、选择或撤销历史。
 
@@ -42,14 +42,14 @@ Textora 已支持 Markdown 源码高亮、左右分栏预览、预览代码块�
 ### JSON 格式化
 
 1. 用户把光标放入闭合的 `json` fenced code block 内容区。
-2. 用户点击工具栏 `Format JSON`。
+2. 用户点击工具栏 `Format`。
 3. JSON 有效时，Textora 只替换 fence 内容为 2 空格缩进的标准 JSON；opening/closing fence 与文档其他内容不变。
 4. JSON 无效或上下文不匹配时，Textora 显示非阻塞提示，源码保持原样。
 
 ## 行为规则与边界情况
 
 - Markdown 源码始终是唯一权威数据源；上下文识别结果和格式化计划均为可重建派生数据。
-- info string 取去除首尾空白后的第一个 token，并按大小写不敏感匹配；只有恰好为 `json` 的 token 可格式化，`jsonc`、`application/json` 和未知 token 不匹配。
+- info string 取去除首尾空白后的第一个 token，并按大小写不敏感匹配；本入口当前仅注册 `json` 别名，`jsonc`、`application/json` 和未注册 token 返回可区分的 unsupported-language 提示，不修改源码。语言注册表详见 `docs/features/markdown-fenced-code-formatting.md`。
 - 光标必须位于 opening 与 closing fence 之间的内容区；位于 fence 标记行上不视为可格式化上下文。
 - closing fence 可长于 opening fence，不能短于 opening fence；字符类型必须一致。
 - 内容中的较短同类标记、另一种 fence 字符或带非空 info string 的候选 closing 行不结束当前代码块。
@@ -59,8 +59,8 @@ Textora 已支持 Markdown 源码高亮、左右分栏预览、预览代码块�
 - 格式化前使用浏览器内建 `JSON.parse` 验证，使用 `JSON.stringify(value, null, 2)` 生成内容；允许对象、数组和其他合法 JSON 顶层值，不新增格式化依赖。
 - 格式化会去除代码块内容原有的首尾空白行并规范内部缩进；opening fence、info string、closing fence、文档其他内容及保存格式保持不变。
 - 格式化成功后光标保持在该代码块内容区并映射到有效位置；一次撤销恢复格式化前的完整内容。
-- `Format JSON` 仅在 Markdown 源码编辑器可见时显示，包括 Preview 分栏的左侧源码视图；进入 WYSIWYG 时隐藏。加载、保存、冲突处理、关闭确认、另存为面板或只读状态下禁用。
-- 上下文不匹配提示为“Place the cursor inside a closed JSON fenced code block.”；解析失败提示为“Invalid JSON. The document was not changed.”。提示不阻止继续编辑、保存、切换标签或关闭。
+- `Format` 仅在 Markdown 源码编辑器可见时显示，包括 Preview 分栏的左侧源码视图；进入 WYSIWYG 时隐藏。加载、保存、冲突处理、关闭确认、另存为面板或只读状态下禁用。
+- 上下文不匹配提示为“Place the cursor inside a closed fenced code block.”；解析失败提示为“Invalid JSON. The document was not changed.”；其余失败类别的提示文案见 `docs/features/markdown-fenced-code-formatting.md`。提示不阻止继续编辑、保存、切换标签或关闭。
 - 多标签切换时，命令只读取并修改当前活动 Markdown 标签，不得污染其他标签或预览派生状态。
 
 ## 后续发现与候选改进

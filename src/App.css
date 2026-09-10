@@ -873,7 +873,7 @@ textarea {
 
 .save-as-button,
 .column-sequence-button,
-.format-json-button,
+.format-fence-button,
 .preview-toggle {
   padding: 4px 12px;
   border: 1px solid var(--border-subtle);
@@ -887,14 +887,14 @@ textarea {
 
 .save-as-button:hover:not(:disabled),
 .column-sequence-button:hover:not(:disabled),
-.format-json-button:hover:not(:disabled),
+.format-fence-button:hover:not(:disabled),
 .preview-toggle:hover:not(:disabled) {
   border-color: var(--accent);
 }
 
 .save-as-button:disabled,
 .column-sequence-button:disabled,
-.format-json-button:disabled,
+.format-fence-button:disabled,
 .preview-toggle:disabled {
   opacity: 0.5;
   cursor: not-allowed;
@@ -1254,7 +1254,7 @@ textarea {
   .open-button,
   .save-as-button,
   .column-sequence-button,
-  .format-json-button,
+  .format-fence-button,
   .preview-toggle {
     border-color: #5a5046;
     background: #302b26;
@@ -1265,7 +1265,7 @@ textarea {
   .open-button:hover:not(:disabled),
   .save-as-button:hover:not(:disabled),
   .column-sequence-button:hover:not(:disabled),
-  .format-json-button:hover:not(:disabled),
+  .format-fence-button:hover:not(:disabled),
   .preview-toggle:hover:not(:disabled) {
     border-color: #d98a65;
     background: #3a3029;
@@ -1280,7 +1280,7 @@ textarea {
   .save-button:disabled,
   .save-as-button:disabled,
   .column-sequence-button:disabled,
-  .format-json-button:disabled,
+  .format-fence-button:disabled,
   .preview-toggle:disabled {
     opacity: 1;
     border-color: #3a352f;

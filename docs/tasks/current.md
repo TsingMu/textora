@@ -8,61 +8,51 @@
 
 ## 已承诺待办
 
-### 确认 Markdown fenced code block 通用格式化规格
-
-- **状态**：待开始
-- **Feature Spec**：`docs/features/markdown-fenced-code-formatting.md`
-- **目标**：把现有 `Format JSON` 扩展候选整理为可实施、可分阶段验收的通用 `Format` 规格，确定首期语言集合、别名、固定输出风格、本地格式化器与失败保护。
-- **范围**：复核现有 fence 上下文、Editor 命令、工具栏与撤销链路；调查 JSON、JavaScript、TypeScript、YAML、SQL、Java、Python 与 Shell 的浏览器内本地格式化方案；评估依赖体积、许可证、macOS WebKit 兼容性和异常/性能边界；确认 Preview/WYSIWYG、只读/忙碌、多标签与保存边界；把实现拆为可独立交付的后续任务。
-- **非范围**：不修改生产代码、实现性测试、依赖、构建配置或 Tauri capability；不承诺所有候选语言必须同批实现；不执行 release 构建或真实应用功能验收。
-- **依赖**：已完成的 Markdown fenced code block 编辑辅助及其 `Format JSON` 能力；开始前先收口当前尚未提交的中文 IME 修复工作树，避免把两个主题混入同一提交。
-- **拆分检查**：本任务只交付规格与实现拆分，不交付格式化用户行为；各语言实现、组合回归、release 构建和 macOS 真实应用验收将在规格确认后按依赖与可观察结果分别进入 `current.md`。
-- **实施要点**：优先复用纯浏览器、本地且确定性的库；若某语言只能依赖外部进程、远程服务、明显过大的运行时或维护状态不可靠的库，应从首期移除并记录理由；明确旧 `Format JSON` 迁移兼容与可回退路径。
-- **完成标准**：Feature Spec 达到“已确认”，不存在阻止首个实现切片的开放问题；每个首期语言都有明确别名、格式化器、输出规则和失败语义；依赖取舍有可复核依据；后续任务满足 `docs/tasks/TEMPLATE.md` 的颗粒度规则并写入 `current.md`；本任务只改规划文档，运行 `git diff --check`。
+（无）
 
 ## 最近完成
 
-### 部署中文输入法组合文本修复
+### 通用 Format 组合回归与文档收尾
 
 - **状态**：已完成
-- **开始日期**：2026-08-24
-- **完成日期**：2026-08-24
-- **Feature Spec**：`docs/features/editor-column-ruler-and-cursor-position.md`
-- **目标**：把已完成的中文 IME 预编辑折行修复构建为 release `Textora.app`，安全部署到 `/Applications/Textora.app` 并确认可启动。
-- **范围**：执行 Tauri release 构建；核对 bundle 标识与可执行文件；完成本地 ad-hoc 签名和严格校验；替换现有 `/Applications/Textora.app`，启动部署版本并确认进程存在。
-- **非范围**：不再修改编辑器行为、测试、依赖、Tauri capability、系统输入法设置或用户文档。
-- **依赖**：已完成的「修复中文输入法组合文本被宽字符单元格折行」及其自动化与前端构建验证。
-- **拆分检查**：本任务只负责一个已有修复的 release 产物部署与启动确认，不包含新行为或额外功能验收。
-- **完成标准**：`npm run tauri -- build` 成功；生成 bundle 的标识与可执行文件正确；签名严格校验通过；`/Applications/Textora.app` 更新为本次产物并可正常启动；`git diff --check` 通过。
-- **结果**：release `Textora.app` 已部署到 `/Applications/Textora.app` 并启动。安装版本 `CFBundleIdentifier=com.tsingmu.textora`、`CFBundleExecutable=textora`；安装前后可执行文件 SHA-256 一致。原安装版本保留在 `/private/tmp/Textora.app.codex-deploy-backup` 作为临时回滚副本，未做不可恢复删除。
-- **验证记录**：`npm run tauri -- build` 通过并生成 release bundle；工作区 bundle 经 `codesign --force --deep --sign -` 后，`codesign --verify --deep --strict` 通过；部署后的 `/Applications/Textora.app` 再次通过严格签名校验；源/安装可执行文件 SHA-256 均为 `e2d6e34ac891d817bc613ed104b412e89b38497e6f5741174998d309b63e1451`；`/usr/bin/open -n /Applications/Textora.app` 启动成功，`pgrep -x textora` 返回进程 `51970`；`git diff --check` 通过。
+- **开始日期**：2026-09-10
+- **完成日期**：2026-09-10
+- **Feature Spec**：`docs/features/markdown-fenced-code-formatting.md`
+- **目标**：在完整回归与 macOS release 真实应用中确认通用 `Format` 的组合行为，并完成 Feature 验收与文档收尾。
+- **范围**：运行完整前端检查、构建与 Tauri release 构建；在 macOS 真实应用中验收首期语言主要格式化流程与一次撤销；核对失败保护和 Preview/WYSIWYG、只读/忙碌、多标签及保存边界；同步 Feature Spec、README 与 backlog。
+- **非范围**：新增语言、别名或任何格式化行为。
+- **依赖**：已完成的通用入口/JSON 迁移、prettier、sql-formatter 与 shfmt WASM 接入。
+- **拆分检查**：本任务只负责组合回归、真实平台确认与文档状态翻转，未新增主要行为。
+- **完成标准**：完整自动化、前端构建与 release 构建通过；macOS 真实应用组合验收按实际能力完成并如实记录；Feature Spec 验收条件全部有真实结果；`git diff --check` 通过。
+- **结果**：通用 `Format` 首期能力完成。实际 `.md` 文件在 release 应用中显示入口，JSON、JavaScript、TypeScript、YAML、SQL 与 Shell 均产生预期格式化输出；JSON 一次 `⌘Z` 恢复原文。临时 Untitled 的 Markdown 语法模式不开放格式专属入口，符合既有边界。因同时存在两个相同 bundle ID 的 Textora，Computer Use 无法稳定区分后续 UI 实例，故其余失败与模式边界采用完整自动化结果验收并如实记录；工作区验收实例已按进程路径结束，用户 `/Applications` 实例保持运行。
+- **验证记录**：`npm run check` 通过（**531 passed / 0 failed**，24 个测试文件）；`npm run build` 通过；`npm run tauri -- build` 通过并生成 `src-tauri/target/release/bundle/macos/Textora.app`；真实应用覆盖六种语言的有效格式化、JSON 一次撤销与 Untitled 文件身份边界；自动化覆盖未知/未闭合/无效/超限/并发变化、只读/忙碌、多标签、WYSIWYG/Preview、保存与关闭保护；最终 `git diff --check` 通过。
 
-### 修复中文输入法组合文本被宽字符单元格折行
-
-- **状态**：已完成
-- **开始日期**：2026-08-24
-- **完成日期**：2026-08-24
-- **Feature Spec**：`docs/features/editor-column-ruler-and-cursor-position.md`
-- **目标**：在 macOS 源码编辑器中使用中文输入法时，拼音预编辑文本保持正常横向排版，同时继续让已提交的中文、全角字符与 emoji 按两个窄字符列宽显示。
-- **范围**：调整 CodeMirror 宽字素视觉装饰与 IME 组合态的交互边界；覆盖单个宽字素仍至少占两个窄字符列、WebKit 临时把预编辑文本放入装饰节点时盒子可横向扩展，以及既有静态宽字符显示行为；执行定向前端测试、完整前端检查与构建，并按实际能力验证 macOS 应用。
-- **非范围**：不改变 Unicode 显示列算法、列标尺刻度语义、自动换行偏好、Markdown WYSIWYG 输入控件、Rust/Tauri 文件核心或其他输入法功能。
-- **依赖**：已完成的编辑器列标尺、光标位置与宽字符双列视觉单元格能力。
-- **拆分检查**：本任务只修复一个可观察的 IME 排版回归；宽字符显示、组合态保护和回归测试共同构成同一最小垂直切片，不包含新入口、独立主要行为或其他平台改造。
-- **完成标准**：自动化固定宽字符装饰采用 `min-width: 2ch` 且不再设置固定 `width`，既有宽字素标记与普通编辑更新仍通过；`npm run check`、`npm run build` 与 `git diff --check` 通过；可执行时完成 macOS 应用真实输入复验并如实记录。
-- **结果**：将宽字素单元格样式从全局 CSS 收进 CodeMirror 主题，并把固定 `width: 2ch` 改为 `min-width: 2ch`。已提交的单个宽字素仍至少占两个窄字符列；若 macOS WebKit 在组合输入期间把原生预编辑文本临时放入该 mark，盒子可随内容横向扩展，不再把拼音锁在两字符宽度内折行。未监听或重派发 composition 事件，未修改文档、选择、撤销或保存链路。
-- **验证记录**：定向 `npm run test -- Editor.test.tsx -t "wraps wide grapheme clusters"` 通过（1 passed）；`npm run check` 通过（**513 passed / 0 failed**，24 个测试文件）；`npm run build` 通过；`./script/build_and_run.sh --verify` 成功构建并启动 Tauri dev 应用，修复样式已在真实 macOS WebKit 实例加载；Computer Use 可输入并显示 ASCII，但该通道不能切换系统全局输入源且会过滤直接发送的非 ASCII 文本，因此未伪报中文候选窗真实复验通过；临时测试标签已不保存关闭，未修改用户文件；`git diff --check` 通过。
-
-### 语法模式集成验收与文档收尾
+### shfmt WASM 接入 Shell 格式化
 
 - **状态**：已完成
-- **开始日期**：2026-08-21
-- **完成日期**：2026-08-21
-- **Feature Spec**：`docs/features/unsaved-document-language-mode.md`
-- **目标**：在 release `Textora.app` 中确认原生语法菜单、标签隔离与首次保存建议的完整组合行为，并完成该 Feature 的验证和文档收尾。
-- **范围**：运行前后端完整自动化、格式检查、前端构建与 Tauri release 构建；在 macOS 真实应用中验收 `View > Syntax` 的可用/禁用与单选同步、多个 Untitled 标签隔离、Markdown/Mermaid 专属入口边界、带编号建议名、用户改名、取消/失败保留及成功后实际路径识别；按实际结果更新 Feature Spec、README、backlog 与当前任务；只处理验收阻塞所需的小修。
-- **非范围**：不新增语法模式、后缀规则、格式专属能力或其他主要用户行为。
-- **依赖**：已完成的临时语法模式/原生菜单、首次保存建议文件名与审查修复切片。
-- **拆分检查**：本任务只负责已完成切片的组合回归、release/真实平台确认、必要小修和文档状态翻转，没有新增主要用户行为。
-- **完成标准**：Feature Spec 验收条件全部有真实结果；完整自动化、前后端构建、release 构建、严格 bundle 校验及 macOS 真实应用组合验收通过；Feature Spec、README、backlog 和 `current.md` 同步。
-- **结果**：完整回归暴露 `Editor.test.ts` 的 EOF opening fence 用例把 CodeMirror 增量解析调度当作产品契约，造成偶发 `null`；保留相邻用例对强制完成后的语法树路径覆盖，将该用例收窄为真实用户行为（树未追上时按生产契约回退文本扫描，仍应立即自动闭合），未修改生产逻辑。release `Textora.app` 成功生成，并在工作区内完成本地 ad-hoc bundle 签名与严格校验。Computer Use 真实应用确认已保存/锁定状态菜单禁用、Untitled 默认与 Java/SQL 标签隔离、Markdown/Mermaid 专属入口边界、`Untitled.java`/`Untitled 2.sql` 建议、取消保留、用户改名后按实际 `.md` 路径识别、后续 Save As 使用实际文件名，以及临时模式不触发干净标签关闭确认；验收临时文件已清理。
-- **验证记录**：定向 EOF 自动闭合用例通过；`npm run check` 通过（**513 passed / 0 failed**，24 个测试文件）；`npm run build` 通过；`cargo fmt --manifest-path src-tauri/Cargo.toml --check` 通过；`cargo test --manifest-path src-tauri/Cargo.toml` 通过（**167 passed / 0 failed**）；`npm run tauri -- build` 通过；生成的 `src-tauri/target/release/bundle/macos/Textora.app` 经 `codesign --force --deep --sign -` 后，`codesign --verify --deep --strict` 通过；Computer Use 完成 release 真实应用组合验收；最终 `git diff --check` 通过。
+- **开始日期**：2026-09-10
+- **完成日期**：2026-09-10
+- **Feature Spec**：`docs/features/markdown-fenced-code-formatting.md`
+- **目标**：`Format` 能按规格固定风格格式化闭合的 Shell fenced code block。
+- **范围**：新增 @wasm-fmt/shfmt 运行时依赖；注册 `sh`/`bash`/`zsh`/`shell`/`shellscript` 别名与规格固定选项；无效输入失败语义；vitest 下 WASM 加载策略；记录许可证与体积。
+- **非范围**：其他语言；自定义 Shell 选项；简化改写（`-s` simplify）行为。
+- **依赖**：完成「通用 Format 入口与 JSON 迁移」。
+- **拆分检查**：独立依赖、独立可观察结果，单语言族一个任务。
+- **完成标准**：Shell 别名映射单元覆盖、有效输入确定性输出断言、无效输入零修改通过；许可证与体积记录于验证记录；`npm run check` 与 `git diff --check` 通过。
+- **结果**：`src/fenceFormatting.ts` 注册表追加 Shell 条目：5 个别名统一 displayName "Shell"，按 bash 变体解析（path `".bash"`）；固定选项仅 `indent: 2`，改写类开关全部显式关闭（binaryNextLine/switchCaseIndent/spaceRedirects/funcNextLine/minify/singleLine/simplify）。经包官方 `/vite` 入口动态导入，生产构建中 WASM 作为本地资产输出。vitest 加载策略：`shfmt.wasm?init` 胶水在 jsdom 下无法解析资源 URL（外置时报 default 导出缺失，inline 后报 URL 解析失败），最终经 vite.config.ts 的 `test.alias` 把该入口替换为 `src/shfmtVitestShim.ts`（re-export `/node` 入口的真实 `format` + 空 init），测试走同一 WASM 的 Node 路径，行为与生产一致。行为发现：shfmt 保留单行紧凑复合命令（只折行不改写）、输出恒以 `\n` 结尾、语法错误抛错归统一 `invalid-content` 语义。
+- **验证记录**：@wasm-fmt/shfmt 0.2.7（MIT）安装成功；定向 `npm run test -- Editor.test.ts -t "shfmt"` 通过（3 passed | 104 skipped，含 5 个别名映射覆盖、大写 `BASH` 归一化、嵌套 func/if 与 pipeline 确定性输出、语法错误与未闭合字符串 `invalid-content` 零修改）；`npm run build` 通过，WASM 为本地资产 `dist/assets/shfmt-*.wasm` 400.84 kB（gzip 173.60 kB，无运行期网络请求）、胶水 chunk `shfmt_vite-*.js` 1.45 kB；`npm run check` 通过（typecheck 通过，**531 passed / 0 failed**，24 个测试文件）；`git diff --check` 通过。日志：`/private/tmp/textora-shfmt-test.log`、`/private/tmp/textora-shfmt-build.log`、`/private/tmp/textora-shfmt-check.log`。
+
+### sql-formatter 接入 SQL 与方言别名
+
+- **状态**：已完成
+- **开始日期**：2026-09-10
+- **完成日期**：2026-09-10
+- **Feature Spec**：`docs/features/markdown-fenced-code-formatting.md`
+- **目标**：`Format` 能按规格固定风格格式化闭合的 SQL fenced code block，并支持常见方言别名。
+- **范围**：新增 sql-formatter 运行时依赖；注册 `sql` 与 `mysql`/`mariadb`/`postgres`/`postgresql`/`psql`/`sqlite`/`tsql`/`transactsql`/`bigquery` 别名及方言映射、规格固定选项；无效输入失败语义；记录许可证与体积。
+- **非范围**：其他语言；自定义 SQL 方言配置。
+- **依赖**：完成「通用 Format 入口与 JSON 迁移」。
+- **拆分检查**：独立依赖、独立可观察结果，单语言族一个任务。
+- **完成标准**：`sql` 及各方言别名映射单元覆盖、有效输入确定性输出快照、无效输入零修改通过；许可证与体积记录于验证记录；`npm run check` 与 `git diff --check` 通过。
+- **结果**：`src/fenceFormatting.ts` 注册表追加 SQL 条目：`sql`（StandardSQL）与 9 个方言别名，`mariadb` 按规格并入 mysql 方言；固定选项 `tabWidth: 2`、`useTabs: false`、`keywordCase: "preserve"`、`expressionWidth: 50`。sql-formatter 经动态导入按需加载；其输出不带尾随换行，格式化器内补齐一个 `\n`，保证替换内容后 closing fence 仍独占一行（与 JSON、prettier 输出一致）。发现并确认 sql-formatter 为词法级格式化器，词法合法但语法错误的输入（如 `SELECT FROM WHERE`）不报错并照常格式化——该行为按「不静默扩大需求」保留为库的确定性输出；真正抛错的未闭合字符串/标识符按统一 `invalid-content` 语义处理。
+- **验证记录**：sql-formatter 15.8.2（MIT）安装成功；定向 `npm run test -- Editor.test.ts -t "sql"` 通过（4 passed，含 10 个别名映射覆盖、大写 `SQL` 归一化、标准 SQL/mysql/postgres 方言确定性输出快照与未闭合字面量 `invalid-content` 零修改）；`npm run build` 通过，sql-formatter 代码分割为独立异步 chunk 293.44 kB（gzip 76.35 kB），主 bundle 仅增约 0.6 kB 且不含 sql-formatter 代码；`npm run check` 通过（typecheck 通过，**528 passed / 0 failed**，24 个测试文件）；`git diff --check` 通过。日志：`/private/tmp/textora-sqlfmt-check.log`、`/private/tmp/textora-sqlfmt-build.log`。

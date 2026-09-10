@@ -20,6 +20,7 @@ import {
   type DocumentSession,
 } from "./documentSession";
 import { Editor, type EditorHandle } from "./Editor";
+import type { FenceFormatFailure } from "./fenceFormatting";
 import { MarkdownWysiwygEditor } from "./MarkdownWysiwygEditor";
 import {
   detectLanguage,
@@ -225,7 +226,7 @@ function App() {
   >({});
   const [closeConfirmPending, setCloseConfirmPending] = useState(false);
   const [closeConfirmError, setCloseConfirmError] = useState<string | null>(null);
-  const [formatJsonNotice, setFormatJsonNotice] = useState<string | null>(null);
+  const [formatNotice, setFormatNotice] = useState<string | null>(null);
   const [saveFormat, setSaveFormat] = useState<{
     encoding: EncodingChoice;
     lineEnding: LineEndingChoice;
@@ -941,10 +942,10 @@ function App() {
     setMixedLineEndingConfirmed(session.lineEnding !== "mixed");
   }, [session.id, session.encoding, session.lineEnding]);
 
-  // 把 Format JSON 提示绑定到活动文档身份：切换标签、另存为（路径/身份变化）或文档替换时清除，
+  // 把 Format 提示绑定到活动文档身份：切换标签、另存为（路径/身份变化）或文档替换时清除，
   // 避免跨标签或跨文档残留。
   useEffect(() => {
-    setFormatJsonNotice(null);
+    setFormatNotice(null);
   }, [session.id, session.path]);
 
   // 窗口关闭拦截 + 聚焦缺失检查（合并到同一 effect 以共享一次 dynamic import）。
@@ -1879,23 +1880,33 @@ function App() {
     });
   }
 
-  function handleFormatJsonClick() {
+  function formatNoticeMessage(result: FenceFormatFailure): string {
+    switch (result.kind) {
+      case "no-context":
+        return "Place the cursor inside a closed fenced code block.";
+      case "unsupported-language":
+        return result.language === ""
+          ? "Formatting this fenced code block language is not supported."
+          : `Formatting ${result.language} fenced code blocks is not supported.`;
+      case "invalid-content":
+        return `Invalid ${result.displayName}. The document was not changed.`;
+      case "too-large":
+        return "The code block is too large to format.";
+      case "changed-during-format":
+        return "The document changed while formatting. Nothing was changed.";
+    }
+  }
+
+  async function handleFormatClick() {
     if (!canEdit || session.readOnly) {
       return;
     }
-    const result = editorRef.current?.formatJsonFence();
-    if (result === undefined || result.kind === "unavailable") {
+    const result = await editorRef.current?.formatFence();
+    if (result === undefined || result === null || result.kind === "unavailable") {
+      setFormatNotice(null);
       return;
     }
-    if (result.kind === "no-context") {
-      setFormatJsonNotice(
-        "Place the cursor inside a closed JSON fenced code block.",
-      );
-    } else if (result.kind === "invalid-json") {
-      setFormatJsonNotice("Invalid JSON. The document was not changed.");
-    } else {
-      setFormatJsonNotice(null);
-    }
+    setFormatNotice(formatNoticeMessage(result));
   }
 
   function handleMarkdownPreviewToggle() {
@@ -1911,8 +1922,8 @@ function App() {
   }
 
   function handleMarkdownWysiwygToggle() {
-    // 进入/退出 WYSIWYG 时光标上下文变化，清除可能残留的 Format JSON 提示。
-    setFormatJsonNotice(null);
+    // 进入/退出 WYSIWYG 时光标上下文变化，清除可能残留的 Format 提示。
+    setFormatNotice(null);
     updateTabSession((current) => {
       const tab = current.tabs.find((item) => item.tabId === current.activeTabId);
       if (tab === undefined) return current;
@@ -2412,12 +2423,12 @@ function App() {
               {!markdownWysiwygOpen && (
                 <button
                   type="button"
-                  className="format-json-button"
-                  onClick={handleFormatJsonClick}
+                  className="format-fence-button"
+                  onClick={handleFormatClick}
                   disabled={!canEdit || session.readOnly}
-                  aria-label="Format the JSON inside the cursor's fenced code block"
+                  aria-label="Format the fenced code block at the cursor"
                 >
-                  Format JSON
+                  Format
                 </button>
               )}
             </>
@@ -2559,13 +2570,13 @@ function App() {
               />
             </aside>
           )}
-          {formatJsonNotice !== null && (
-            <div className="notice notice-format-json" role="status">
-              <span>{formatJsonNotice}</span>
+          {formatNotice !== null && (
+            <div className="notice notice-format-fence" role="status">
+              <span>{formatNotice}</span>
               <button
                 type="button"
                 className="notice-dismiss"
-                onClick={() => setFormatJsonNotice(null)}
+                onClick={() => setFormatNotice(null)}
               >
                 Dismiss
               </button>

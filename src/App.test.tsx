@@ -5614,7 +5614,7 @@ describe("App bottom-right format settings", () => {
   });
 });
 
-describe("App Format JSON", () => {
+describe("App Format", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot>;
 
@@ -5666,12 +5666,12 @@ describe("App Format JSON", () => {
     });
   }
 
-  it("shows Format JSON for a markdown document but not for plain text", async () => {
+  it("shows Format for a markdown document but not for plain text", async () => {
     await act(async () => root.render(<App />));
-    expect(container.querySelector(".format-json-button")).toBeNull();
+    expect(container.querySelector(".format-fence-button")).toBeNull();
 
     await openMarkdown("# title\n");
-    expect(container.querySelector(".format-json-button")).not.toBeNull();
+    expect(container.querySelector(".format-fence-button")).not.toBeNull();
   });
 
   it("auto-closes a markdown opening fence with an info string from the app editor", async () => {
@@ -5698,24 +5698,66 @@ describe("App Format JSON", () => {
     expect(view?.state.doc.toString()).toBe("```json\n\n```");
   });
 
-  it("hides Format JSON while WYSIWYG is active", async () => {
+  it("hides Format while WYSIWYG is active", async () => {
     await act(async () => root.render(<App />));
     await openMarkdown("# title\n");
 
     await act(async () => {
       container.querySelector<HTMLButtonElement>(".markdown-wysiwyg-toggle")?.click();
     });
-    expect(container.querySelector(".format-json-button")).toBeNull();
+    expect(container.querySelector(".format-fence-button")).toBeNull();
     expect(container.querySelector('[aria-label="Markdown WYSIWYG editor"]')).not.toBeNull();
   });
 
-  it("disables Format JSON for a read-only markdown document", async () => {
+  it("disables Format for a read-only markdown document", async () => {
     await act(async () => root.render(<App />));
     await openMarkdown("# title\n", true);
 
     expect(
-      container.querySelector<HTMLButtonElement>(".format-json-button")?.disabled,
+      container.querySelector<HTMLButtonElement>(".format-fence-button")?.disabled,
     ).toBe(true);
+  });
+
+  it("shows an unsupported-language notice and leaves the document unchanged", async () => {
+    const content = "```xml\n<a/>\n```";
+    await act(async () => root.render(<App />));
+    await openMarkdown(content);
+
+    const editable = container.querySelector<HTMLElement>(".cm-content");
+    const view = editable === null ? null : EditorView.findFromDOM(editable);
+    await act(async () => {
+      view?.dispatch({ selection: EditorSelection.cursor(content.indexOf("<")) });
+    });
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".format-fence-button")?.click();
+    });
+
+    const notice = container.querySelector(".notice-format-fence");
+    expect(notice).not.toBeNull();
+    expect(notice?.textContent).toContain(
+      "Formatting xml fenced code blocks is not supported.",
+    );
+    expect(view?.state.doc.toString()).toBe(content);
+  });
+
+  it("formats a closed json fence through the Format button without a notice", async () => {
+    const content = '```json\n{"a": 1}\n```';
+    await act(async () => root.render(<App />));
+    await openMarkdown(content);
+
+    const editable = container.querySelector<HTMLElement>(".cm-content");
+    const view = editable === null ? null : EditorView.findFromDOM(editable);
+    await act(async () => {
+      view?.dispatch({ selection: EditorSelection.cursor(content.indexOf("{")) });
+    });
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".format-fence-button")?.click();
+    });
+
+    expect(container.querySelector(".notice-format-fence")).toBeNull();
+    expect(view?.state.doc.toString()).toBe('```json\n{\n  "a": 1\n}\n```');
   });
 
   it("shows a non-blocking notice and leaves the document unchanged when the cursor is not in a closed json fence", async () => {
@@ -5724,12 +5766,12 @@ describe("App Format JSON", () => {
     await openMarkdown(content);
 
     await act(async () => {
-      container.querySelector<HTMLButtonElement>(".format-json-button")?.click();
+      container.querySelector<HTMLButtonElement>(".format-fence-button")?.click();
     });
 
-    const notice = container.querySelector(".notice-format-json");
+    const notice = container.querySelector(".notice-format-fence");
     expect(notice).not.toBeNull();
-    expect(notice?.textContent).toContain("closed JSON fenced code block");
+    expect(notice?.textContent).toContain("Place the cursor inside a closed fenced code block.");
     // 光标默认在行首（opening fence 行），文档不变。
     expect(container.querySelector(".cm-content")?.textContent ?? "").toContain("```json");
     // 提示是非阻塞的：其它编辑入口仍可用。
@@ -5740,41 +5782,41 @@ describe("App Format JSON", () => {
     await act(async () => {
       notice?.querySelector<HTMLButtonElement>(".notice-dismiss")?.click();
     });
-    expect(container.querySelector(".notice-format-json")).toBeNull();
+    expect(container.querySelector(".notice-format-fence")).toBeNull();
   });
 
-  it("clears the format-json notice when switching to another tab", async () => {
+  it("clears the format notice when switching to another tab", async () => {
     await act(async () => root.render(<App />));
     await openMarkdown("```json\n{}\n```");
 
     await act(async () => {
-      container.querySelector<HTMLButtonElement>(".format-json-button")?.click();
+      container.querySelector<HTMLButtonElement>(".format-fence-button")?.click();
     });
-    expect(container.querySelector(".notice-format-json")).not.toBeNull();
+    expect(container.querySelector(".notice-format-fence")).not.toBeNull();
 
     // 切换到初始 Untitled 标签：光标与文档上下文变化，提示应被清除。
     await act(async () => {
       container.querySelectorAll<HTMLButtonElement>(".document-tab-select")[0]?.click();
     });
-    expect(container.querySelector(".notice-format-json")).toBeNull();
+    expect(container.querySelector(".notice-format-fence")).toBeNull();
   });
 
-  it("clears the format-json notice when toggling WYSIWYG", async () => {
+  it("clears the format notice when toggling WYSIWYG", async () => {
     await act(async () => root.render(<App />));
     await openMarkdown("```json\n{}\n```");
 
     await act(async () => {
-      container.querySelector<HTMLButtonElement>(".format-json-button")?.click();
+      container.querySelector<HTMLButtonElement>(".format-fence-button")?.click();
     });
-    expect(container.querySelector(".notice-format-json")).not.toBeNull();
+    expect(container.querySelector(".notice-format-fence")).not.toBeNull();
 
     await act(async () => {
       container.querySelector<HTMLButtonElement>(".markdown-wysiwyg-toggle")?.click();
     });
-    expect(container.querySelector(".notice-format-json")).toBeNull();
+    expect(container.querySelector(".notice-format-fence")).toBeNull();
   });
 
-  it("clears the format-json notice after saving the markdown document as plain text", async () => {
+  it("clears the format notice after saving the markdown document as plain text", async () => {
     invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "health_check") {
         return { service: "document-core", version: "0.1.0" };
@@ -5823,9 +5865,9 @@ describe("App Format JSON", () => {
       container.querySelector<HTMLButtonElement>(".open-button")?.click();
     });
     await act(async () => {
-      container.querySelector<HTMLButtonElement>(".format-json-button")?.click();
+      container.querySelector<HTMLButtonElement>(".format-fence-button")?.click();
     });
-    expect(container.querySelector(".notice-format-json")).not.toBeNull();
+    expect(container.querySelector(".notice-format-fence")).not.toBeNull();
 
     // 另存为 notes.txt：活动文档身份（路径）改变，提示应被清除。
     await act(async () => {
@@ -5845,9 +5887,9 @@ describe("App Format JSON", () => {
       chooser?.querySelector<HTMLButtonElement>(".confirm-save")?.click();
     });
 
-    expect(container.querySelector(".notice-format-json")).toBeNull();
-    // 活动语言随 .txt 回到 plain-text，Format JSON 按钮消失。
-    expect(container.querySelector(".format-json-button")).toBeNull();
+    expect(container.querySelector(".notice-format-fence")).toBeNull();
+    // 活动语言随 .txt 回到 plain-text，Format 按钮消失。
+    expect(container.querySelector(".format-fence-button")).toBeNull();
   });
 });
 

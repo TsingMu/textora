@@ -16,11 +16,16 @@ import {
   columnBlockSequenceSpec,
   columnBlockSelectionExtensions,
   fenceAutoCloseDecisionFromTree,
-  formatJsonFencePlan,
+  formatFenceInEditorView,
   markdownFenceAutoCloseCommand,
   markdownFenceAutoCloseFallbackExtension,
   markdownFenceAutoCloseSpec,
 } from "./Editor";
+import {
+  executeFenceFormat,
+  FENCE_FORMAT_MAX_CHARS,
+  inspectFenceFormatTarget,
+} from "./fenceFormatting";
 import { languageExtension } from "./languageExtensions";
 
 if (!("getClientRects" in Range.prototype)) {
@@ -741,102 +746,488 @@ describe("markdown fence auto-close", () => {
   });
 });
 
-describe("formatJsonFencePlan", () => {
-  function stateWith(doc: string, cursorOffset: number) {
-    return EditorState.create({ doc, selection: EditorSelection.cursor(cursorOffset) });
-  }
-
-  it("reformats a closed json fence content with 2-space indentation", () => {
+describe("inspectFenceFormatTarget", () => {
+  it("returns a json target for a closed json fence content", () => {
     const doc = '```json\n{"a": 1}\n```';
     const cursor = doc.indexOf("\n") + 1;
-    const result = formatJsonFencePlan(stateWith(doc, cursor));
+    const result = inspectFenceFormatTarget(doc, cursor);
 
-    expect(result.kind).toBe("apply");
-    if (result.kind !== "apply") return;
-    const next = stateWith(doc, cursor).update(result.spec).state;
-
-    expect(next.doc.toString()).toBe('```json\n{\n  "a": 1\n}\n```');
-    expect(next.selection.main.from).toBe(cursor);
-  });
-
-  it("normalizes compact and messy json to canonical 2-space form", () => {
-    const doc = '```json\n{"b":[1,2,3]}\n```';
-    const cursor = doc.indexOf("[");
-    const result = formatJsonFencePlan(stateWith(doc, cursor));
-
-    expect(result.kind).toBe("apply");
-    if (result.kind !== "apply") return;
-    const next = stateWith(doc, cursor).update(result.spec).state;
-
-    expect(next.doc.toString()).toContain('  "b": [');
-    expect(next.doc.toString()).toContain('    1,');
+    expect(result).toEqual({
+      kind: "target",
+      language: "json",
+      displayName: "JSON",
+      content: '{"a": 1}\n',
+      contentFrom: cursor,
+      contentTo: doc.lastIndexOf("```"),
+    });
   });
 
   it("recognizes an uppercase JSON info token", () => {
     const doc = '```JSON\n{}\n```';
-    const cursor = doc.indexOf("{}");
-    const result = formatJsonFencePlan(stateWith(doc, cursor));
-    expect(result.kind).toBe("apply");
+    expect(inspectFenceFormatTarget(doc, doc.indexOf("{}")).kind).toBe("target");
   });
 
-  it("returns invalid-json without changing the document on parse failure", () => {
-    const doc = '```json\n{bad}\n```';
-    const cursor = doc.indexOf("{bad");
-    const state = stateWith(doc, cursor);
-    const result = formatJsonFencePlan(state);
-
-    expect(result.kind).toBe("invalid-json");
-    expect(state.doc.toString()).toBe(doc);
-  });
-
-  it("returns no-context for an unclosed fence", () => {
-    const doc = '```json\n{}';
-    const cursor = doc.indexOf("{}");
-    expect(formatJsonFencePlan(stateWith(doc, cursor)).kind).toBe("no-context");
-  });
-
-  it("returns no-context for jsonc, unknown languages and plain text", () => {
+  it("returns unsupported-language for jsonc, other languages and empty info", () => {
     const jsonc = '```jsonc\n{}\n```';
-    expect(formatJsonFencePlan(stateWith(jsonc, jsonc.indexOf("{}"))).kind).toBe("no-context");
+    expect(inspectFenceFormatTarget(jsonc, jsonc.indexOf("{}"))).toEqual({
+      kind: "unsupported-language",
+      language: "jsonc",
+    });
 
     const rust = '```rust\nfn main() {}\n```';
-    expect(formatJsonFencePlan(stateWith(rust, rust.indexOf("fn"))).kind).toBe("no-context");
+    expect(inspectFenceFormatTarget(rust, rust.indexOf("fn"))).toEqual({
+      kind: "unsupported-language",
+      language: "rust",
+    });
 
-    const plain = "just text";
-    expect(formatJsonFencePlan(stateWith(plain, 2)).kind).toBe("no-context");
+    const unlabeled = '```\n{}\n```';
+    expect(inspectFenceFormatTarget(unlabeled, unlabeled.indexOf("{}"))).toEqual({
+      kind: "unsupported-language",
+      language: "",
+    });
   });
 
-  it("returns no-context when the cursor is on a fence marker line", () => {
-    const doc = '```json\n{}\n```';
-    expect(formatJsonFencePlan(stateWith(doc, 0)).kind).toBe("no-context");
-    expect(formatJsonFencePlan(stateWith(doc, doc.lastIndexOf("```"))).kind).toBe("no-context");
+  it("returns no-context for an unclosed fence, fence marker lines and plain text", () => {
+    const unclosed = '```json\n{}';
+    expect(inspectFenceFormatTarget(unclosed, unclosed.indexOf("{}")).kind).toBe(
+      "no-context",
+    );
+
+    const closed = '```json\n{}\n```';
+    expect(inspectFenceFormatTarget(closed, 0).kind).toBe("no-context");
+    expect(inspectFenceFormatTarget(closed, closed.lastIndexOf("```")).kind).toBe(
+      "no-context",
+    );
+
+    expect(inspectFenceFormatTarget("just text", 2).kind).toBe("no-context");
   });
 
-  it("commits as a single undoable transaction", () => {
+  it("returns too-large when the block content exceeds the character cap", () => {
+    const doc = '```json\n{"a":"' + "x".repeat(FENCE_FORMAT_MAX_CHARS) + '"}\n```';
+    expect(inspectFenceFormatTarget(doc, doc.indexOf("{"))).toEqual({
+      kind: "too-large",
+      language: "json",
+    });
+  });
+});
+
+describe("executeFenceFormat", () => {
+  function jsonTarget(doc: string, cursor: number) {
+    const target = inspectFenceFormatTarget(doc, cursor);
+    expect(target.kind).toBe("target");
+    return target as Extract<typeof target, { kind: "target" }>;
+  }
+
+  it("formats compact json to canonical 2-space form at the original range", async () => {
+    const doc = '```json\n{"b":[1,2,3]}\n```';
+    const target = jsonTarget(doc, doc.indexOf("["));
+    const outcome = await executeFenceFormat(target, doc, () => ({
+      text: doc,
+      cursor: doc.indexOf("["),
+    }));
+
+    expect(outcome.kind).toBe("applied");
+    if (outcome.kind !== "applied") return;
+    expect(outcome.formatted).toBe('{\n  "b": [\n    1,\n    2,\n    3\n  ]\n}\n');
+    expect(outcome.contentFrom).toBe(target.contentFrom);
+    expect(outcome.contentTo).toBe(target.contentTo);
+    expect(outcome.language).toBe("json");
+  });
+
+  it("returns invalid-content without changes when the json does not parse", async () => {
+    const doc = '```json\n{bad}\n```';
+    const target = jsonTarget(doc, doc.indexOf("{bad"));
+    const outcome = await executeFenceFormat(target, doc, () => ({
+      text: doc,
+      cursor: doc.indexOf("{bad"),
+    }));
+
+    expect(outcome).toEqual({
+      kind: "invalid-content",
+      language: "json",
+      displayName: "JSON",
+    });
+  });
+
+  it("applies at the shifted range when text was inserted above an unchanged block", async () => {
+    const doc = '```json\n{"a": 1}\n```';
+    const target = jsonTarget(doc, doc.indexOf("\n") + 1);
+    const currentText = `# title\n\n${doc}`;
+    const cursor = currentText.indexOf('{"a": 1}');
+    const outcome = await executeFenceFormat(target, doc, () => ({
+      text: currentText,
+      cursor,
+    }));
+
+    expect(outcome.kind).toBe("applied");
+    if (outcome.kind !== "applied") return;
+    expect(outcome.contentFrom).toBe(currentText.indexOf('{"a": 1}'));
+    expect(outcome.contentTo).toBe(outcome.contentFrom + '{"a": 1}\n'.length);
+  });
+
+  it("aborts with changed-during-format when the cursor lands in a different or invalid context", async () => {
+    const doc = '```json\n{"a": 1}\n```';
+    const target = jsonTarget(doc, doc.indexOf("\n") + 1);
+
+    const edited = '```json\n{"a": 2}\n```';
+    expect(
+      await executeFenceFormat(target, doc, () => ({ text: edited, cursor: edited.indexOf("{") })),
+    ).toEqual({ kind: "changed-during-format" });
+
+    const outside = `text\n\n${doc}`;
+    expect(
+      await executeFenceFormat(target, doc, () => ({ text: outside, cursor: 0 })),
+    ).toEqual({ kind: "changed-during-format" });
+  });
+});
+
+describe("prettier fence formatting (JavaScript, TypeScript, YAML)", () => {
+  function fenceTarget(doc: string, contentProbe: string) {
+    const target = inspectFenceFormatTarget(doc, doc.indexOf(contentProbe));
+    expect(target.kind).toBe("target");
+    return target as Extract<typeof target, { kind: "target" }>;
+  }
+
+  async function formattedOf(doc: string, contentProbe: string) {
+    const target = fenceTarget(doc, contentProbe);
+    const outcome = await executeFenceFormat(target, doc, () => ({
+      text: doc,
+      cursor: doc.indexOf(contentProbe),
+    }));
+    expect(outcome.kind).toBe("applied");
+    if (outcome.kind !== "applied") throw new Error("unreachable");
+    expect(outcome.contentFrom).toBe(target.contentFrom);
+    expect(outcome.contentTo).toBe(target.contentTo);
+    return { language: outcome.language, formatted: outcome.formatted };
+  }
+
+  it("maps every registered prettier alias to its language family entry", () => {
+    const aliasCases: Array<[alias: string, displayName: string]> = [
+      ...(["js", "javascript", "jsx", "mjs", "cjs", "node"] as const).map(
+        (alias): [string, string] => [alias, "JavaScript"],
+      ),
+      ...(["ts", "typescript", "tsx"] as const).map(
+        (alias): [string, string] => [alias, "TypeScript"],
+      ),
+      ...(["yaml", "yml"] as const).map((alias): [string, string] => [alias, "YAML"]),
+    ];
+    for (const [alias, displayName] of aliasCases) {
+      const doc = `\`\`\`${alias}\nplaceholder\n\`\`\``;
+      expect(inspectFenceFormatTarget(doc, doc.indexOf("placeholder"))).toMatchObject({
+        kind: "target",
+        language: alias,
+        displayName,
+      });
+    }
+
+    const upper = "```YAML\nkey: value\n```";
+    expect(
+      inspectFenceFormatTarget(upper, upper.indexOf("key")),
+    ).toMatchObject({ kind: "target", language: "yaml" });
+  });
+
+  it("formats JavaScript fences deterministically with the pinned style", async () => {
+    await expect(
+      formattedOf("```js\nfunction f( a,b ){return a+b}\n```", "function"),
+    ).resolves.toEqual({
+      language: "js",
+      formatted: "function f(a, b) {\n  return a + b;\n}\n",
+    });
+
+    await expect(
+      formattedOf("```jsx\nconst el=<div  className='x'>{a}</div>\n```", "const el"),
+    ).resolves.toEqual({
+      language: "jsx",
+      formatted: 'const el = <div className="x">{a}</div>;\n',
+    });
+  });
+
+  it("formats TypeScript fences deterministically with the pinned style", async () => {
+    await expect(
+      formattedOf("```ts\ninterface  Point {x:number;y:number}\n```", "interface"),
+    ).resolves.toEqual({
+      language: "ts",
+      formatted: "interface Point {\n  x: number;\n  y: number;\n}\n",
+    });
+  });
+
+  it("formats YAML fences deterministically with the pinned style", async () => {
+    await expect(formattedOf("```yaml\na:   1\nb:\n- 2\n```", "a:")).resolves.toEqual({
+      language: "yaml",
+      formatted: "a: 1\nb:\n  - 2\n",
+    });
+
+    await expect(
+      formattedOf(
+        "```yml\nserver:\n    host: localhost\n    port:   8080\n```",
+        "server:",
+      ),
+    ).resolves.toEqual({
+      language: "yml",
+      formatted: "server:\n  host: localhost\n  port: 8080\n",
+    });
+  });
+
+  it("returns invalid-content for syntax errors in each prettier language", async () => {
+    const cases: Array<[doc: string, probe: string, language: string, displayName: string]> = [
+      ["```js\nconst a={\n```", "const a", "js", "JavaScript"],
+      ["```ts\nlet x: = 1\n```", "let x", "ts", "TypeScript"],
+      ["```yaml\nkey: [1, 2\n```", "key", "yaml", "YAML"],
+    ];
+    for (const [doc, probe, language, displayName] of cases) {
+      const target = fenceTarget(doc, probe);
+      await expect(
+        executeFenceFormat(target, doc, () => ({ text: doc, cursor: doc.indexOf(probe) })),
+      ).resolves.toEqual({ kind: "invalid-content", language, displayName });
+    }
+  });
+});
+
+describe("sql-formatter fence formatting (SQL dialects)", () => {
+  function fenceTarget(doc: string, contentProbe: string) {
+    const target = inspectFenceFormatTarget(doc, doc.indexOf(contentProbe));
+    expect(target.kind).toBe("target");
+    return target as Extract<typeof target, { kind: "target" }>;
+  }
+
+  async function formattedOf(doc: string, contentProbe: string) {
+    const target = fenceTarget(doc, contentProbe);
+    const outcome = await executeFenceFormat(target, doc, () => ({
+      text: doc,
+      cursor: doc.indexOf(contentProbe),
+    }));
+    expect(outcome.kind).toBe("applied");
+    if (outcome.kind !== "applied") throw new Error("unreachable");
+    expect(outcome.contentFrom).toBe(target.contentFrom);
+    expect(outcome.contentTo).toBe(target.contentTo);
+    return { language: outcome.language, formatted: outcome.formatted };
+  }
+
+  it("maps every registered sql alias to the SQL registry entry", () => {
+    const aliases = [
+      "sql",
+      "mysql",
+      "mariadb",
+      "postgres",
+      "postgresql",
+      "psql",
+      "sqlite",
+      "tsql",
+      "transactsql",
+      "bigquery",
+    ];
+    for (const alias of aliases) {
+      const doc = `\`\`\`${alias}\nSELECT 1\n\`\`\``;
+      expect(inspectFenceFormatTarget(doc, doc.indexOf("SELECT"))).toMatchObject({
+        kind: "target",
+        language: alias,
+        displayName: "SQL",
+      });
+    }
+
+    const upper = "```SQL\nSELECT 1\n```";
+    expect(
+      inspectFenceFormatTarget(upper, upper.indexOf("SELECT")),
+    ).toMatchObject({ kind: "target", language: "sql" });
+  });
+
+  it("formats standard SQL fences deterministically with a trailing newline", async () => {
+    await expect(
+      formattedOf("```sql\nSELECT id,name FROM users\n```", "SELECT"),
+    ).resolves.toEqual({
+      language: "sql",
+      formatted: "SELECT\n  id,\n  name\nFROM\n  users\n",
+    });
+  });
+
+  it("formats dialect fences with dialect-specific token handling", async () => {
+    await expect(
+      formattedOf("```mysql\nSELECT `id`,`name` FROM `users`\n```", "SELECT"),
+    ).resolves.toEqual({
+      language: "mysql",
+      formatted: "SELECT\n  `id`,\n  `name`\nFROM\n  `users`\n",
+    });
+
+    await expect(
+      formattedOf(
+        "```postgres\nSELECT id::text,age FROM users WHERE name='x'\n```",
+        "SELECT",
+      ),
+    ).resolves.toEqual({
+      language: "postgres",
+      formatted:
+        "SELECT\n  id::text,\n  age\nFROM\n  users\nWHERE\n  name = 'x'\n",
+    });
+  });
+
+  it("returns invalid-content for unterminated literals without changing anything", async () => {
+    const cases: Array<[doc: string, probe: string, language: string]> = [
+      ["```sql\nSELECT 'abc\n```", "SELECT", "sql"],
+      ['```postgresql\nSELECT "abc\n```', "SELECT", "postgresql"],
+    ];
+    for (const [doc, probe, language] of cases) {
+      const target = fenceTarget(doc, probe);
+      await expect(
+        executeFenceFormat(target, doc, () => ({ text: doc, cursor: doc.indexOf(probe) })),
+      ).resolves.toEqual({ kind: "invalid-content", language, displayName: "SQL" });
+    }
+  });
+});
+
+describe("shfmt fence formatting (Shell)", () => {
+  function fenceTarget(doc: string, contentProbe: string) {
+    const target = inspectFenceFormatTarget(doc, doc.indexOf(contentProbe));
+    expect(target.kind).toBe("target");
+    return target as Extract<typeof target, { kind: "target" }>;
+  }
+
+  async function formattedOf(doc: string, contentProbe: string) {
+    const target = fenceTarget(doc, contentProbe);
+    const outcome = await executeFenceFormat(target, doc, () => ({
+      text: doc,
+      cursor: doc.indexOf(contentProbe),
+    }));
+    expect(outcome.kind).toBe("applied");
+    if (outcome.kind !== "applied") throw new Error("unreachable");
+    expect(outcome.contentFrom).toBe(target.contentFrom);
+    expect(outcome.contentTo).toBe(target.contentTo);
+    return { language: outcome.language, formatted: outcome.formatted };
+  }
+
+  it("maps every registered shell alias to the Shell registry entry", () => {
+    for (const alias of ["sh", "bash", "zsh", "shell", "shellscript"]) {
+      const doc = `\`\`\`${alias}\necho hi\n\`\`\``;
+      expect(inspectFenceFormatTarget(doc, doc.indexOf("echo"))).toMatchObject({
+        kind: "target",
+        language: alias,
+        displayName: "Shell",
+      });
+    }
+
+    const upper = "```BASH\necho hi\n```";
+    expect(
+      inspectFenceFormatTarget(upper, upper.indexOf("echo")),
+    ).toMatchObject({ kind: "target", language: "bash" });
+  });
+
+  it("formats shell fences with 2-space indentation and no rewriting", async () => {
+    await expect(
+      formattedOf(
+        "```sh\nfoo(){\necho a\nif [ $a ];then\necho b\nfi\n}\n```",
+        "foo",
+      ),
+    ).resolves.toEqual({
+      language: "sh",
+      formatted: "foo() {\n  echo a\n  if [ $a ]; then\n    echo b\n  fi\n}\n",
+    });
+
+    await expect(
+      formattedOf("```bash\ncat file|grep foo|wc -l\n```", "cat"),
+    ).resolves.toEqual({
+      language: "bash",
+      formatted: "cat file | grep foo | wc -l\n",
+    });
+  });
+
+  it("returns invalid-content for shell syntax errors without changing anything", async () => {
+    const cases: Array<[doc: string, probe: string, language: string]> = [
+      ["```sh\nif [ -f x then echo fi\n```", "if", "sh"],
+      ['```bash\necho "unclosed\n```', "echo", "bash"],
+    ];
+    for (const [doc, probe, language] of cases) {
+      const target = fenceTarget(doc, probe);
+      await expect(
+        executeFenceFormat(target, doc, () => ({ text: doc, cursor: doc.indexOf(probe) })),
+      ).resolves.toEqual({ kind: "invalid-content", language, displayName: "Shell" });
+    }
+  });
+});
+
+describe("formatFenceInEditorView", () => {
+  function viewWith(doc: string, cursorOffset: number, extensions: Extension[] = []) {
     const host = document.createElement("div");
     document.body.append(host);
-    const doc = '```json\n{"a": 1}\n```';
     const view = new EditorView({
       parent: host,
       state: EditorState.create({
         doc,
-        selection: EditorSelection.cursor(doc.indexOf("\n") + 1),
-        extensions: [history()],
+        selection: EditorSelection.cursor(cursorOffset),
+        extensions,
       }),
     });
+    return { view, host };
+  }
+
+  it("reformats a closed json fence content with 2-space indentation", async () => {
+    const doc = '```json\n{"a": 1}\n```';
+    const cursor = doc.indexOf("\n") + 1;
+    const { view, host } = viewWith(doc, cursor);
 
     try {
-      const result = formatJsonFencePlan(view.state);
-      expect(result.kind).toBe("apply");
-      if (result.kind === "apply") {
-        view.dispatch(result.spec);
-      }
+      const result = await formatFenceInEditorView(view);
+      expect(result).toBeNull();
+      expect(view.state.doc.toString()).toBe('```json\n{\n  "a": 1\n}\n```');
+      expect(view.state.selection.main.from).toBe(cursor);
+    } finally {
+      view.destroy();
+      host.remove();
+    }
+  });
+
+  it("commits as a single undoable transaction", async () => {
+    const doc = '```json\n{"a": 1}\n```';
+    const cursor = doc.indexOf("\n") + 1;
+    const { view, host } = viewWith(doc, cursor, [history()]);
+
+    try {
+      await formatFenceInEditorView(view);
       expect(view.state.doc.toString()).toBe('```json\n{\n  "a": 1\n}\n```');
       expect(undo(view)).toBe(true);
       expect(view.state.doc.toString()).toBe(doc);
     } finally {
       view.destroy();
       host.remove();
+    }
+  });
+
+  it("leaves the document untouched for invalid json, unsupported languages and misplaced cursors", async () => {
+    const invalid = '```json\n{bad}\n```';
+    const invalidView = viewWith(invalid, invalid.indexOf("{bad"));
+    try {
+      expect(await formatFenceInEditorView(invalidView.view)).toEqual({
+        kind: "invalid-content",
+        language: "json",
+        displayName: "JSON",
+      });
+      expect(invalidView.view.state.doc.toString()).toBe(invalid);
+    } finally {
+      invalidView.view.destroy();
+      invalidView.host.remove();
+    }
+
+    const jsonc = '```jsonc\n{}\n```';
+    const jsoncView = viewWith(jsonc, jsonc.indexOf("{}"));
+    try {
+      expect(await formatFenceInEditorView(jsoncView.view)).toEqual({
+        kind: "unsupported-language",
+        language: "jsonc",
+      });
+      expect(jsoncView.view.state.doc.toString()).toBe(jsonc);
+    } finally {
+      jsoncView.view.destroy();
+      jsoncView.host.remove();
+    }
+
+    const fenceLine = '```json\n{}\n```';
+    const fenceLineView = viewWith(fenceLine, 0);
+    try {
+      expect(await formatFenceInEditorView(fenceLineView.view)).toEqual({
+        kind: "no-context",
+      });
+      expect(fenceLineView.view.state.doc.toString()).toBe(fenceLine);
+    } finally {
+      fenceLineView.view.destroy();
+      fenceLineView.host.remove();
     }
   });
 });

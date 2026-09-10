@@ -35,7 +35,12 @@ import {
   ColumnRuler,
   type ColumnRulerMetrics,
 } from "./columnRuler";
-import { unclosedOpeningFromLineSource, fenceContextAt, classifyFenceLine } from "./markdownFenceContext";
+import { unclosedOpeningFromLineSource, classifyFenceLine } from "./markdownFenceContext";
+import {
+  executeFenceFormat,
+  inspectFenceFormatTarget,
+  type FenceFormatFailure,
+} from "./fenceFormatting";
 import { markdownFenceLanguageCompletion } from "./markdownFenceLanguageCompletion";
 
 type EditorProps = {
@@ -53,7 +58,7 @@ type EditorProps = {
 
 export type EditorHandle = {
   fillColumnBlockSequence: () => boolean;
-  formatJsonFence: () => JsonFenceFormatResult | { kind: "unavailable" };
+  formatFence: () => Promise<FenceFormatFailure | { kind: "unavailable" } | null>;
   /** 程序滚动源码编辑区到指定 0-based 行的起始位置（预览→源码同步滚动使用）。 */
   scrollToSourceLine: (line: number) => void;
 };
@@ -62,12 +67,6 @@ type ColumnBlockDeleteDirection = "backward" | "forward";
 type ColumnBlockPastePlan =
   | { kind: "apply"; spec: TransactionSpec }
   | { kind: "reject" };
-
-/** fenced JSON 格式化计划结果；`unavailable` 仅由 Editor 句柄在非 Markdown 或无视图时返回。 */
-export type JsonFenceFormatResult =
-  | { kind: "apply"; spec: TransactionSpec }
-  | { kind: "no-context" }
-  | { kind: "invalid-json" };
 
 function clipboardLines(text: string): string[] {
   const normalized = text.replace(/\r\n?/g, "\n");
@@ -367,34 +366,38 @@ export const markdownFenceAutoCloseFallbackExtension = EditorState.transactionFi
 );
 
 /**
- * 构造 fenced JSON 显式格式化计划：光标位于闭合 `json` fenced code block 内容区时，用浏览器内建
- * `JSON.parse`/`JSON.stringify(value, null, 2)` 把整个代码块内容替换为 2 空格缩进的标准 JSON，
- * 单次事务可一次撤销，光标映射到内容区起始。光标不在闭合 json 内容区返回 `no-context`；解析失败
- * 返回 `invalid-json`；二者都不改源码、选择或撤销历史。`jsonc`、`application/json` 与未知 token 不匹配。
+ * 通用 fenced code block 格式化编排：光标位于闭合且已注册语言的代码块内容区时，用本地格式化器把整个
+ * 代码块内容替换为固定风格输出，单次事务可一次撤销，光标映射到内容区起始。前置检查、内容上限与
+ * 格式化期间的文档变化保护见 `fenceFormatting.ts`；任一失败都返回可区分原因且不改源码、选择或撤销
+ * 历史。成功返回 `null`。
  */
-export function formatJsonFencePlan(state: EditorState): JsonFenceFormatResult {
-  const offset = state.selection.main.from;
+export async function formatFenceInEditorView(
+  view: EditorView,
+): Promise<FenceFormatFailure | null> {
+  const state = view.state;
   const text = state.doc.toString();
-  const ctx = fenceContextAt(text, offset);
-  if (ctx === null || ctx.closing === null || ctx.infoToken !== "json") {
-    return { kind: "no-context" };
+  const target = inspectFenceFormatTarget(text, state.selection.main.from);
+  if (target.kind !== "target") {
+    return target;
   }
-  let value: unknown;
-  try {
-    value = JSON.parse(text.slice(ctx.content.from, ctx.content.to));
-  } catch {
-    return { kind: "invalid-json" };
+  const outcome = await executeFenceFormat(target, text, () => ({
+    text: view.state.doc.toString(),
+    cursor: view.state.selection.main.from,
+  }));
+  if (outcome.kind !== "applied") {
+    return outcome;
   }
-  const formatted = `${JSON.stringify(value, null, 2)}\n`;
-  return {
-    kind: "apply",
-    spec: {
-      changes: { from: ctx.content.from, to: ctx.content.to, insert: formatted },
-      selection: EditorSelection.cursor(ctx.content.from),
-      scrollIntoView: true,
-      userEvent: "format.json",
+  view.dispatch({
+    changes: {
+      from: outcome.contentFrom,
+      to: outcome.contentTo,
+      insert: outcome.formatted,
     },
-  };
+    selection: EditorSelection.cursor(outcome.contentFrom),
+    scrollIntoView: true,
+    userEvent: `format.${outcome.language}`,
+  });
+  return null;
 }
 
 export const columnBlockSelectionExtensions: Extension = [
@@ -596,16 +599,12 @@ export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(
       }
       return columnBlockSequenceCommand(view);
     },
-    formatJsonFence() {
+    formatFence() {
       const view = viewRef.current;
       if (view === null || languageRef.current !== "markdown") {
-        return { kind: "unavailable" as const };
+        return Promise.resolve({ kind: "unavailable" as const });
       }
-      const result = formatJsonFencePlan(view.state);
-      if (result.kind === "apply") {
-        view.dispatch(result.spec);
-      }
-      return result;
+      return formatFenceInEditorView(view);
     },
     scrollToSourceLine(line: number) {
       const view = viewRef.current;
