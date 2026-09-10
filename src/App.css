@@ -253,13 +253,6 @@ textarea {
   padding-top: 0;
 }
 
-/* CJK/emoji 回退字形的原生 advance 通常不是主等宽字体的精确两倍。 */
-.cm-wide-display-cluster {
-  display: inline-block;
-  width: 2ch;
-  vertical-align: baseline;
-}
-
 /* 横向列标尺：刻度位置全部由 JS 按列号计算，样式只负责层级与外观。 */
 .column-ruler {
   position: relative;

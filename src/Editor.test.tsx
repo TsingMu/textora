@@ -92,6 +92,10 @@ describe("Editor", () => {
       container.querySelectorAll<HTMLElement>(".cm-wide-display-cluster"),
     );
     expect(wideCells.map((cell) => cell.textContent)).toEqual(["测", "试", "👍"]);
+    const wideCellStyle = getComputedStyle(wideCells[0]);
+    expect(wideCellStyle.display).toBe("inline-block");
+    expect(wideCellStyle.minWidth).toBe("2ch");
+    expect(wideCellStyle.width).not.toBe("2ch");
     expect(container.querySelector(".cm-line")?.textContent).toBe("测试a👍");
 
     await act(async () => {

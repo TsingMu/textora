@@ -671,6 +671,14 @@ export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(
             lineHeight: "1.65",
           },
           ".cm-content": { padding: "20px 4px 40px" },
+          // 使用最小宽度而非固定宽度：单个宽字素仍占 2ch；macOS WebKit 若在
+          // 中文 IME 组合期间把预编辑文本临时放进该 mark，盒子可以横向扩展，
+          // 不会把拼音折进固定的两字符窄列。
+          ".cm-wide-display-cluster": {
+            display: "inline-block",
+            minWidth: "2ch",
+            verticalAlign: "baseline",
+          },
           ".cm-gutters": {
             backgroundColor: "transparent",
             borderRight: "1px solid var(--border-subtle)",
