@@ -273,6 +273,9 @@ function App() {
   const closeConfirmPendingRef = useRef(false);
   const closeIntentRef = useRef<CloseIntent | null>(null);
   const editorRef = useRef<EditorHandle>(null);
+  // 格式化异步等待期间保持 true：防止重复触发；派发前校验闭包读取其快照判断锁定状态。
+  const formatInFlightRef = useRef(false);
+  const editorLockedRef = useRef(false);
   const closeAuthorizationRef = useRef<{
     validDocumentIds: readonly string[];
   } | null>(null);
@@ -1898,15 +1901,48 @@ function App() {
   }
 
   async function handleFormatClick() {
-    if (!canEdit || session.readOnly) {
+    if (!canEdit || session.readOnly || formatInFlightRef.current) {
       return;
     }
-    const result = await editorRef.current?.formatFence();
-    if (result === undefined || result === null || result.kind === "unavailable") {
-      setFormatNotice(null);
-      return;
+    // 格式化器经动态导入异步加载：等待期间标签/文档身份、内容或可编辑状态都可能变化。
+    // 捕获发起时的上下文，在事务提交前校验仍指向同一可编辑文档，失配按 changed-during-format
+    // 中止，避免把结果写入切换后的标签，或让保存/只读转换期间的格式化内容绕过脏标记。
+    const formatTabId = tabSessionRef.current.activeTabId;
+    const formatDocumentId = session.id;
+    const formatContextIsActive = () => {
+      const current = tabSessionRef.current;
+      const tab = current.tabs.find((item) => item.tabId === formatTabId);
+      return (
+        current.activeTabId === formatTabId &&
+        tab !== undefined &&
+        tab.document.id === formatDocumentId
+      );
+    };
+    formatInFlightRef.current = true;
+    try {
+      const result = await editorRef.current?.formatFence(() => {
+        const tab = tabSessionRef.current.tabs.find(
+          (item) => item.tabId === formatTabId,
+        );
+        return (
+          formatContextIsActive() &&
+          tab !== undefined &&
+          !tab.document.readOnly &&
+          !editorLockedRef.current
+        );
+      });
+      // 标签切换本身已经清除了提示；迟到的旧操作不得把提示重新挂到新活动文档。
+      if (!formatContextIsActive()) {
+        return;
+      }
+      if (result === undefined || result === null || result.kind === "unavailable") {
+        setFormatNotice(null);
+        return;
+      }
+      setFormatNotice(formatNoticeMessage(result));
+    } finally {
+      formatInFlightRef.current = false;
     }
-    setFormatNotice(formatNoticeMessage(result));
   }
 
   function handleMarkdownPreviewToggle() {
@@ -2161,6 +2197,8 @@ function App() {
     fileMissingPending !== null ||
     closeConfirmPending ||
     saveAsPanel.open;
+  // 派发前校验闭包在异步格式化完成后读取最新锁定状态（保存、冲突、面板等）。
+  editorLockedRef.current = editorLocked;
   const saveFileNameInvalid = invalidSaveFileName(saveAsPanel.fileName);
   const mixedSaveBlocked =
     session.lineEnding === "mixed" && !mixedLineEndingConfirmed;

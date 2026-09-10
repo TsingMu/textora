@@ -58,7 +58,13 @@ type EditorProps = {
 
 export type EditorHandle = {
   fillColumnBlockSequence: () => boolean;
-  formatFence: () => Promise<FenceFormatFailure | { kind: "unavailable" } | null>;
+  /**
+   * 格式化光标处 fenced code block。`canApply` 在异步格式化完成、事务提交前校验调用方上下文；
+   * 编辑器视图在等待期间被卸载或重挂（如进入 WYSIWYG）时同样中止，返回 `changed-during-format`。
+   */
+  formatFence: (
+    canApply?: () => boolean,
+  ) => Promise<FenceFormatFailure | { kind: "unavailable" } | null>;
   /** 程序滚动源码编辑区到指定 0-based 行的起始位置（预览→源码同步滚动使用）。 */
   scrollToSourceLine: (line: number) => void;
 };
@@ -369,10 +375,12 @@ export const markdownFenceAutoCloseFallbackExtension = EditorState.transactionFi
  * 通用 fenced code block 格式化编排：光标位于闭合且已注册语言的代码块内容区时，用本地格式化器把整个
  * 代码块内容替换为固定风格输出，单次事务可一次撤销，光标映射到内容区起始。前置检查、内容上限与
  * 格式化期间的文档变化保护见 `fenceFormatting.ts`；任一失败都返回可区分原因且不改源码、选择或撤销
- * 历史。成功返回 `null`。
+ * 历史。`canApply` 在异步格式化完成、`view.dispatch` 提交前校验调用方上下文（标签/文档身份、可编辑
+ * 状态等）是否仍然成立，失配时同样返回 `changed-during-format` 且零修改。成功返回 `null`。
  */
 export async function formatFenceInEditorView(
   view: EditorView,
+  canApply?: () => boolean,
 ): Promise<FenceFormatFailure | null> {
   const state = view.state;
   const text = state.doc.toString();
@@ -386,6 +394,9 @@ export async function formatFenceInEditorView(
   }));
   if (outcome.kind !== "applied") {
     return outcome;
+  }
+  if (canApply !== undefined && !canApply()) {
+    return { kind: "changed-during-format" };
   }
   view.dispatch({
     changes: {
@@ -599,12 +610,16 @@ export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(
       }
       return columnBlockSequenceCommand(view);
     },
-    formatFence() {
+    formatFence(canApply?: () => boolean) {
       const view = viewRef.current;
       if (view === null || languageRef.current !== "markdown") {
         return Promise.resolve({ kind: "unavailable" as const });
       }
-      return formatFenceInEditorView(view);
+      // 等待期间视图被卸载或重挂（进入/退出 WYSIWYG）时，捕获的旧视图已销毁，必须中止提交。
+      return formatFenceInEditorView(
+        view,
+        () => viewRef.current === view && (canApply?.() ?? true),
+      );
     },
     scrollToSourceLine(line: number) {
       const view = viewRef.current;

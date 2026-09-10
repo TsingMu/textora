@@ -138,6 +138,73 @@ vi.mock("@tauri-apps/api/event", () => ({
   },
 }));
 vi.mock("./mermaidPreview", () => mermaidPreviewMock);
+
+// 延迟格式化竞态测试的闸门：arm 后 prettier 的 format 调用挂起，直到 release 才返回，
+// 用于在格式化器异步等待期间插入标签切换/保存等用户操作；未 arm 时行为与真实模块一致。
+const prettierGate = vi.hoisted(() => {
+  type Deferred = {
+    promise: Promise<void>;
+    resolve: () => void;
+  };
+  type Gate = {
+    started: Deferred;
+    released: Deferred;
+    completed: Deferred;
+  };
+  const deferred = (): Deferred => {
+    let resolve = () => {};
+    const promise = new Promise<void>((done) => {
+      resolve = done;
+    });
+    return { promise, resolve };
+  };
+  let active: Gate | null = null;
+  return {
+    arm() {
+      active?.released.resolve();
+      active = {
+        started: deferred(),
+        released: deferred(),
+        completed: deferred(),
+      };
+    },
+    release() {
+      active?.released.resolve();
+    },
+    waitUntilStarted() {
+      return active?.started.promise ?? Promise.resolve();
+    },
+    waitUntilCompleted() {
+      return active?.completed.promise ?? Promise.resolve();
+    },
+    reset() {
+      active?.released.resolve();
+      active = null;
+    },
+    async run<T>(operation: () => T | Promise<T>): Promise<T> {
+      const gate = active;
+      if (gate === null) {
+        return operation();
+      }
+      gate.started.resolve();
+      await gate.released.promise;
+      try {
+        return await operation();
+      } finally {
+        gate.completed.resolve();
+      }
+    },
+  };
+});
+
+vi.mock("prettier/standalone", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("prettier/standalone")>();
+  return {
+    ...actual,
+    format: (...args: Parameters<typeof actual.format>) =>
+      prettierGate.run(() => actual.format(...args)),
+  };
+});
 import App from "./App";
 import {
   installLocalStorageStub,
@@ -258,6 +325,7 @@ describe("App open flow", () => {
       globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
     ).IS_REACT_ACT_ENVIRONMENT = true;
     invokeMock.mockReset();
+    prettierGate.reset();
     resetTauriWindowMock();
     setupInvoke();
     container = document.createElement("div");
@@ -266,6 +334,7 @@ describe("App open flow", () => {
   });
 
   afterEach(async () => {
+    prettierGate.reset();
     await act(async () => root.unmount());
     container.remove();
   });
@@ -5814,6 +5883,146 @@ describe("App Format", () => {
       container.querySelector<HTMLButtonElement>(".markdown-wysiwyg-toggle")?.click();
     });
     expect(container.querySelector(".notice-format-fence")).toBeNull();
+  });
+
+  it("does not apply delayed formatting to another tab with identical content", async () => {
+    const content = "```js\nconst a={b:1}\n```";
+    await act(async () => root.render(<App />));
+
+    // 初始 Untitled 标签输入相同内容（模拟用户粘贴），与稍后打开的 markdown 文档完全一致。
+    const initialEditable = container.querySelector<HTMLElement>(".cm-content");
+    const initialView =
+      initialEditable === null ? null : EditorView.findFromDOM(initialEditable);
+    expect(initialView).not.toBeNull();
+    await act(async () => {
+      initialView?.dispatch({
+        changes: { from: 0, to: initialView.state.doc.length, insert: content },
+      });
+    });
+
+    await openMarkdown(content);
+    const editable = container.querySelector<HTMLElement>(".cm-content");
+    const view = editable === null ? null : EditorView.findFromDOM(editable);
+    await act(async () => {
+      view?.dispatch({
+        selection: EditorSelection.cursor(content.indexOf("const")),
+      });
+    });
+
+    // 格式化器异步等待期间切换回内容相同的 Untitled 标签。
+    prettierGate.arm();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".format-fence-button")?.click();
+    });
+    await prettierGate.waitUntilStarted();
+    await act(async () => {
+      container.querySelectorAll<HTMLButtonElement>(".document-tab-select")[0]?.click();
+    });
+    // 等待真实 formatter 返回，再跨一个宏任务，确保调用方守卫与 React 更新完成。
+    await act(async () => {
+      prettierGate.release();
+      await prettierGate.waitUntilCompleted();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    // 切换后的 Untitled 不得收到格式化结果，旧标签的迟到提示也不得污染当前标签。
+    expect(view?.state.doc.toString()).toBe(content);
+    expect(container.querySelector(".notice-format-fence")).toBeNull();
+
+    // 原格式化发起标签（test.md）同样保持原文，未被写入。
+    await act(async () => {
+      container.querySelectorAll<HTMLButtonElement>(".document-tab-select")[1]?.click();
+    });
+    expect(view?.state.doc.toString()).toBe(content);
+  });
+
+  it("keeps saved disk content and session content consistent when saving starts during delayed formatting", async () => {
+    const original = "```js\nconst a={b:1}\n```";
+    const savedPayloads: string[] = [];
+    let resolveSave: ((descriptor: unknown) => void) | undefined;
+    invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "select_and_open_document") {
+        return {
+          id: "doc-md",
+          path: "/tmp/test.md",
+          displayName: "test.md",
+          byteCount: original.length,
+          encoding: { utf8: { bom: false } },
+          lineEnding: "lf",
+          fingerprint: { sizeBytes: original.length, sha256: "md" },
+          readOnly: false,
+        };
+      }
+      if (cmd === "read_document_content") {
+        return new TextEncoder().encode(original).buffer;
+      }
+      if (cmd === "save_document") {
+        savedPayloads.push(new TextDecoder().decode(args as Uint8Array));
+        return new Promise((resolve) => {
+          resolveSave = resolve;
+        });
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await act(async () => root.render(<App />));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    const editable = container.querySelector<HTMLElement>(".cm-content");
+    const view = editable === null ? null : EditorView.findFromDOM(editable);
+    // 在 fence 外输入使文档变脏（保存入口要求 isDirty），光标放入 js fence 内容区。
+    const dirtyContent = `# note\n${original}`;
+    await act(async () => {
+      view?.dispatch({
+        changes: { from: 0, to: 0, insert: "# note\n" },
+        selection: EditorSelection.cursor(dirtyContent.indexOf("const")),
+      });
+    });
+
+    // 格式化器异步等待期间触发保存；保存写入挂起未完成时格式化返回。
+    prettierGate.arm();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".format-fence-button")?.click();
+    });
+    await prettierGate.waitUntilStarted();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".save-button")?.click();
+    });
+    // formatter 返回时保存仍挂起，派发守卫必须拒绝结果。
+    await act(async () => {
+      prettierGate.release();
+      await prettierGate.waitUntilCompleted();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(container.querySelector(".notice-format-fence")?.textContent).toContain(
+      "The document changed while formatting. Nothing was changed.",
+    );
+
+    // 保存完成后会话内容必须与磁盘写入内容一致且标记为已保存：格式化内容不得在保存
+    // 期间提交后又被 commitSavedDocument 清除脏标记（磁盘旧内容 + 会话新内容 + isDirty=false）。
+    const descriptor = {
+      id: "doc-md",
+      path: "/tmp/test.md",
+      displayName: "test.md",
+      byteCount: dirtyContent.length,
+      encoding: { utf8: { bom: false } },
+      lineEnding: "lf",
+      fingerprint: { sizeBytes: dirtyContent.length, sha256: "saved" },
+      readOnly: false,
+    };
+    await act(async () => {
+      resolveSave?.(descriptor);
+    });
+
+    expect(savedPayloads).toEqual([dirtyContent]);
+    expect(view?.state.doc.toString()).toBe(dirtyContent);
+    const statusbar = container.querySelector(".statusbar");
+    expect(statusbar?.textContent ?? "").toContain("Saved");
+    expect(statusbar?.textContent ?? "").not.toContain("Modified");
   });
 
   it("clears the format notice after saving the markdown document as plain text", async () => {
