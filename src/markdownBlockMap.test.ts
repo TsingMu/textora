@@ -3,6 +3,25 @@ import { describe, expect, it } from "vitest";
 import { collectMarkdownBlockMap } from "./markdownPreview";
 
 describe("collectMarkdownBlockMap", () => {
+  it.each([1, 2, 3, 4, 5, 6])(
+    "maps incomplete level %i headings without empty or zero-length blocks",
+    (level) => {
+      const hashes = "#".repeat(level);
+      for (const suffix of ["", " ", "\t", "  ", " \t"]) {
+        const blocks = collectMarkdownBlockMap(hashes + suffix);
+        expect(blocks).toHaveLength(1);
+        expect(blocks[0]).toMatchObject({ index: 0, startLine: 0, endLine: 1 });
+      }
+      expect(collectMarkdownBlockMap(`before\n${hashes} \nafter\n# End`)).toEqual([
+        { index: 0, kind: "paragraph", startLine: 0, endLine: 3 },
+        { index: 1, kind: "heading", startLine: 3, endLine: 4 },
+      ]);
+      expect(collectMarkdownBlockMap(`${hashes} Title`)).toEqual([
+        { index: 0, kind: "heading", startLine: 0, endLine: 1 },
+      ]);
+    },
+  );
+
   it("returns no blocks for empty or blank-only source", () => {
     expect(collectMarkdownBlockMap("")).toEqual([]);
     expect(collectMarkdownBlockMap("\n\n  \n")).toEqual([]);

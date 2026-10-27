@@ -154,6 +154,16 @@ textarea {
   background: #ebe6dd;
 }
 
+.document-tab.is-active {
+  border-top: 2px solid var(--accent);
+}
+
+.document-tab-select:focus-visible,
+.document-tab-close:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 65%, transparent);
+  outline-offset: -2px;
+}
+
 .document-tab-select,
 .document-tab-close,
 .new-tab-button {
@@ -1238,8 +1248,19 @@ textarea {
     color: #e5dfd5;
   }
 
+  .document-tab.is-active {
+    border-color: #5a4e41;
+    border-top-color: var(--accent);
+    border-bottom-color: var(--surface);
+  }
+
   .document-tab:not(.is-active) {
-    background: #2c2824;
+    color: #b4aa9c;
+    background: #1f1c19;
+  }
+
+  .document-tab:not(.is-active):hover {
+    background: #25221f;
   }
 
   .document-tab-close:hover:not(:disabled),

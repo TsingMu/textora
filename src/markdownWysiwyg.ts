@@ -33,6 +33,9 @@ export type MarkdownWysiwygBlock =
       reason: "table" | "mermaid" | "html" | "unknown-fence" | "unknown";
     };
 
+// Keep block-boundary detection consistent with the heading parser.
+const HEADING_PATTERN = /^(#{1,6})\s+(.+?)\s*#*\s*$/;
+
 const KNOWN_EDITABLE_FENCE_LANGUAGES = new Set([
   "",
   "js",
@@ -112,7 +115,7 @@ export function parseMarkdownWysiwygBlocks(
       continue;
     }
 
-    const heading = line.match(/^(#{1,6})\s+(.+?)\s*#*\s*$/);
+    const heading = line.match(HEADING_PATTERN);
     if (heading) {
       blocks.push({
         type: "heading",
@@ -172,14 +175,16 @@ export function parseMarkdownWysiwygBlocks(
     }
 
     const paragraphLines: string[] = [];
-    while (
+    // Earlier branches did not consume this line. Always consume it as text,
+    // even if a future block-boundary rule disagrees with its parser.
+    do {
+      paragraphLines.push((lines[index] ?? "").trim());
+      index += 1;
+    } while (
       index < lines.length &&
       (lines[index] ?? "").trim() !== "" &&
       !isBlockStart(lines, index)
-    ) {
-      paragraphLines.push((lines[index] ?? "").trim());
-      index += 1;
-    }
+    );
     blocks.push({ type: "paragraph", text: paragraphLines.join(" ") });
   }
 
@@ -327,7 +332,7 @@ function isBlockStart(lines: readonly string[], index: number): boolean {
   const line = lines[index] ?? "";
   return (
     /^ {0,3}```/.test(line) ||
-    /^(#{1,6})\s+/.test(line) ||
+    HEADING_PATTERN.test(line) ||
     /^ {0,3}([-*_])(?:\s*\1){2,}\s*$/.test(line) ||
     /^ {0,3}>\s?/.test(line) ||
     parseListLine(line) !== null ||

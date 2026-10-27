@@ -47,6 +47,7 @@ const tauriEventMock = vi.hoisted(() => ({
     | undefined,
   wordWrapHandler: undefined as ((payload: { enabled: boolean }) => void) | undefined,
   syntaxModeHandler: undefined as ((payload: { mode: string }) => void) | undefined,
+  systemOpenHandler: undefined as (() => void) | undefined,
   unlisten: vi.fn(),
 }));
 const mermaidPreviewMock = vi.hoisted(() => ({
@@ -69,6 +70,7 @@ const sessionCommandsMock = vi.hoisted(() => ({
   restoreSteps: [] as unknown[],
   manifestStatus: "written" as unknown,
   manifestCalls: [] as unknown[],
+  systemOpenResults: [] as unknown[],
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -82,6 +84,10 @@ vi.mock("@tauri-apps/api/core", () => ({
       sessionCommandsMock.manifestCalls.push(args[1]);
       const status = sessionCommandsMock.manifestStatus;
       return status instanceof Error ? Promise.reject(status) : Promise.resolve(status);
+    }
+    if (cmd === "take_system_open_request") {
+      const result = sessionCommandsMock.systemOpenResults.shift() ?? null;
+      return result instanceof Error ? Promise.reject(result) : Promise.resolve(result);
     }
     return invokeMock(...args);
   },
@@ -133,6 +139,8 @@ vi.mock("@tauri-apps/api/event", () => ({
       tauriEventMock.wordWrapHandler = (payload) => handler({ payload });
     } else if (event === "textora-syntax-mode-changed") {
       tauriEventMock.syntaxModeHandler = (payload) => handler({ payload });
+    } else if (event === "textora-system-open-requested") {
+      tauriEventMock.systemOpenHandler = () => handler({ payload: null });
     }
     return tauriEventMock.unlisten;
   },
@@ -220,6 +228,7 @@ function setupInvoke() {
   sessionCommandsMock.restoreSteps = [{ kind: "done" }];
   sessionCommandsMock.manifestStatus = "written";
   sessionCommandsMock.manifestCalls = [];
+  sessionCommandsMock.systemOpenResults = [];
   invokeMock.mockImplementation(async (cmd: string, _args?: unknown) => {
     if (cmd === "health_check") {
       return { service: "document-core", version: "0.1.0" };
@@ -304,6 +313,17 @@ async function emitExternalChange(
   });
 }
 
+async function emitSystemOpenRequest() {
+  await vi.waitFor(() => {
+    expect(tauriEventMock.systemOpenHandler).toBeTypeOf("function");
+  });
+  await act(async () => {
+    tauriEventMock.systemOpenHandler?.();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
+
 function resetTauriWindowMock() {
   tauriWindowMock.focusHandler = undefined;
   tauriWindowMock.closeHandler = undefined;
@@ -317,6 +337,7 @@ function resetTauriWindowMock() {
   tauriEventMock.externalChangeHandler = undefined;
   tauriEventMock.wordWrapHandler = undefined;
   tauriEventMock.syntaxModeHandler = undefined;
+  tauriEventMock.systemOpenHandler = undefined;
   tauriEventMock.unlisten.mockReset();
 }
 
@@ -6106,6 +6127,187 @@ describe("App Format", () => {
   });
 });
 
+describe("App system file open flow", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+
+  beforeEach(() => {
+    (
+      globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
+    ).IS_REACT_ACT_ENVIRONMENT = true;
+    invokeMock.mockReset();
+    resetTauriWindowMock();
+    setupInvoke();
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  const droppedDescriptor = {
+    id: "doc-drop",
+    path: "/tmp/dropped.md",
+    displayName: "dropped.md",
+    byteCount: 5,
+    encoding: { utf8: { bom: false } },
+    lineEnding: "lf" as const,
+    fingerprint: { sizeBytes: 5, sha256: "drop" },
+    readOnly: false,
+  };
+
+  it("adopts a dropped file as a new active tab without replacing the current tab", async () => {
+    await act(async () => {
+      root.render(<App />);
+    });
+    sessionCommandsMock.systemOpenResults = [
+      { kind: "opened", source: "drag-drop", descriptor: droppedDescriptor },
+    ];
+
+    await emitSystemOpenRequest();
+
+    await vi.waitFor(() => {
+      expect(
+        container.querySelector(".document-tab.is-active .document-tab-title")
+          ?.textContent,
+      ).toBe("dropped.md");
+    });
+    expect(
+      Array.from(container.querySelectorAll(".document-tab-title")).map(
+        (node) => node.textContent,
+      ),
+    ).toEqual(["Untitled", "dropped.md"]);
+    expect(container.querySelector(".cm-content")?.textContent).toContain("Hello");
+  });
+
+  it("activates an existing tab for a repeated system request", async () => {
+    await act(async () => {
+      root.render(<App />);
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".open-button")?.click();
+    });
+    await vi.waitFor(() => {
+      expect(
+        container.querySelector(".document-tab.is-active .document-tab-title")
+          ?.textContent,
+      ).toBe("notes.txt");
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".new-tab-button")?.click();
+    });
+    sessionCommandsMock.systemOpenResults = [
+      { kind: "existing", source: "drag-drop", documentId: "doc-9" },
+    ];
+
+    await emitSystemOpenRequest();
+
+    await vi.waitFor(() => {
+      expect(
+        container.querySelector(".document-tab.is-active .document-tab-title")
+          ?.textContent,
+      ).toBe("notes.txt");
+    });
+    expect(
+      Array.from(container.querySelectorAll(".document-tab-title")).filter(
+        (node) => node.textContent === "notes.txt",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("processes a cold-start Finder request after session restore and makes it active", async () => {
+    const restored = {
+      id: "doc-restored",
+      path: "/tmp/restored.md",
+      displayName: "restored.md",
+      byteCount: 8,
+      encoding: { utf8: { bom: false } },
+      lineEnding: "lf" as const,
+      fingerprint: { sizeBytes: 8, sha256: "restored" },
+      readOnly: false,
+    };
+    sessionCommandsMock.restoreSteps = [
+      { kind: "started", total: 1, activeIndex: 0 },
+      { kind: "item", descriptor: restored, manifestIndex: 0 },
+      { kind: "done" },
+    ];
+    sessionCommandsMock.systemOpenResults = [
+      { kind: "opened", source: "finder", descriptor: droppedDescriptor },
+    ];
+    invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === "health_check") {
+        return { service: "document-core", version: "0.1.0" };
+      }
+      if (cmd === "read_document_content") {
+        const { id } = args as { id: string };
+        return new TextEncoder()
+          .encode(id === "doc-restored" ? "restored" : "finder")
+          .buffer;
+      }
+      if (cmd === "refresh_external_document") return null;
+      if (cmd === "initialize_word_wrap_menu") return undefined;
+      if (cmd === "update_syntax_menu") return undefined;
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    await vi.waitFor(() => {
+      expect(
+        container.querySelector(".document-tab.is-active .document-tab-title")
+          ?.textContent,
+      ).toBe("dropped.md");
+    });
+    expect(
+      Array.from(container.querySelectorAll(".document-tab-title")).map(
+        (node) => node.textContent,
+      ),
+    ).toEqual(["restored.md", "dropped.md"]);
+  });
+
+  it("keeps a dropped request queued while a modal is open and reports rejection after unlock", async () => {
+    await act(async () => {
+      root.render(<App />);
+    });
+    await vi.waitFor(() => {
+      expect(
+        container.querySelector<HTMLButtonElement>(".save-button")?.disabled,
+      ).toBe(false);
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".save-button")?.click();
+    });
+    await vi.waitFor(() => {
+      expect(container.querySelector(".save-as-dialog")).not.toBeNull();
+    });
+    sessionCommandsMock.systemOpenResults = [
+      {
+        kind: "rejected",
+        source: "drag-drop",
+        reason: "not-single-file",
+      },
+    ];
+
+    await emitSystemOpenRequest();
+    expect(sessionCommandsMock.systemOpenResults).toHaveLength(1);
+
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(".save-as-dialog .confirm-cancel")
+        ?.click();
+    });
+    await vi.waitFor(() => {
+      expect(sessionCommandsMock.systemOpenResults).toHaveLength(0);
+      expect(container.textContent).toContain("Open one file at a time.");
+    });
+  });
+});
+
 describe("App session restore", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot>;
@@ -7755,6 +7957,46 @@ describe("App syntax mode menu", () => {
 
     expect(statusLanguage()).toBe("Rust");
     expect(container.querySelector(".cm-content")).not.toBeNull();
+  });
+
+  it("keeps an Untitled Markdown document responsive through Preview and WYSIWYG heading input", async () => {
+    await act(async () => root.render(<App />));
+    await emitSyntaxMode("markdown");
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".markdown-preview-toggle")?.click();
+    });
+    const editable = container.querySelector<HTMLElement>(".cm-content");
+    const view = editable === null ? null : EditorView.findFromDOM(editable);
+    if (!view) throw new Error("missing source editor");
+    for (const text of ["#", "##", "## ", "##\t", "## Title", "## "]) {
+      await act(async () => {
+        view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text } });
+      });
+      expect(view.state.doc.toString()).toBe(text);
+      expect(container.querySelector(".markdown-preview-content")?.textContent).toBe(
+        text === "## Title" ? "Title" : text.trim(),
+      );
+    }
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".markdown-wysiwyg-toggle")?.click();
+    });
+    expect(container.querySelector(".markdown-preview-pane")).toBeNull();
+    for (const text of ["## ", "##\t", "## Title"]) {
+      const span = container.querySelector(".markdown-wysiwyg-editor .wysiwyg-inline-text");
+      if (!span) throw new Error("missing editable WYSIWYG text");
+      await act(async () => {
+        span.textContent = text;
+        span.dispatchEvent(new InputEvent("input", { bubbles: true }));
+      });
+      expect(container.querySelector('[contenteditable="plaintext-only"]')).not.toBeNull();
+    }
+    expect(container.querySelector(".is-h2 .wysiwyg-inline-text")?.textContent).toBe("Title");
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".markdown-preview-toggle")?.click();
+    });
+    expect(container.querySelector(".markdown-wysiwyg-editor")).toBeNull();
+    expect(container.querySelector(".markdown-preview-content h2")?.textContent).toBe("Title");
+    expect(container.querySelector(".cm-content")?.textContent).toBe("## Title");
   });
 
   it("gives an Untitled Markdown tab the same Preview, WYSIWYG, and Format capabilities", async () => {

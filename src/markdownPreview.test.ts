@@ -6,6 +6,27 @@ import {
 } from "./markdownPreview";
 
 describe("renderMarkdownPreview", () => {
+  it.each([1, 2, 3, 4, 5, 6])(
+    "renders incomplete level %i headings and subsequent edits without hanging",
+    (level) => {
+      const hashes = "#".repeat(level);
+      for (const suffix of ["", " ", "\t"]) {
+        const result = renderMarkdownPreview(hashes + suffix);
+        expect(result).toEqual({ status: "ok", html: `<p>${hashes}</p>` });
+      }
+      // Multiple spaces and mixed whitespace also appeared while typing.
+      for (const suffix of ["  ", " \t", "\t "]) {
+        expect(renderMarkdownPreview(hashes + suffix).status).toBe("ok");
+      }
+      expect(renderMarkdownPreview(`${hashes} Title`).html).toBe(
+        `<h${level}>Title</h${level}>`,
+      );
+      expect(renderMarkdownPreview(`before\n${hashes} \nafter\n# End`).html).toBe(
+        `<p>before ${hashes} after</p>\n<h1>End</h1>`,
+      );
+    },
+  );
+
   it("渲染首版 Markdown 与 GFM 基础结构", () => {
     const result = renderMarkdownPreview(`# Title
 

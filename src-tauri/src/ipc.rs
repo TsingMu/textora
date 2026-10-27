@@ -5,7 +5,7 @@
 //! Raw body 与自定义 header 接收，避免把大文本编码为 JSON 数字数组或大字符串。错误
 //! 以稳定代码返回，前端据此映射用户可理解的提示，不展示 Rust 内部调试文本。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs::File;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
@@ -313,6 +313,103 @@ pub struct KnownDocumentPath {
 pub enum OpenDocumentSelection {
     Opened { descriptor: DocumentDescriptor },
     Existing { tab_id: String },
+}
+
+/// macOS/Finder 或 Tauri 窗口拖放交付文件后通知前端拉取可信请求的事件名。
+/// 事件本身不携带路径；路径只保存在 Rust managed state 中。
+pub const SYSTEM_OPEN_REQUESTED_EVENT: &str = "textora-system-open-requested";
+
+/// 系统文件请求的入口，用于用户提示与测试，不影响打开/保存契约。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SystemOpenSource {
+    DragDrop,
+    Finder,
+}
+
+/// 系统交付内容不能作为单个本地文件处理时的稳定原因。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SystemOpenRejection {
+    NotSingleFile,
+    NotLocalFile,
+    NotAFile,
+}
+
+/// 前端逐项拉取系统文件请求的结果。新文件只返回描述符，正文仍使用既有二进制通道；
+/// 重复文件返回后端可信文档 id，前端据此激活已有标签。
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum SystemOpenResult {
+    Opened {
+        source: SystemOpenSource,
+        descriptor: DocumentDescriptor,
+    },
+    Existing {
+        source: SystemOpenSource,
+        document_id: String,
+    },
+    Rejected {
+        source: SystemOpenSource,
+        reason: SystemOpenRejection,
+    },
+    Failed {
+        source: SystemOpenSource,
+        error: DocumentCommandError,
+    },
+}
+
+#[derive(Debug)]
+struct SystemOpenRequest {
+    source: SystemOpenSource,
+    paths: Vec<PathBuf>,
+    contains_non_file_url: bool,
+}
+
+/// 由 Tauri 原生事件写入、前端只能逐项消费的系统文件请求队列。这样前端不能通过
+/// 构造路径调用通用读文件命令，冷启动时监听尚未注册的请求也不会丢失。
+#[derive(Default)]
+pub struct SystemOpenQueue {
+    inner: Mutex<VecDeque<SystemOpenRequest>>,
+}
+
+impl SystemOpenQueue {
+    pub(crate) fn enqueue_paths(&self, source: SystemOpenSource, paths: Vec<PathBuf>) {
+        self.inner
+            .lock()
+            .expect("system open queue lock poisoned")
+            .push_back(SystemOpenRequest {
+                source,
+                paths,
+                contains_non_file_url: false,
+            });
+    }
+
+    pub(crate) fn enqueue_urls(&self, urls: &[tauri::Url]) {
+        let mut paths = Vec::with_capacity(urls.len());
+        let mut contains_non_file_url = false;
+        for url in urls {
+            match url.to_file_path() {
+                Ok(path) => paths.push(path),
+                Err(_) => contains_non_file_url = true,
+            }
+        }
+        self.inner
+            .lock()
+            .expect("system open queue lock poisoned")
+            .push_back(SystemOpenRequest {
+                source: SystemOpenSource::Finder,
+                paths,
+                contains_non_file_url,
+            });
+    }
+
+    fn pop(&self) -> Option<SystemOpenRequest> {
+        self.inner
+            .lock()
+            .expect("system open queue lock poisoned")
+            .pop_front()
+    }
 }
 
 /// 一次启动恢复推进的结果。恢复命令逐项打开清单文件：任意时刻后端至多一个已打开
@@ -1401,6 +1498,86 @@ fn open_selected_path(
         trusted,
     );
     Ok(opened.descriptor)
+}
+
+fn process_system_open_request(
+    request: SystemOpenRequest,
+    store: &DocumentStore,
+) -> SystemOpenResult {
+    if request.contains_non_file_url {
+        return SystemOpenResult::Rejected {
+            source: request.source,
+            reason: SystemOpenRejection::NotLocalFile,
+        };
+    }
+    let [path] = request.paths.as_slice() else {
+        return SystemOpenResult::Rejected {
+            source: request.source,
+            reason: SystemOpenRejection::NotSingleFile,
+        };
+    };
+    match std::fs::metadata(path) {
+        Ok(metadata) if metadata.is_file() => {}
+        Ok(_) => {
+            return SystemOpenResult::Rejected {
+                source: request.source,
+                reason: SystemOpenRejection::NotAFile,
+            };
+        }
+        Err(_) => {
+            return SystemOpenResult::Failed {
+                source: request.source,
+                error: DocumentCommandError::new(
+                    DocumentErrorCode::ReadFailed,
+                    "system-open target metadata could not be read",
+                ),
+            };
+        }
+    }
+    if let Some(document_id) = store.active_document_for_path(path) {
+        return SystemOpenResult::Existing {
+            source: request.source,
+            document_id,
+        };
+    }
+    match open_selected_path(path, store) {
+        Ok(descriptor) => SystemOpenResult::Opened {
+            source: request.source,
+            descriptor,
+        },
+        Err(error) => SystemOpenResult::Failed {
+            source: request.source,
+            error,
+        },
+    }
+}
+
+/// 消费由 Tauri 原生事件写入的下一条可信系统文件请求。前端不传路径；队列为空返回
+/// `None`。文件读取放到阻塞线程，避免 Finder/拖放打开大文件时阻塞应用事件循环。
+#[tauri::command]
+pub async fn take_system_open_request(
+    app: tauri::AppHandle,
+    queue: tauri::State<'_, SystemOpenQueue>,
+) -> Result<Option<SystemOpenResult>, DocumentCommandError> {
+    let Some(request) = queue.pop() else {
+        return Ok(None);
+    };
+    let source = request.source;
+    let app_handle = app.clone();
+    Ok(Some(
+        tauri::async_runtime::spawn_blocking(move || {
+            let store = app_handle.state::<DocumentStore>();
+            process_system_open_request(request, store.inner())
+        })
+        .await
+        .unwrap_or_else(|_| SystemOpenResult::Failed {
+            source,
+            error: DocumentCommandError::new(
+                DocumentErrorCode::ReadFailed,
+                "system open worker could not complete",
+            ),
+        }),
+    ))
 }
 
 /// 在 Rust 侧显示系统文件对话框并读取用户实际选择的文件。前端不传入路径，
@@ -2579,6 +2756,150 @@ fn build_saved_descriptor(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn system_open_request_uses_document_core_and_detects_existing_document() {
+        use crate::document::test_support::TestDir;
+
+        let dir = TestDir::new();
+        let path = dir.join("notes.md");
+        std::fs::write(&path, b"# Notes\n").unwrap();
+        let store = DocumentStore::default();
+
+        let opened = process_system_open_request(
+            SystemOpenRequest {
+                source: SystemOpenSource::DragDrop,
+                paths: vec![path.clone()],
+                contains_non_file_url: false,
+            },
+            &store,
+        );
+        let descriptor = match opened {
+            SystemOpenResult::Opened { source, descriptor } => {
+                assert_eq!(source, SystemOpenSource::DragDrop);
+                descriptor
+            }
+            other => panic!("expected opened result, got {other:?}"),
+        };
+        assert_eq!(descriptor.path, path);
+        assert_eq!(
+            store.take_content(&descriptor.id),
+            Some(b"# Notes\n".to_vec())
+        );
+
+        assert_eq!(
+            process_system_open_request(
+                SystemOpenRequest {
+                    source: SystemOpenSource::Finder,
+                    paths: vec![descriptor.path.clone()],
+                    contains_non_file_url: false,
+                },
+                &store,
+            ),
+            SystemOpenResult::Existing {
+                source: SystemOpenSource::Finder,
+                document_id: descriptor.id,
+            }
+        );
+    }
+
+    #[test]
+    fn system_open_request_rejects_non_single_non_local_and_directory_targets() {
+        use crate::document::test_support::TestDir;
+
+        let dir = TestDir::new();
+        let file = dir.join("one.txt");
+        std::fs::write(&file, b"one").unwrap();
+        let store = DocumentStore::default();
+
+        for paths in [Vec::new(), vec![file.clone(), file.clone()]] {
+            assert_eq!(
+                process_system_open_request(
+                    SystemOpenRequest {
+                        source: SystemOpenSource::DragDrop,
+                        paths,
+                        contains_non_file_url: false,
+                    },
+                    &store,
+                ),
+                SystemOpenResult::Rejected {
+                    source: SystemOpenSource::DragDrop,
+                    reason: SystemOpenRejection::NotSingleFile,
+                }
+            );
+        }
+
+        assert_eq!(
+            process_system_open_request(
+                SystemOpenRequest {
+                    source: SystemOpenSource::Finder,
+                    paths: vec![file],
+                    contains_non_file_url: true,
+                },
+                &store,
+            ),
+            SystemOpenResult::Rejected {
+                source: SystemOpenSource::Finder,
+                reason: SystemOpenRejection::NotLocalFile,
+            }
+        );
+        assert_eq!(
+            process_system_open_request(
+                SystemOpenRequest {
+                    source: SystemOpenSource::DragDrop,
+                    paths: vec![dir.path().to_path_buf()],
+                    contains_non_file_url: false,
+                },
+                &store,
+            ),
+            SystemOpenResult::Rejected {
+                source: SystemOpenSource::DragDrop,
+                reason: SystemOpenRejection::NotAFile,
+            }
+        );
+
+        assert!(matches!(
+            process_system_open_request(
+                SystemOpenRequest {
+                    source: SystemOpenSource::Finder,
+                    paths: vec![dir.join("missing.md")],
+                    contains_non_file_url: false,
+                },
+                &store,
+            ),
+            SystemOpenResult::Failed {
+                source: SystemOpenSource::Finder,
+                error: DocumentCommandError {
+                    code: DocumentErrorCode::ReadFailed,
+                    ..
+                },
+            }
+        ));
+    }
+
+    #[test]
+    fn system_open_queue_keeps_cold_start_requests_and_marks_non_file_urls() {
+        let queue = SystemOpenQueue::default();
+        queue.enqueue_paths(
+            SystemOpenSource::DragDrop,
+            vec![PathBuf::from("/tmp/first.md")],
+        );
+        queue.enqueue_urls(&[
+            tauri::Url::parse("file:///tmp/second.md").unwrap(),
+            tauri::Url::parse("https://example.com/not-local.md").unwrap(),
+        ]);
+
+        let first = queue.pop().expect("queued drag request");
+        assert_eq!(first.source, SystemOpenSource::DragDrop);
+        assert_eq!(first.paths, [PathBuf::from("/tmp/first.md")]);
+        assert!(!first.contains_non_file_url);
+
+        let second = queue.pop().expect("queued finder request");
+        assert_eq!(second.source, SystemOpenSource::Finder);
+        assert_eq!(second.paths, [PathBuf::from("/tmp/second.md")]);
+        assert!(second.contains_non_file_url);
+        assert!(queue.pop().is_none());
+    }
 
     #[test]
     fn from_open_core_maps_variants_to_stable_codes() {

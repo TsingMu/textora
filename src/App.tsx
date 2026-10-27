@@ -74,6 +74,7 @@ import {
   saveAsAt,
   saveDocument,
   selectAndOpenDocument,
+  takeSystemOpenRequest,
   updateOpenFilesManifest,
   initializeWordWrapMenu,
   updateSyntaxMenu,
@@ -89,6 +90,8 @@ import {
   type KnownDocumentPath,
   type LineEndingChoice,
   type SaveDirectoryGrant,
+  SYSTEM_OPEN_REQUESTED_EVENT,
+  type SystemOpenRejection,
 } from "./platform";
 import {
   persistWordWrapPreference,
@@ -190,6 +193,17 @@ function invalidSaveFileName(fileName: string): boolean {
   );
 }
 
+function describeSystemOpenRejection(reason: SystemOpenRejection): string {
+  switch (reason) {
+    case "not-single-file":
+      return "Open one file at a time.";
+    case "not-local-file":
+      return "Only local files can be opened.";
+    case "not-a-file":
+      return "Folders cannot be opened here.";
+  }
+}
+
 function App() {
   const [tabSession, setTabSession] = useState<TabSessionState>(initialTabs);
   const session = activeDocument(tabSession);
@@ -254,6 +268,9 @@ function App() {
     string | null
   >(null);
   const [manifestNotice, setManifestNotice] = useState<string | null>(null);
+  const [systemOpenNotice, setSystemOpenNotice] = useState<string | null>(null);
+  const [systemOpenRequestRevision, setSystemOpenRequestRevision] = useState(0);
+  const [systemOpenInFlight, setSystemOpenInFlight] = useState(false);
   // 主选择 head 的行列快照；只在 CodeMirror 源码视图存在时非空（Editor 卸载时清空）。
   const [cursorPosition, setCursorPosition] = useState<CursorPosition | null>(
     null,
@@ -270,6 +287,8 @@ function App() {
   );
   const fileMissingResolvingRef = useRef(false);
   const busyRef = useRef(false);
+  const systemOpenDrainRef = useRef(false);
+  const systemOpenAttemptedRevisionRef = useRef(-1);
   const closeConfirmPendingRef = useRef(false);
   const closeIntentRef = useRef<CloseIntent | null>(null);
   const editorRef = useRef<EditorHandle>(null);
@@ -801,6 +820,33 @@ function App() {
     }
     sessionRestoreStartedRef.current = true;
     void runSessionRestore();
+  }, []);
+
+  // 系统文件事件只携带“有新请求”信号；真实路径保留在 Rust 队列中。监听注册后主动
+  // 推进一次，覆盖 Finder 冷启动时早于 WebView 监听到达的请求。
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+    void (async () => {
+      try {
+        const { listen } = await importTauriEventApi();
+        if (cancelled) return;
+        unlisten = await listen(SYSTEM_OPEN_REQUESTED_EVENT, () => {
+          setSystemOpenRequestRevision((revision) => revision + 1);
+        });
+        if (cancelled) {
+          unlisten();
+          return;
+        }
+        setSystemOpenRequestRevision((revision) => revision + 1);
+      } catch {
+        // 非 Tauri 环境没有原生系统文件请求。
+      }
+    })();
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
   }, []);
 
   // 恢复不再推进（完成或中断）且已有采用标签时，对每个已恢复文件执行一次可信复核：
@@ -1448,6 +1494,62 @@ function App() {
     }
   }
 
+  async function drainSystemOpenRequests() {
+    if (systemOpenDrainRef.current) return;
+    systemOpenDrainRef.current = true;
+    setSystemOpenInFlight(true);
+    try {
+      for (;;) {
+        const result = await takeSystemOpenRequest();
+        if (result === null) return;
+        if (result.kind === "rejected") {
+          setSystemOpenNotice(describeSystemOpenRejection(result.reason));
+          continue;
+        }
+        if (result.kind === "failed") {
+          setSystemOpenNotice(describeOpenError(result.error.code));
+          continue;
+        }
+        if (result.kind === "existing") {
+          const existing = tabSessionRef.current.tabs.find(
+            (tab) => tab.document.id === result.documentId,
+          );
+          if (existing === undefined) {
+            setSystemOpenNotice(
+              "The requested file could not be matched to an open tab.",
+            );
+            continue;
+          }
+          updateTabSession((current) =>
+            switchActiveTab(current, existing.tabId),
+          );
+          setSystemOpenNotice(null);
+          continue;
+        }
+        try {
+          const buffer = await readDocumentContent(result.descriptor.id);
+          const content = new TextDecoder().decode(buffer);
+          updateTabSession((current) =>
+            addOpenedDocumentTab(current, result.descriptor, content),
+          );
+          setSystemOpenNotice(null);
+        } catch {
+          try {
+            await closeDocument(result.descriptor.id);
+          } catch {
+            // 候选清理失败不改变前端会话；后端仍不会把未取回内容提升为活动文档。
+          }
+          setSystemOpenNotice("The file content could not be read.");
+        }
+      }
+    } catch {
+      setSystemOpenNotice("The system file request could not be processed.");
+    } finally {
+      systemOpenDrainRef.current = false;
+      setSystemOpenInFlight(false);
+    }
+  }
+
   async function runSavePipeline(tabId: string, id: string, content: string) {
     try {
       const descriptor = await saveDocument(id, content);
@@ -1713,6 +1815,7 @@ function App() {
 
   function tabsAreLocked(): boolean {
     return (
+      systemOpenInFlight ||
       saveAsPanel.open ||
       conflictPending ||
       activeExternalReloadError?.status === "retrying" ||
@@ -2170,6 +2273,7 @@ function App() {
 
   const busy =
     isBusy(session) ||
+    systemOpenInFlight ||
     sessionRestore === "pending" ||
     saveAsPanel.open ||
     conflictPending ||
@@ -2177,6 +2281,19 @@ function App() {
     fileMissingPending !== null ||
     closeConfirmPending;
   busyRef.current = busy;
+
+  // 恢复和现有模态结束后串行消费系统文件队列。revision 只表示“可能有新请求”；一次
+  // drain 会读到队列为空，attempted 门禁避免 in-flight 状态自身触发空轮询循环。
+  useEffect(() => {
+    if (
+      busy ||
+      systemOpenRequestRevision === systemOpenAttemptedRevisionRef.current
+    ) {
+      return;
+    }
+    systemOpenAttemptedRevisionRef.current = systemOpenRequestRevision;
+    void drainSystemOpenRequests();
+  }, [busy, systemOpenRequestRevision]);
 
   // 活动标签语法状态同步原生 View > Syntax：监听武装前与启动恢复期间不同步，菜单保持
   // 初始禁用。活动标签未保存且未处于交互锁定时启用并唯一勾选其临时模式；已保存标签或
@@ -2194,6 +2311,7 @@ function App() {
   }, [syntaxMenuArmed, sessionRestore, activeSyntaxMode, busy]);
 
   const editorLocked =
+    systemOpenInFlight ||
     sessionRestore === "pending" ||
     session.openStatus === "loading" ||
     session.saveStatus === "saving" ||
@@ -2664,6 +2782,23 @@ function App() {
               >
                 Dismiss
               </button>
+            </div>
+          )}
+          {systemOpenNotice !== null && (
+            <div className="notice notice-error notice-session" role="alert">
+              <span>{systemOpenNotice}</span>
+              <button
+                type="button"
+                className="notice-dismiss"
+                onClick={() => setSystemOpenNotice(null)}
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
+          {systemOpenInFlight && (
+            <div className="notice notice-loading" role="status">
+              Opening file…
             </div>
           )}
           {session.openStatus === "loading" && (

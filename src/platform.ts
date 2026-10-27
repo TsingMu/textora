@@ -36,6 +36,31 @@ export type OpenDocumentSelection =
   | { kind: "opened"; descriptor: DocumentDescriptor }
   | { kind: "existing"; tabId: string };
 
+export const SYSTEM_OPEN_REQUESTED_EVENT = "textora-system-open-requested";
+
+export type SystemOpenSource = "drag-drop" | "finder";
+export type SystemOpenRejection =
+  | "not-single-file"
+  | "not-local-file"
+  | "not-a-file";
+export type SystemOpenResult =
+  | {
+      kind: "opened";
+      source: SystemOpenSource;
+      descriptor: DocumentDescriptor;
+    }
+  | { kind: "existing"; source: SystemOpenSource; documentId: string }
+  | {
+      kind: "rejected";
+      source: SystemOpenSource;
+      reason: SystemOpenRejection;
+    }
+  | {
+      kind: "failed";
+      source: SystemOpenSource;
+      error: DocumentCommandError;
+    };
+
 export const EXTERNAL_DOCUMENT_CHANGED_EVENT = "textora-external-document-changed";
 
 export const WORD_WRAP_CHANGED_EVENT = "textora-word-wrap-changed";
@@ -131,6 +156,13 @@ export async function selectAndOpenDocument(
     return selection;
   }
   return { kind: "opened", descriptor: selection };
+}
+
+/**
+ * 逐项消费 Rust 原生事件保存的系统文件请求。调用方不能提交路径；队列为空返回 null。
+ */
+export async function takeSystemOpenRequest(): Promise<SystemOpenResult | null> {
+  return invoke<SystemOpenResult | null>("take_system_open_request");
 }
 
 /**

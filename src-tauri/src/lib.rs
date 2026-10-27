@@ -228,6 +228,15 @@ fn show_main_window(app_handle: &tauri::AppHandle) {
 }
 
 #[cfg(target_os = "macos")]
+fn schedule_show_main_window(app_handle: &tauri::AppHandle) {
+    let app_handle = app_handle.clone();
+    tauri::async_runtime::spawn(async move {
+        let show_handle = app_handle.clone();
+        let _ = app_handle.run_on_main_thread(move || show_main_window(&show_handle));
+    });
+}
+
+#[cfg(target_os = "macos")]
 fn build_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let pkg_info = app_handle.package_info();
     let config = app_handle.config();
@@ -365,6 +374,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(DocumentStore::default())
+        .manage(ipc::SystemOpenQueue::default())
         .manage(ExitGuard::default())
         .setup(|app| {
             let watcher = external_watch::ExternalWatchService::new(app.handle().clone())?;
@@ -435,6 +445,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             health_check,
             ipc::select_and_open_document,
+            ipc::take_system_open_request,
             ipc::read_document_content,
             ipc::restore_next_session_document,
             ipc::update_open_files_manifest,
@@ -459,6 +470,26 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| match event {
+            tauri::RunEvent::WindowEvent {
+                label,
+                event: tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }),
+                ..
+            } if label == MAIN_WINDOW_LABEL => {
+                app_handle
+                    .state::<ipc::SystemOpenQueue>()
+                    .enqueue_paths(ipc::SystemOpenSource::DragDrop, paths);
+                let _ = app_handle.emit(ipc::SYSTEM_OPEN_REQUESTED_EVENT, ());
+            }
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Opened { urls } => {
+                app_handle
+                    .state::<ipc::SystemOpenQueue>()
+                    .enqueue_urls(&urls);
+                // 冷启动的 Opened 可能早于配置窗口注册完成；同步重建会与 Tauri 的
+                // 启动窗口冲突。排到事件循环下一拍后再显示或按需重建窗口。
+                schedule_show_main_window(app_handle);
+                let _ = app_handle.emit(ipc::SYSTEM_OPEN_REQUESTED_EVENT, ());
+            }
             tauri::RunEvent::ExitRequested { api, .. } => {
                 let guard = app_handle.state::<ExitGuard>();
                 if should_guard_user_exit(&guard) {

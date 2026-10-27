@@ -45,6 +45,9 @@ interface MarkdownPreviewOptions {
   mermaidBlocks?: Readonly<Record<number, MarkdownMermaidBlockPreview>>;
 }
 
+// Keep block-boundary detection consistent with the heading parser.
+const HEADING_PATTERN = /^(#{1,6})\s+(.+?)\s*#*\s*$/;
+
 const TOKEN_PREFIX = "\uE000";
 const TOKEN_SUFFIX = "\uE001";
 
@@ -148,7 +151,7 @@ function renderMarkdownToSafeHtml(
       continue;
     }
 
-    const heading = line.match(/^(#{1,6})\s+(.+?)\s*#*\s*$/);
+    const heading = line.match(HEADING_PATTERN);
     if (heading) {
       const level = heading[1].length;
       index += 1;
@@ -191,14 +194,16 @@ function renderMarkdownToSafeHtml(
     }
 
     const paragraphLines: string[] = [];
-    while (
+    // Earlier branches did not consume this line. Always consume it as text,
+    // even if a future block-boundary rule disagrees with its parser.
+    do {
+      paragraphLines.push((lines[index] ?? "").trim());
+      index += 1;
+    } while (
       index < lines.length &&
       !isBlank(lines[index] ?? "") &&
       !isBlockStart(lines, index)
-    ) {
-      paragraphLines.push((lines[index] ?? "").trim());
-      index += 1;
-    }
+    );
     pushBlock(
       "paragraph",
       startLine,
@@ -279,7 +284,7 @@ function isBlockStart(lines: string[], index: number): boolean {
   const line = lines[index] ?? "";
   return (
     /^ {0,3}```/.test(line) ||
-    /^(#{1,6})\s+/.test(line) ||
+    HEADING_PATTERN.test(line) ||
     /^ {0,3}([-*_])(?:\s*\1){2,}\s*$/.test(line) ||
     /^ {0,3}>\s?/.test(line) ||
     listLine(line) !== null ||

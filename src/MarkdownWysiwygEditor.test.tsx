@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
+import { act, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -41,6 +41,35 @@ describe("MarkdownWysiwygEditor", () => {
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
+  });
+
+  it("keeps a controlled editor editable through incomplete heading input", async () => {
+    const onChange = vi.fn();
+    function EditableDocument() {
+      const [content, setContent] = useState("draft");
+      return (
+        <MarkdownWysiwygEditor
+          content={content}
+          onChange={(next) => {
+            onChange(next);
+            setContent(next);
+          }}
+        />
+      );
+    }
+    await act(async () => root.render(<EditableDocument />));
+    for (const text of ["#", "##", "## ", "##\t", "## Title"]) {
+      const span = container.querySelector(".wysiwyg-inline-text");
+      if (!span) throw new Error("missing editable text after heading input");
+      await act(async () => inputInline(span, text));
+      expect(onChange).toHaveBeenLastCalledWith(text);
+      expect(container.querySelector('[contenteditable="plaintext-only"]')).not.toBeNull();
+    }
+    expect(container.querySelector(".is-h2 .wysiwyg-inline-text")?.textContent).toBe("Title");
+    const heading = container.querySelector(".is-h2 .wysiwyg-inline-text");
+    if (!heading) throw new Error("missing heading editor");
+    await act(async () => inputInline(heading, "Edited"));
+    expect(onChange).toHaveBeenLastCalledWith("## Edited");
   });
 
   it("renders inline-formatted fragments inside the structured text blocks", async () => {

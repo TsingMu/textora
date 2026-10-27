@@ -7,6 +7,28 @@ import {
 } from "./markdownWysiwyg";
 
 describe("parseMarkdownWysiwygBlocks", () => {
+  it.each([1, 2, 3, 4, 5, 6])(
+    "parses incomplete level %i headings and subsequent edits without hanging",
+    (level) => {
+      const hashes = "#".repeat(level);
+      for (const suffix of ["", " ", "\t"]) {
+        expect(parseMarkdownWysiwygBlocks(hashes + suffix)).toEqual([
+          { type: "paragraph", text: hashes },
+        ]);
+      }
+      for (const suffix of ["  ", " \t", "\t "]) {
+        expect(parseMarkdownWysiwygBlocks(hashes + suffix)).toHaveLength(1);
+      }
+      expect(parseMarkdownWysiwygBlocks(`${hashes} Title`)).toEqual([
+        { type: "heading", level, text: "Title" },
+      ]);
+      expect(parseMarkdownWysiwygBlocks(`before\n${hashes} \nafter\n# End`)).toEqual([
+        { type: "paragraph", text: `before ${hashes} after` },
+        { type: "heading", level: 1, text: "End" },
+      ]);
+    },
+  );
+
   it("parses first-version editable block types", () => {
     const blocks = parseMarkdownWysiwygBlocks(`# Title
 
