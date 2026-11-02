@@ -39,6 +39,39 @@ describe("Editor", () => {
     container.remove();
   });
 
+  it.each(["markdown", "plain-text"] as const)(
+    "renumbers source list deletion only in Markdown (%s)", async (language) => {
+      const onChange = vi.fn();
+      await act(async () => {
+        root.render(<Editor content={"1. a\n2. b\n3. c"} language={language} onChange={onChange} />);
+      });
+      const editable = container.querySelector<HTMLElement>(".cm-content");
+      const view = editable ? EditorView.findFromDOM(editable) : null;
+      if (!view) throw new Error("missing editor");
+      await act(async () => {
+        view.dispatch({ changes: { from: 5, to: 10 }, userEvent: "delete.selection" });
+      });
+      const expected = language === "markdown" ? "1. a\n2. c" : "1. a\n3. c";
+      expect(view.state.doc.toString()).toBe(expected);
+      expect(onChange).toHaveBeenCalledTimes(1);
+      expect(onChange).toHaveBeenLastCalledWith(expected);
+      await act(async () => { undo(view); });
+      expect(view.state.doc.toString()).toBe("1. a\n2. b\n3. c");
+    },
+  );
+
+  it("removes renumbering when switching a Markdown editor to plain text", async () => {
+    const source = "1. a\n2. b\n3. c";
+    const onChange = vi.fn();
+    await act(async () => root.render(<Editor content={source} language="markdown" onChange={onChange} />));
+    await act(async () => root.render(<Editor content={source} language="plain-text" onChange={onChange} />));
+    const editable = container.querySelector<HTMLElement>(".cm-content");
+    const view = editable ? EditorView.findFromDOM(editable) : null;
+    if (!view) throw new Error("missing editor");
+    await act(async () => view.dispatch({ changes: { from: 5, to: 10 }, userEvent: "delete.selection" }));
+    expect(onChange).toHaveBeenLastCalledWith("1. a\n3. c");
+  });
+
   it("preserves the editor instance and focus when controlled content updates", async () => {
     const onChange = vi.fn();
 

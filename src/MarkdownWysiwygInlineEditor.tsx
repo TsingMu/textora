@@ -4,6 +4,7 @@ import {
   escapeInlineText,
   escapeLinkLabel,
   parseInline,
+  inlineNodeVisibleText,
   serializeInline,
   type InlineNode,
 } from "./markdownWysiwygInline";
@@ -63,7 +64,7 @@ function InlineNodeSpan({
 }) {
   const ref = useRef<HTMLSpanElement>(null);
   const composingRef = useRef(false);
-  const visible = nodeVisibleText(node);
+  const visible = inlineNodeVisibleText(node);
 
   useLayoutEffect(() => {
     const el = ref.current;
@@ -142,12 +143,6 @@ function classNameFor(node: InlineNode): string {
   }
 }
 
-function nodeVisibleText(node: InlineNode): string {
-  const raw = node.type === "link" ? node.label : node.text;
-  // code span 内容为字面文本，不解释转义；其余节点的反斜杠转义按可见文字解析。
-  return node.type === "code" ? raw : unescapeRaw(raw);
-}
-
 function withVisibleText(
   node: InlineNode,
   visible: string,
@@ -174,11 +169,4 @@ function stripNewlines(text: string): string {
 
 function normalizeNewlines(text: string): string {
   return text.replace(/\r\n?/g, "\n");
-}
-
-function unescapeRaw(raw: string): string {
-  return raw.replace(
-    /\\([!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~])/g,
-    "$1",
-  );
 }

@@ -266,6 +266,52 @@ describe("MarkdownWysiwygEditor", () => {
       });
   });
 
+  it.each(["\n", "\r\n", "\r"])(
+    "edits every non-table block locally without changing tables or separators (%j)",
+    async (eol) => {
+      const table = [" | 文件 | 本次变更 | ", " | ----- | :-----: |", " | `app/src/文件.kt` | __新增__ | "].join(eol);
+      const blocks = ["## Title ###  ", "paragraph", "7. first\n8. second", "> quote", "```js\nold\n```", "```mermaid\ngraph TD\nA-->B\n```"].map((s) => s.replace(/\n/g, eol));
+      const gap = eol + " " + eol + eol;
+      const content = eol + table + gap + blocks.join(gap) + gap + table + eol;
+      const cases = [
+        [".is-h2 .wysiwyg-inline-text", 0, "## Edited"],
+        [".markdown-wysiwyg-paragraph .wysiwyg-inline-text", 1, "Edited"],
+        [".markdown-wysiwyg-list-text .wysiwyg-inline-text", 2, "1. Edited\n2. second"],
+        [".markdown-wysiwyg-blockquote .wysiwyg-inline-text", 3, "> Edited"],
+        [".markdown-wysiwyg-code", 4, "```js\nEdited\n```"],
+        [".is-mermaid", 5, "Edited"],
+      ] as const;
+      for (const [selector, blockIndex, replacement] of cases) {
+        const onChange = vi.fn();
+        await act(async () => root.render(<MarkdownWysiwygEditor content={content} onChange={onChange} />));
+        expect(onChange).not.toHaveBeenCalled();
+        expect(container.querySelectorAll("table")).toHaveLength(2);
+        const input = container.querySelector(selector);
+        if (!input) throw new Error(`Missing ${selector}`);
+        await act(async () => {
+          if (input instanceof HTMLTextAreaElement) setValueOnTextarea(input, "Edited");
+          else inputInline(input, "Edited");
+        });
+        expect(onChange).toHaveBeenCalledExactlyOnceWith(content.replace(blocks[blockIndex], replacement));
+      }
+    },
+  );
+
+  it("displays supported tables without writing back, retains unsupported source, and honors locking", async () => {
+    const onChange = vi.fn();
+    const content = "# Title\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\n| invalid | table |\n| --- | --- |\n| too | many | cells |";
+    for (const disabled of [false, true]) {
+      await act(async () => root.render(<MarkdownWysiwygEditor content={content} disabled={disabled} onChange={onChange} />));
+      expect(container.querySelectorAll("table")).toHaveLength(1);
+      expect(container.querySelector<HTMLTextAreaElement>(".is-table")?.value).toBe("| invalid | table |\n| --- | --- |\n| too | many | cells |");
+      expect(container.querySelector('table [contenteditable="plaintext-only"]')).toBeNull();
+    }
+    const locked = container.querySelector(".is-h1 .wysiwyg-inline-text");
+    if (!locked) throw new Error("Missing heading");
+    await act(async () => inputInline(locked, "unexpected input"));
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
   it("does not throw when rendering many blocks without layout (jsdom)", async () => {
     await expect(
       act(async () => {

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { act } from "react";
+import * as wysiwygEditorModule from "./MarkdownWysiwygEditor";
 import { createRoot } from "react-dom/client";
 import { EditorSelection } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
@@ -3065,6 +3066,341 @@ describe("App Markdown preview", () => {
     expect(container.querySelector(".markdown-preview-toggle")).toBeNull();
     expect(container.querySelector(".markdown-wysiwyg-toggle")).toBeNull();
     expect(container.querySelector(".markdown-preview-pane")).toBeNull();
+  });
+
+  it("confirms row deletion locally, preserves clean state on cancel, then saves only the deleted row change", async () => {
+    const original = "# Title\n\n| H | B |\n| :---: | ---: |\n| one | 一 |\n| two | 二 |\n\ntail\n";
+    const descriptor = { id: "row-doc", path: "/tmp/rows.md", displayName: "rows.md", byteCount: original.length, encoding: { utf8: { bom: false } }, lineEnding: "lf", fingerprint: { sizeBytes: original.length, sha256: "row" }, readOnly: false };
+    let saved = "";
+    invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === "health_check") return { service: "document-core", version: "0.1.0" };
+      if (cmd === "select_and_open_document") return descriptor;
+      if (cmd === "read_document_content") return new TextEncoder().encode(original).buffer;
+      if (cmd === "save_document") { saved = new TextDecoder().decode(args as Uint8Array); return { ...descriptor, fingerprint: { sizeBytes: saved.length, sha256: "saved" } }; }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+    const press = async (text: string) => { await act(async () => Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find((item) => item.textContent === text)?.click()); };
+    await act(async () => root.render(<App />));
+    await act(async () => container.querySelector<HTMLButtonElement>(".open-button")?.click());
+    await act(async () => container.querySelector<HTMLButtonElement>(".markdown-wysiwyg-toggle")?.click());
+    await act(async () => container.querySelector<HTMLTextAreaElement>('[data-table-row="0"][data-table-column="1"] textarea')?.focus());
+    await press("Delete data row 1");
+    expect(container.querySelector(".wysiwyg-table-row-confirm")).not.toBeNull();
+    expect(container.querySelector<HTMLButtonElement>(".save-button")?.disabled).toBe(true);
+    await press("Cancel row deletion");
+    expect(container.querySelector<HTMLButtonElement>(".save-button")?.disabled).toBe(true);
+    await press("Delete data row 1"); await press("Confirm delete row 1");
+    expect(container.querySelectorAll("tbody tr")).toHaveLength(1);
+    expect(document.activeElement).toBe(container.querySelector('[data-table-row="0"][data-table-column="1"] textarea'));
+    expect(container.querySelector<HTMLButtonElement>(".save-button")?.disabled).toBe(false);
+    await act(async () => container.querySelector<HTMLButtonElement>(".save-button")?.click());
+    expect(saved).toBe(original.replace("| one | 一 |\n", ""));
+    await act(async () => container.querySelector<HTMLButtonElement>(".markdown-preview-toggle")?.click());
+    expect(container.querySelectorAll(".markdown-preview-content tbody tr")).toHaveLength(1);
+    const editable = container.querySelector<HTMLElement>(".cm-content");
+    expect(editable ? EditorView.findFromDOM(editable)?.state.doc.toString() : null).toBe(saved);
+  });
+
+  it("confirms column deletion locally, preserves clean state on cancel, then saves only the column change", async () => {
+    const original = "# Title\n\n| H | B |\n| :---: | ---: |\n| one | 一 |\n| two | 二 |\n\ntail\n";
+    const tableBody = "| H | B |\n| :---: | ---: |\n| one | 一 |\n| two | 二 |";
+    const descriptor = { id: "col-doc", path: "/tmp/columns.md", displayName: "columns.md", byteCount: original.length, encoding: { utf8: { bom: false } }, lineEnding: "lf", fingerprint: { sizeBytes: original.length, sha256: "col" }, readOnly: false };
+    let saved = "";
+    invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === "health_check") return { service: "document-core", version: "0.1.0" };
+      if (cmd === "select_and_open_document") return descriptor;
+      if (cmd === "read_document_content") return new TextEncoder().encode(original).buffer;
+      if (cmd === "save_document") { saved = new TextDecoder().decode(args as Uint8Array); return { ...descriptor, fingerprint: { sizeBytes: saved.length, sha256: "saved" } }; }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+    const press = async (text: string) => { await act(async () => Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find((item) => item.textContent === text)?.click()); };
+    await act(async () => root.render(<App />));
+    await act(async () => container.querySelector<HTMLButtonElement>(".open-button")?.click());
+    await act(async () => container.querySelector<HTMLButtonElement>(".markdown-wysiwyg-toggle")?.click());
+    await act(async () => container.querySelector<HTMLTextAreaElement>('[data-table-row="0"][data-table-column="1"] textarea')?.focus());
+    await press("Delete column 2");
+    expect(container.querySelector(".wysiwyg-table-column-confirm")).not.toBeNull();
+    expect(container.querySelector(".wysiwyg-table-column-confirm code")?.textContent).toContain("B / 一 / 二");
+    expect(container.querySelector<HTMLButtonElement>(".save-button")?.disabled).toBe(true);
+    await press("Cancel column deletion");
+    expect(container.querySelector(".wysiwyg-table-column-confirm")).toBeNull();
+    expect(container.querySelector<HTMLButtonElement>(".save-button")?.disabled).toBe(true);
+    await press("Delete column 2"); await press("Confirm delete column 2");
+    expect(container.querySelectorAll("thead th")).toHaveLength(1);
+    expect(container.querySelectorAll("tbody td")).toHaveLength(2);
+    expect(document.activeElement).toBe(container.querySelector('[data-table-row="0"][data-table-column="0"] textarea'));
+    expect(container.querySelector<HTMLButtonElement>(".save-button")?.disabled).toBe(false);
+    await act(async () => container.querySelector<HTMLButtonElement>(".save-button")?.click());
+    expect(saved).toBe(original.replace(tableBody, "| H |\n| :---: |\n| one |\n| two |"));
+    await act(async () => container.querySelector<HTMLButtonElement>(".markdown-preview-toggle")?.click());
+    expect(container.querySelectorAll(".markdown-preview-content tbody td")).toHaveLength(2);
+    const editable = container.querySelector<HTMLElement>(".cm-content");
+    expect(editable ? EditorView.findFromDOM(editable)?.state.doc.toString() : null).toBe(saved);
+  });
+
+  it("applies column alignment end to end and saves the same separator change", async () => {
+    const original = "# Title\n\n| H | B |\n| :---: | --- |\n| one | 一 |\n| two | 二 |\n\ntail\n";
+    const descriptor = { id: "align-doc", path: "/tmp/align.md", displayName: "align.md", byteCount: original.length, encoding: { utf8: { bom: false } }, lineEnding: "lf", fingerprint: { sizeBytes: original.length, sha256: "align" }, readOnly: false };
+    let saved = "";
+    invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === "health_check") return { service: "document-core", version: "0.1.0" };
+      if (cmd === "select_and_open_document") return descriptor;
+      if (cmd === "read_document_content") return new TextEncoder().encode(original).buffer;
+      if (cmd === "save_document") { saved = new TextDecoder().decode(args as Uint8Array); return { ...descriptor, fingerprint: { sizeBytes: saved.length, sha256: "saved" } }; }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+    const press = async (text: string) => { await act(async () => Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find((item) => item.textContent === text)?.click()); };
+    await act(async () => root.render(<App />));
+    await act(async () => container.querySelector<HTMLButtonElement>(".open-button")?.click());
+    await act(async () => container.querySelector<HTMLButtonElement>(".markdown-wysiwyg-toggle")?.click());
+    await act(async () => container.querySelector<HTMLTextAreaElement>('[data-table-row="0"][data-table-column="1"] textarea')?.focus());
+    expect(Array.from(container.querySelectorAll<HTMLButtonElement>('[aria-label="Column 2 alignment"] button')).find((item) => item.textContent === "Align default")?.disabled).toBe(true);
+    await press("Align right");
+    expect(container.querySelector<HTMLButtonElement>(".save-button")?.disabled).toBe(false);
+    expect(container.querySelectorAll<HTMLElement>("thead th")[1].style.textAlign).toBe("right");
+    await act(async () => container.querySelector<HTMLButtonElement>(".save-button")?.click());
+    expect(saved).toBe(original.replace("| :---: | --- |", "| :---: | ---: |"));
+    await act(async () => container.querySelector<HTMLButtonElement>(".markdown-preview-toggle")?.click());
+    expect(container.querySelectorAll(".markdown-preview-content th")[1].getAttribute("style")).toBe("text-align: right");
+    const editable = container.querySelector<HTMLElement>(".cm-content");
+    expect(editable ? EditorView.findFromDOM(editable)?.state.doc.toString() : null).toBe(saved);
+  });
+
+  it("interleaves cell, row, column and alignment edits across modes, save and reopen without touching other fragments", async () => {
+    const quote = "> 引用原样";
+    const secondTable = "| 第二表 | 保留 |\n| --- | --- |\n| untouched | verbatim |";
+    const original =
+      "# 组合回归\n\nIntro **bold** paragraph.\n\n| 文件 | 变更 |备注|\n| :--- | ---: | --- |\n| `a\\|b.kt` | **新增** | 一 |\n|  | 空 | 二 |\n\n" +
+      `${quote}\n\n${secondTable}\n\ntail 段落\n`;
+    // Cell edit (escaped pipe), insert last data row, insert a 4th column
+    // (canonical rebuild), then center-align only the new separator cell.
+    const editedTable =
+      "| 文件 | 变更 | 备注 |  |\n| :--- | ---: | --- | :---: |\n| `a\\|b.kt` | **新增** | 一 |  |\n| 中\\|文 | 空 | 二 |  |\n|  |  |  |  |";
+    const savedOnce = `# 组合回归\n\nIntro **bold** paragraph.\n\n${editedTable}\n\n${quote}\n\n${secondTable}\n\ntail 段落\n`;
+    let opened = original;
+    let saved = "";
+    const descriptorFor = (content: string) => ({
+      id: "combo-doc", path: "/tmp/combo.md", displayName: "combo.md", byteCount: content.length,
+      encoding: { utf8: { bom: false } }, lineEnding: "lf" as const,
+      fingerprint: { sizeBytes: content.length, sha256: "combo" }, readOnly: false,
+    });
+    invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === "health_check") return { service: "document-core", version: "0.1.0" };
+      if (cmd === "select_and_open_document") return descriptorFor(opened);
+      if (cmd === "read_document_content") return new TextEncoder().encode(opened).buffer;
+      if (cmd === "save_document") {
+        saved = new TextDecoder().decode(args as Uint8Array);
+        opened = saved;
+        return descriptorFor(saved);
+      }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+    const press = async (text: string) => { await act(async () => Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find((item) => item.textContent === text)?.click()); };
+    const focusCell = async (row: number, column: number) => {
+      await act(async () => container.querySelector<HTMLTextAreaElement>(`[data-table-row="${row}"][data-table-column="${column}"] textarea`)?.focus());
+    };
+    const cellField = (row: number, column: number) =>
+      container.querySelector<HTMLTextAreaElement>(`[data-table-row="${row}"][data-table-column="${column}"] textarea`)!;
+
+    await act(async () => root.render(<App />));
+    await act(async () => container.querySelector<HTMLButtonElement>(".open-button")?.click());
+    await act(async () => container.querySelector<HTMLButtonElement>(".markdown-wysiwyg-toggle")?.click());
+    expect(container.querySelectorAll(".markdown-wysiwyg-editor table")).toHaveLength(2);
+
+    const field = cellField(1, 0);
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(field, "中|文");
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(field.value).toBe("中|文");
+    await focusCell(1, 2);
+    await press("Insert row after");
+    await focusCell(1, 2);
+    await press("Insert column after");
+    await focusCell(1, 3);
+    await press("Align center");
+    expect(container.querySelectorAll("table")[0]?.querySelectorAll("textarea")).toHaveLength(16);
+    expect(container.querySelector<HTMLTextAreaElement>('[data-table-row="-1"][data-table-column="2"] textarea')?.value).toBe("备注");
+    expect(cellField(1, 0).value).toBe("中|文");
+
+    await act(async () => container.querySelector<HTMLButtonElement>(".markdown-preview-toggle")?.click());
+    const previewTables = container.querySelectorAll(".markdown-preview-content table");
+    expect(previewTables).toHaveLength(2);
+    expect(previewTables[0].querySelectorAll("th")).toHaveLength(4);
+    expect(previewTables[0].querySelectorAll("tbody tr")).toHaveLength(3);
+    expect(previewTables[0].querySelectorAll<HTMLElement>("th")[3].getAttribute("style")).toBe("text-align: center");
+    expect(previewTables[0].querySelector("tbody code")?.textContent).toBe("a|b.kt");
+    await act(async () => container.querySelector<HTMLButtonElement>(".markdown-wysiwyg-toggle")?.click());
+    expect(container.querySelector<HTMLTextAreaElement>('[data-table-row="2"][data-table-column="0"] textarea')?.value).toBe("");
+
+    await act(async () => container.querySelector<HTMLButtonElement>(".save-button")?.click());
+    expect(saved).toBe(savedOnce);
+
+    await act(async () => root.unmount());
+    container.remove();
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => root.render(<App />));
+    await act(async () => container.querySelector<HTMLButtonElement>(".open-button")?.click());
+    await act(async () => container.querySelector<HTMLButtonElement>(".markdown-wysiwyg-toggle")?.click());
+    expect(container.querySelectorAll("table")[0]?.querySelectorAll("thead th")).toHaveLength(4);
+    expect(container.querySelectorAll("table")[0]?.querySelectorAll("tbody tr")).toHaveLength(3);
+    expect(container.querySelector<HTMLButtonElement>(".save-button")?.disabled).toBe(true);
+    expect(cellField(1, 0).value).toBe("中|文");
+
+    const paragraphs = container.querySelectorAll(".markdown-wysiwyg-paragraph .wysiwyg-inline-text");
+    const tail = paragraphs[paragraphs.length - 1]!;
+    await act(async () => {
+      tail.textContent = "tail 段落 edited";
+      tail.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    });
+    await act(async () => container.querySelector<HTMLButtonElement>(".save-button")?.click());
+    expect(saved).toBe(savedOnce.replace("tail 段落", "tail 段落 edited"));
+
+    await act(async () => container.querySelector<HTMLButtonElement>(".markdown-wysiwyg-toggle")?.click());
+    const editable = container.querySelector<HTMLElement>(".cm-content");
+    expect(editable ? EditorView.findFromDOM(editable)?.state.doc.toString() : null).toBe(saved);
+  });
+
+  it.each(["tab", "mode", "external", "lock", "readOnly"])("protects row actions and stale confirmation after %s", async (change) => {
+    let source = "| H |\n| --- |\n| original |";
+    const descriptor = { id: "row-doc", path: "/tmp/rows.md", displayName: "rows.md", byteCount: source.length, encoding: { utf8: { bom: false } }, lineEnding: "lf", fingerprint: { sizeBytes: source.length, sha256: "row" }, readOnly: change === "readOnly" };
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") return { service: "document-core", version: "0.1.0" };
+      if (cmd === "select_and_open_document") return descriptor;
+      if (cmd === "read_document_content") return new TextEncoder().encode(source).buffer;
+      if (cmd === "prepare_external_reload") return { kind: "content", descriptor: { ...descriptor, fingerprint: { sizeBytes: source.length, sha256: "external" } } };
+      if (cmd === "refresh_external_document") return null;
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+    await act(async () => root.render(<App />));
+    await act(async () => container.querySelector<HTMLButtonElement>(".open-button")?.click());
+    await act(async () => container.querySelector<HTMLButtonElement>(".markdown-wysiwyg-toggle")?.click());
+    if (change === "readOnly") {
+      container.querySelectorAll<HTMLButtonElement>('[aria-label="Table row actions"] button').forEach((item) => { expect(item.disabled).toBe(true); item.click(); });
+      expect(container.querySelector(".wysiwyg-table-row-confirm")).toBeNull();
+      expect(container.querySelectorAll("tbody tr")).toHaveLength(1); return;
+    }
+    await act(async () => container.querySelector<HTMLTextAreaElement>('tbody textarea')?.focus());
+    const deleteButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find((item) => item.textContent === "Delete data row 1")!;
+    await act(async () => deleteButton.click());
+    const oldConfirm = container.querySelector<HTMLButtonElement>(".wysiwyg-table-row-confirm button")!;
+    expect(oldConfirm).not.toBeNull();
+    if (change === "tab") await act(async () => container.querySelector<HTMLButtonElement>(".new-tab-button")?.click());
+    if (change === "mode") await act(async () => container.querySelector<HTMLButtonElement>(".markdown-preview-toggle")?.click());
+    if (change === "external") { source = source.replace("original", "external"); await emitExternalChange({ documentId: "row-doc", kind: "content" }); }
+    if (change === "lock") await act(async () => container.querySelector<HTMLButtonElement>(".save-as-button")?.click());
+    expect(container.querySelector(".wysiwyg-table-row-confirm")).toBeNull();
+    await act(async () => oldConfirm.click());
+    if (change === "tab") await act(async () => Array.from(container.querySelectorAll<HTMLButtonElement>(".document-tab-select")).find((item) => item.textContent?.includes("rows.md"))?.click());
+    if (change === "mode") await act(async () => container.querySelector<HTMLButtonElement>(".markdown-wysiwyg-toggle")?.click());
+    if (change === "lock") await act(async () => container.querySelector<HTMLButtonElement>(".save-as-dialog .confirm-cancel")?.click());
+    await act(async () => oldConfirm.click());
+    expect(container.querySelector<HTMLTextAreaElement>('tbody textarea')?.value).toBe(change === "external" ? "external" : "original");
+    expect(container.querySelectorAll("tbody tr")).toHaveLength(1);
+    expect(container.querySelector<HTMLButtonElement>(".save-button")?.disabled).toBe(true);
+  });
+
+  it("edits table tokens through actual controls, saves Markdown and locks inputs while saving", async () => {
+    const original = "\n## Title ###  \n\n| A | B |\n| :---: | ---: |\n| **old** | next |\n\ntail\n";
+    const descriptor = { id: "table-doc", path: "/tmp/table.md", displayName: "table.md", byteCount: original.length, encoding: { utf8: { bom: false } }, lineEnding: "lf", fingerprint: { sizeBytes: original.length, sha256: "table" }, readOnly: false };
+    let saved = "";
+    let finishSave: (() => void) | undefined;
+    invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === "health_check") return { service: "document-core", version: "0.1.0" };
+      if (cmd === "select_and_open_document") return descriptor;
+      if (cmd === "read_document_content") return new TextEncoder().encode(original).buffer;
+      if (cmd === "save_document") { saved = new TextDecoder().decode(args as Uint8Array); await new Promise<void>((resolve) => { finishSave = resolve; }); return descriptor; }
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+    await act(async () => root.render(<App />));
+    await act(async () => container.querySelector<HTMLButtonElement>(".open-button")?.click());
+    await act(async () => container.querySelector<HTMLButtonElement>(".markdown-wysiwyg-toggle")?.click());
+    const field = container.querySelector<HTMLTextAreaElement>("tbody textarea")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(field, "中文|路径");
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(field.value).toBe("中文|路径");
+    await act(async () => container.querySelector<HTMLButtonElement>(".save-button")?.click());
+    expect(saved).toBe(original.replace("**old**", "**中文\\|路径**"));
+    expect(container.querySelector<HTMLTextAreaElement>("tbody textarea")?.disabled).toBe(true);
+    await act(async () => finishSave?.());
+    expect(container.querySelector<HTMLTextAreaElement>("tbody textarea")?.disabled).toBe(false);
+    await act(async () => container.querySelector<HTMLButtonElement>(".markdown-preview-toggle")?.click());
+    expect(container.querySelector(".markdown-preview-content strong")?.textContent).toBe("中文|路径");
+  });
+
+  it.each(["tab", "mode", "external", "lock", "readOnly"])("rejects a captured old WYSIWYG submission after %s", async (change) => {
+    const initial = "| H |\n| --- |\n| old |";
+    let content = initial;
+    const descriptor = { id: "table-doc", path: "/tmp/table.md", displayName: "table.md", byteCount: content.length, encoding: { utf8: { bom: false } }, lineEnding: "lf", fingerprint: { sizeBytes: content.length, sha256: "table" }, readOnly: change === "readOnly" };
+    let captured: ((value: string) => boolean | void) | undefined;
+    const Original = wysiwygEditorModule.MarkdownWysiwygEditor;
+    const spy = vi.spyOn(wysiwygEditorModule, "MarkdownWysiwygEditor").mockImplementation((props) => { captured = props.onChange; return <Original {...props} />; });
+    try {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") return { service: "document-core", version: "0.1.0" };
+      if (cmd === "select_and_open_document") return descriptor;
+      if (cmd === "read_document_content") return new TextEncoder().encode(content).buffer;
+      if (cmd === "prepare_external_reload") return { kind: "content", descriptor: { ...descriptor, fingerprint: { sizeBytes: content.length, sha256: "changed" } } };
+      if (cmd === "refresh_external_document") return null;
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+    await act(async () => root.render(<App />));
+    await act(async () => container.querySelector<HTMLButtonElement>(".open-button")?.click());
+    await act(async () => container.querySelector<HTMLButtonElement>(".markdown-wysiwyg-toggle")?.click());
+    const old = captured!;
+    expect(old).toBeTypeOf("function");
+    if (change === "tab") await act(async () => container.querySelector<HTMLButtonElement>(".new-tab-button")?.click());
+    if (change === "mode") await act(async () => container.querySelector<HTMLButtonElement>(".markdown-preview-toggle")?.click());
+    if (change === "external") {
+      content = initial.replace("old", "external");
+      await emitExternalChange({ documentId: "table-doc", kind: "content" });
+      await vi.waitFor(() => expect(container.querySelector<HTMLTextAreaElement>("tbody textarea")?.value).toBe("external"));
+    }
+    if (change === "lock") await act(async () => container.querySelector<HTMLButtonElement>(".save-as-button")?.click());
+    await act(async () => expect(old(initial.replace("old", "forbidden"))).toBe(false));
+    expect(container.textContent).not.toContain("forbidden");
+    if (change === "tab") {
+      await act(async () => Array.from(container.querySelectorAll<HTMLButtonElement>(".document-tab-select")).find((el) => el.textContent?.includes("table.md"))?.click());
+    }
+    if (change === "mode") await act(async () => container.querySelector<HTMLButtonElement>(".markdown-wysiwyg-toggle")?.click());
+    if (change === "lock") await act(async () => container.querySelector<HTMLButtonElement>(".save-as-dialog .confirm-cancel")?.click());
+    // Returning to the identical tab/source or unlocking must not revive a stale callback.
+    await act(async () => expect(old(initial.replace("old", "forbidden-again"))).toBe(false));
+    if (change !== "mode") expect(container.querySelector<HTMLTextAreaElement>("tbody textarea")?.value).toBe(change === "external" ? "external" : "old");
+    } finally { spy.mockRestore(); }
+  });
+
+  it("displays tables across WYSIWYG/Preview/source without dirtying or normalizing opened content", async () => {
+    const source = "\n## Title ###  \n \n\n | 文件 | 本次变更 | \n | :----- | ----: | \n | `app/src/文件.kt` | **新增** a\\|b | \n\n";
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "health_check") return { service: "document-core", version: "0.1.0" };
+      if (cmd === "select_and_open_document") return {
+        id: "table-doc", path: "/tmp/table.md", displayName: "table.md", byteCount: source.length,
+        encoding: { utf8: { bom: false } }, lineEnding: "lf",
+        fingerprint: { sizeBytes: source.length, sha256: "table" }, readOnly: false,
+      };
+      if (cmd === "read_document_content") return new TextEncoder().encode(source).buffer;
+      throw new Error(`unexpected invoke ${cmd}`);
+    });
+    await act(async () => root.render(<App />));
+    await act(async () => container.querySelector<HTMLButtonElement>(".open-button")?.click());
+    await vi.waitFor(() => expect(container.querySelector(".statusbar-language")?.textContent).toBe("Markdown"));
+    for (let i = 0; i < 2; i += 1) {
+      await act(async () => container.querySelector<HTMLButtonElement>(".markdown-wysiwyg-toggle")?.click());
+      expect(container.querySelectorAll(".markdown-wysiwyg-editor table")).toHaveLength(1);
+      expect(container.querySelector('table [contenteditable="plaintext-only"]')).toBeNull();
+      await act(async () => container.querySelector<HTMLButtonElement>(".markdown-preview-toggle")?.click());
+      expect(container.querySelectorAll(".markdown-preview-content table")).toHaveLength(1);
+      expect(container.querySelector(".markdown-preview-content td")?.textContent).toBe("app/src/文件.kt");
+      const editable = container.querySelector<HTMLElement>(".cm-content");
+      const view = editable ? EditorView.findFromDOM(editable) : null;
+      expect(view?.state.doc.toString()).toBe(source);
+      expect(container.querySelector<HTMLButtonElement>(".save-button")?.disabled).toBe(true);
+    }
   });
 
   it("opens WYSIWYG mode, exits it through Preview, and keeps the source editable state per tab", async () => {
@@ -7957,6 +8293,82 @@ describe("App syntax mode menu", () => {
 
     expect(statusLanguage()).toBe("Rust");
     expect(container.querySelector(".cm-content")).not.toBeNull();
+  });
+
+  it.each(["pdf", "docx"] as const)("exports the unsaved Markdown snapshot as %s without changing source", async (format) => {
+    let finish: (saved: boolean) => void = () => {};
+    const pending = new Promise<boolean>((resolve) => { finish = resolve; });
+    const backend = invokeMock.getMockImplementation();
+    invokeMock.mockImplementation((cmd: string, ...args: unknown[]) => cmd === `export_markdown_${format}` ? pending : backend?.(cmd, ...args));
+    await act(async () => root.render(<App />));
+    expect(container.querySelector(".markdown-export-select")).toBeNull();
+    await emitSyntaxMode("markdown");
+    const editable = container.querySelector<HTMLElement>(".cm-content");
+    const view = editable ? EditorView.findFromDOM(editable) : null;
+    if (!view) throw new Error("missing source editor");
+    await act(async () => view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: "# 未保存内容\n\n**格式**" } }));
+    await act(async () => {
+      const menu = container.querySelector<HTMLSelectElement>(".markdown-export-select");
+      if (!menu) throw new Error("missing export menu");
+      menu.value = format; menu.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await vi.waitFor(() => expect(invokeMock.mock.calls.some(([cmd]) => cmd === `export_markdown_${format}`)).toBe(true));
+    if (format === "pdf") expect(document.getElementById("markdown-export-root")?.innerHTML).toContain("<strong>格式</strong>");
+    else {
+      const call = invokeMock.mock.calls.find(([cmd]) => cmd === "export_markdown_docx");
+      expect(call?.[1]).toBeInstanceOf(Uint8Array);
+      expect(call?.[2]?.headers?.["textora-export-filename"]).toContain(".docx");
+    }
+    expect(container.querySelector<HTMLSelectElement>(".markdown-export-select")?.disabled).toBe(true);
+    expect(view.contentDOM.getAttribute("contenteditable")).toBe("false");
+    const before = view.state.doc.toString();
+    await act(async () => { finish(false); await pending; });
+    await vi.waitFor(() => expect(document.getElementById("markdown-export-root")).toBeNull());
+    expect(view.state.doc.toString()).toBe(before);
+    expect(container.querySelector<HTMLSelectElement>(".markdown-export-select")?.disabled).toBe(false);
+    expect(view.contentDOM.getAttribute("contenteditable")).toBe("true");
+    expect(container.querySelector(".dirty-dot")).not.toBeNull();
+  });
+
+  it.each(["pdf", "docx"] as const)("restores editing after a failed %s export", async (format) => {
+    const backend = invokeMock.getMockImplementation();
+    invokeMock.mockImplementation((cmd: string, ...args: unknown[]) => cmd === `export_markdown_${format}`
+      ? Promise.reject("Cannot save export") : backend?.(cmd, ...args));
+    await act(async () => root.render(<App />));
+    await emitSyntaxMode("markdown");
+    await act(async () => {
+      const menu = container.querySelector<HTMLSelectElement>(".markdown-export-select");
+      if (!menu) throw new Error("missing export menu");
+      menu.value = format; menu.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await vi.waitFor(() => expect(container.querySelector(".notice-export")?.textContent).toContain("Cannot save export"));
+    expect(document.getElementById("markdown-export-root")).toBeNull();
+    expect(container.querySelector<HTMLSelectElement>(".markdown-export-select")?.disabled).toBe(false);
+    expect(container.querySelector(".cm-content")?.getAttribute("contenteditable")).toBe("true");
+  });
+
+  it("keeps source numbering and Preview aligned after deleting an ordered item", async () => {
+    await act(async () => root.render(<App />));
+    await emitSyntaxMode("markdown");
+    const editable = container.querySelector<HTMLElement>(".cm-content");
+    const view = editable ? EditorView.findFromDOM(editable) : null;
+    if (!view) throw new Error("missing source editor");
+    const source = "1. 搭建环境\n2. 删除项\n3. 归档日志\n4. 收集统计";
+    await act(async () => {
+      view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: source } });
+      container.querySelector<HTMLButtonElement>(".markdown-preview-toggle")?.click();
+    });
+    await act(async () => {
+      view.dispatch({ changes: { from: source.indexOf("2."), to: source.indexOf("3.") },
+        userEvent: "delete.selection" });
+    });
+    expect(view.state.doc.toString()).toBe("1. 搭建环境\n2. 归档日志\n3. 收集统计");
+    expect(Array.from(container.querySelectorAll(".markdown-preview-content ol li"), (li) => li.textContent))
+      .toEqual(["搭建环境", "归档日志", "收集统计"]);
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".markdown-preview-toggle")?.click();
+    });
+    expect(view.state.doc.toString()).toBe("1. 搭建环境\n2. 归档日志\n3. 收集统计");
   });
 
   it("keeps an Untitled Markdown document responsive through Preview and WYSIWYG heading input", async () => {

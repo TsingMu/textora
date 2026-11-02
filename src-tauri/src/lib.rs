@@ -8,6 +8,7 @@ use tauri::{
 };
 
 pub mod document;
+mod export;
 pub mod external_watch;
 pub mod ipc;
 pub mod session_restore;
@@ -373,6 +374,7 @@ fn build_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wr
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .manage(export::ExportState::default())
         .manage(DocumentStore::default())
         .manage(ipc::SystemOpenQueue::default())
         .manage(ExitGuard::default())
@@ -444,6 +446,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             health_check,
+            export::export_markdown_pdf,
+            export::export_markdown_docx,
             ipc::select_and_open_document,
             ipc::take_system_open_request,
             ipc::read_document_content,

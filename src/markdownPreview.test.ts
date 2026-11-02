@@ -4,6 +4,10 @@ import {
   collectMarkdownMermaidBlocks,
   renderMarkdownPreview,
 } from "./markdownPreview";
+import {
+  changeMarkdownTableAlignment,
+  scanMarkdownTable,
+} from "./markdownTable";
 
 describe("renderMarkdownPreview", () => {
   it.each([1, 2, 3, 4, 5, 6])(
@@ -161,6 +165,21 @@ sequenceDiagram
     expect(result.html).not.toContain("src=");
   });
 
+  it("uses shared supported-table pipes, four alignments and header-only rows", () => {
+    const result = renderMarkdownPreview("| A | B | C | D |\n| --- | :--- | :---: | ---: |\n| a\\|b | **粗体** | `x\\|y` | [link](javascript:bad) |");
+    expect(result.html).toContain("<td>a|b</td>");
+    expect(result.html).toContain('<th style="text-align: left">B</th>');
+    expect(result.html).toContain('<td style="text-align: center"><code>x|y</code></td>');
+    expect(result.html).toContain('<td style="text-align: right"><span class="markdown-preview-link" data-url="javascript:bad">link <span class="markdown-preview-link-url">(javascript:bad)</span></span></td>');
+    expect(result.html).not.toContain("href=");
+    expect(renderMarkdownPreview("| H |\n:---:").html).toBe('<table><thead><tr><th style="text-align: center">H</th></tr></thead><tbody></tbody></table>');
+  });
+
+  it("preserves the legacy irregular table rendering instead of truncating or padding cells", () => {
+    expect(renderMarkdownPreview("| A | B |\n| --- | --- |\n| 1 | 2 | 3 |").html).toBe("<table><thead><tr><th>A</th><th>B</th></tr></thead><tbody><tr><td>1</td><td>2</td><td>3</td></tr></tbody></table>");
+    expect(renderMarkdownPreview("| A | B |\n| -- | --- |\n| x | y |").html).toBe("<p>| A | B | | -- | --- | | x | y |</p>");
+  });
+
   it("渲染异常时返回可显示的错误退化结果", () => {
     const result = renderMarkdownPreview("content", {
       renderer: () => {
@@ -174,5 +193,21 @@ sequenceDiagram
     }
     expect(result.message).toBe("boom");
     expect(result.html).toContain("Markdown preview failed: boom");
+  });
+});
+
+describe("alignment edits in preview", () => {
+  it("changes only the target alignment style, keeping text and structure identical", () => {
+    const before = "| A | B |\n| :--- | ---: |\n| a | b |";
+    const scan = scanMarkdownTable(before);
+    if (scan.kind !== "table") throw new Error("expected table");
+    const after = changeMarkdownTableAlignment(before, scan.table, 1, "center");
+    expect(after).toBe("| A | B |\n| :--- | :---: |\n| a | b |");
+    expect(renderMarkdownPreview(before).html).toBe(
+      '<table><thead><tr><th style="text-align: left">A</th><th style="text-align: right">B</th></tr></thead><tbody><tr><td style="text-align: left">a</td><td style="text-align: right">b</td></tr></tbody></table>',
+    );
+    expect(renderMarkdownPreview(after!).html).toBe(
+      '<table><thead><tr><th style="text-align: left">A</th><th style="text-align: center">B</th></tr></thead><tbody><tr><td style="text-align: left">a</td><td style="text-align: center">b</td></tr></tbody></table>',
+    );
   });
 });

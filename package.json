@@ -34,6 +34,7 @@
     "@tauri-apps/api": "^2",
     "@wasm-fmt/shfmt": "^0.2.7",
     "codemirror": "^6.0.2",
+    "docx": "^9.5.1",
     "mermaid": "^11.16.1",
     "prettier": "^3.9.6",
     "react": "^19.1.0",

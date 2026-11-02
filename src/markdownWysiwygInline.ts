@@ -426,3 +426,12 @@ export function escapeInlineText(text: string): string {
 export function escapeLinkLabel(text: string): string {
   return escapeInlineText(text).replace(/\]/g, "\\]");
 }
+
+/** Shared visible text for WYSIWYG and supported-table Preview rendering. */
+export function inlineNodeVisibleText(node: InlineNode): string {
+  const raw = node.type === "link" ? node.label : node.text;
+  // Code is literal; other nodes interpret Markdown punctuation escapes.
+  return node.type === "code"
+    ? raw
+    : raw.replace(/\\([!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~])/g, "$1");
+}

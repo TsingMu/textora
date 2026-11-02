@@ -6,6 +6,10 @@ Textora 是一款 macOS 个人文本工作台，把 Windows 内网工作中常�
 
 项目已建立 Tauri 2、React、TypeScript、Vite、CodeMirror 6 与 Rust 可运行工程基线。当前可新建、打开、普通保存和另存为文档；首次保存与另存为使用应用内目标面板直接选择文件名和位置，编码与换行由主界面右下角设置决定。文件打开、从 Finder 拖入单个文件、macOS `.md` 打开方式、普通保存、首次保存、另存为、保存冲突解决、未保存关闭保护（窗口关闭与应用退出）、另存为内嵌目标面板、多标签会话、启动时恢复上次打开文件、外部文件变更实时同步、列块编辑、代码语法高亮、未保存标签临时语法模式（含对应格式已有的专属能力）与首次保存后缀建议、编辑器自动换行开关、编辑器列标尺与状态栏光标行列位置（共享 Unicode 显示列契约，标尺仅在关闭软换行时显示并与横向滚动同步）、Markdown 源码与本地预览左右分栏、Markdown fenced Mermaid 本地渲染、Markdown 预览代码块语法着色、Markdown 所见即所得模式及常用内联格式编辑、Markdown fenced code block 编辑辅助（opening fence 自动闭合，以及 JSON、JavaScript、TypeScript、YAML、SQL 与 Shell 的显式本地格式化）、Markdown opening fence 本地语言候选提示（输入语言前缀给出本地候选、Enter/Tab 确认、与 opening fence 自动闭合协调）以及 Mermaid 本地编辑与预览均已完成自动化验证及 macOS 真实应用验收。
 
+Markdown WYSIWYG 支持已有顶层管道表格的展示、单元格文字编辑、增删数据行/列和列对齐；非空删除先确认，最后一列不可删。未编辑内容保留原文，不支持的表格保留源码岛。该能力已完成自动化与 macOS release 验收，详见 `docs/features/markdown-wysiwyg-tables.md`。
+
+Markdown 工具栏新增 `Export…`，可把当前内容（含未保存修改）按 Preview 样式另存为 PDF，或导出保留可编辑标题、文字、列表和表格的 Word `.docx`；Mermaid 图表本地渲染后嵌入。使用系统保存面板，导出不改变 Markdown 原文件；Word 与 PDF 的分页可不同。该能力已完成自动化、原生 PDF 与浏览器 DOCX 样例及打包验证，详见 `docs/features/markdown-export.md`。
+
 ## 文档导航
 
 - `docs/PRODUCT.md`：产品定位、范围与原则
@@ -39,7 +43,9 @@ Textora 是一款 macOS 个人文本工作台，把 Windows 内网工作中常�
 - `docs/features/markdown-preview-sync-scroll.md`：已完成的 Markdown Preview 左右同步滚动规格
 - `docs/features/markdown-wysiwyg-mode.md`：已完成的 Markdown 所见即所得模式规格
 - `docs/features/markdown-wysiwyg-inline-formatting.md`：已完成的 Markdown WYSIWYG 内联格式编辑规格
+- `docs/features/markdown-wysiwyg-tables.md`：已完成的 Markdown WYSIWYG 表格展示与编辑规格
 - `docs/features/mermaid-local-preview.md`：已完成的 Mermaid 本地编辑与预览规格
+- `docs/features/markdown-export.md`：Markdown Preview 样式导出 PDF 与 DOCX
 - `docs/tasks/current.md`：当前已承诺任务
 - `docs/tasks/TEMPLATE.md`：当前任务条目与颗粒度模板
 - `docs/tasks/backlog.md`：尚未承诺的候选事项

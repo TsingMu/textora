@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import "./App.css";
+import { prepareMarkdownExport, markdownExportFileName, mountMarkdownPrintSnapshot } from "./markdownExport";
+import { exportMarkdownPdf, exportMarkdownDocx } from "./platform";
 import appIconUrl from "../icon.png";
 import type { CloseRequestedEvent } from "@tauri-apps/api/window";
 import {
@@ -240,6 +242,9 @@ function App() {
   >({});
   const [closeConfirmPending, setCloseConfirmPending] = useState(false);
   const [closeConfirmError, setCloseConfirmError] = useState<string | null>(null);
+  const [exportBusy, setExportBusy] = useState(false);
+  const exportInFlightRef = useRef(false);
+  const [exportNotice, setExportNotice] = useState<string | null>(null);
   const [formatNotice, setFormatNotice] = useState<string | null>(null);
   const [saveFormat, setSaveFormat] = useState<{
     encoding: EncodingChoice;
@@ -295,6 +300,10 @@ function App() {
   // 格式化异步等待期间保持 true：防止重复触发；派发前校验闭包读取其快照判断锁定状态。
   const formatInFlightRef = useRef(false);
   const editorLockedRef = useRef(false);
+  const wysiwygContextRef = useRef({
+    tabId: tabSession.activeTabId, documentId: session.id,
+    content: session.content, locked: false, visible: false, revision: 0,
+  });
   const closeAuthorizationRef = useRef<{
     validDocumentIds: readonly string[];
   } | null>(null);
@@ -2053,6 +2062,37 @@ function App() {
     }
   }
 
+  async function handleMarkdownExport(format: "pdf" | "docx") {
+    if (busyRef.current || exportInFlightRef.current) return;
+    const tab = tabSessionRef.current.tabs.find((item) => item.tabId === tabSessionRef.current.activeTabId);
+    const doc = sessionRef.current;
+    if (!tab || effectiveDocumentLanguage(doc.path, doc.displayName, tab.syntaxMode) !== "markdown") return;
+    exportInFlightRef.current = true;
+    setExportBusy(true);
+    setExportNotice(format === "pdf" ? "Preparing PDF…" : "Preparing Word document…");
+    let cleanup: (() => void) | undefined;
+    try {
+      const html = await prepareMarkdownExport(doc.content);
+      const fileName = markdownExportFileName(doc.displayName, format);
+      let saved: boolean;
+      if (format === "pdf") {
+        cleanup = await mountMarkdownPrintSnapshot(html, fileName);
+        saved = await exportMarkdownPdf(fileName);
+      } else {
+        const { buildMarkdownDocx } = await import("./markdownWordExport");
+        const data = await buildMarkdownDocx(html, doc.displayName);
+        saved = await exportMarkdownDocx(fileName, data);
+      }
+      setExportNotice(saved ? (format === "pdf" ? "PDF exported." : "Word document exported.") : null);
+    } catch (error) {
+      setExportNotice(error instanceof Error ? error.message : typeof error === "string" ? error : "Export failed. Your document was not changed.");
+    } finally {
+      cleanup?.();
+      exportInFlightRef.current = false;
+      setExportBusy(false);
+    }
+  }
+
   function handleMarkdownPreviewToggle() {
     updateTabSession((current) => {
       const tab = current.tabs.find((item) => item.tabId === current.activeTabId);
@@ -2272,6 +2312,7 @@ function App() {
   }, [saveAsPanel.open, saveAsPanel.status]);
 
   const busy =
+    exportBusy ||
     isBusy(session) ||
     systemOpenInFlight ||
     sessionRestore === "pending" ||
@@ -2311,6 +2352,7 @@ function App() {
   }, [syntaxMenuArmed, sessionRestore, activeSyntaxMode, busy]);
 
   const editorLocked =
+    exportBusy ||
     systemOpenInFlight ||
     sessionRestore === "pending" ||
     session.openStatus === "loading" ||
@@ -2342,6 +2384,20 @@ function App() {
     activeLanguage === "markdown" && markdownWysiwygOpen;
   const markdownPreviewVisible =
     activeLanguage === "markdown" && markdownPreviewOpen && !markdownWysiwygOpen;
+  const previousWysiwygContext = wysiwygContextRef.current;
+  const wysiwygLocked = editorLocked || session.readOnly;
+  if (previousWysiwygContext.tabId !== tabSession.activeTabId ||
+      previousWysiwygContext.documentId !== session.id ||
+      previousWysiwygContext.content !== session.content ||
+      previousWysiwygContext.locked !== wysiwygLocked ||
+      previousWysiwygContext.visible !== markdownWysiwygVisible) {
+    wysiwygContextRef.current = {
+      tabId: tabSession.activeTabId, documentId: session.id, content: session.content,
+      locked: wysiwygLocked, visible: markdownWysiwygVisible,
+      revision: previousWysiwygContext.revision + 1,
+    };
+  }
+  const wysiwygRenderRevision = wysiwygContextRef.current.revision;
   const markdownMermaidPreview =
     activeTab !== undefined
       ? markdownMermaidPreviews[activeTab.tabId]
@@ -2584,6 +2640,15 @@ function App() {
               >
                 WYSIWYG
               </button>
+              <select className="preview-toggle markdown-export-select" value="" disabled={busy}
+                aria-label="Export Markdown preview" onChange={(event) => {
+                  const format = event.currentTarget.value;
+                  if (format === "pdf" || format === "docx") void handleMarkdownExport(format);
+                }}>
+                <option value="" disabled>Export…</option>
+                <option value="pdf">PDF (.pdf)…</option>
+                <option value="docx">Word (.docx)…</option>
+              </select>
               {!markdownWysiwygOpen && (
                 <button
                   type="button"
@@ -2684,10 +2749,27 @@ function App() {
         >
           {markdownWysiwygVisible ? (
             <MarkdownWysiwygEditor
+              key={`${tabSession.activeTabId}:${session.id}`}
               content={session.content}
               disabled={editorLocked || session.readOnly}
               onChange={(content) => {
-                setSession((current) => updateDocumentContent(current, content));
+                const expectedTabId = tabSession.activeTabId;
+                const expectedSource = session.content;
+                const expectedId = session.id;
+                const canSubmit = (current: TabSessionState) => {
+                  const target = current.tabs.find((tab) => tab.tabId === current.activeTabId);
+                  return wysiwygContextRef.current.revision === wysiwygRenderRevision &&
+                    !editorLockedRef.current && !busyRef.current &&
+                    !closeConfirmPendingRef.current && fileMissingPendingRef.current === null &&
+                    current.activeTabId === expectedTabId && target?.markdownWysiwygOpen === true &&
+                    !target.document.readOnly && !isBusy(target.document) &&
+                    target.document.id === expectedId && target.document.content === expectedSource;
+                };
+                if (!canSubmit(tabSessionRef.current)) return false;
+                setTabSession((current) => canSubmit(current)
+                  ? updateActiveDocument(current, (document) => updateDocumentContent(document, content))
+                  : current);
+                return true;
               }}
             />
           ) : (
@@ -2733,6 +2815,11 @@ function App() {
                 dangerouslySetInnerHTML={{ __html: mermaidPreview.html }}
               />
             </aside>
+          )}
+          {exportNotice !== null && (
+            <div className="notice notice-export" role="status"><span>{exportNotice}</span>
+              {!exportBusy && <button type="button" className="notice-dismiss" aria-label="Dismiss export notice" onClick={() => setExportNotice(null)}>Dismiss</button>}
+            </div>
           )}
           {formatNotice !== null && (
             <div className="notice notice-format-fence" role="status">

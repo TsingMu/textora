@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { collectMarkdownBlockMap } from "./markdownPreview";
+import { collectMarkdownBlockMap, renderMarkdownPreview } from "./markdownPreview";
+import {
+  changeMarkdownTableAlignment,
+  scanMarkdownTable,
+} from "./markdownTable";
 
 describe("collectMarkdownBlockMap", () => {
   it.each([1, 2, 3, 4, 5, 6])(
@@ -110,5 +114,28 @@ describe("collectMarkdownBlockMap", () => {
       { index: 0, kind: "fence", startLine: 0, endLine: 3 },
       { index: 1, kind: "mermaid", startLine: 3, endLine: 6 },
     ]);
+  });
+  it.each(["\n", "\r\n", "\r"])("keeps one anchor per adjacent shared table and excludes following text (%j)", (eol) => {
+    const source = ["before", "| A | B |", "| ---: | :---: |", "| a\\|b | `x\\|y` |", "| H |", "| --- |", "after", "# End"].join(eol);
+    expect(collectMarkdownBlockMap(source)).toEqual([
+      { index: 0, kind: "paragraph", startLine: 0, endLine: 1 },
+      { index: 1, kind: "table", startLine: 1, endLine: 4 },
+      { index: 2, kind: "table", startLine: 4, endLine: 6 },
+      { index: 3, kind: "paragraph", startLine: 6, endLine: 7 },
+      { index: 4, kind: "heading", startLine: 7, endLine: 8 },
+    ]);
+    expect(renderMarkdownPreview(source).html.match(/<table>/g)).toHaveLength(2);
+  });
+
+});
+
+describe("alignment edits in block map", () => {
+  it("keeps a single table anchor and identical line spans", () => {
+    const source = "para\n\n| A | B |\n| :--- | ---: |\n| a | b |\n\ntail";
+    const scan = scanMarkdownTable(source, source.indexOf("| A"));
+    if (scan.kind !== "table") throw new Error("expected table");
+    const edited = changeMarkdownTableAlignment(source, scan.table, 0, "center");
+    expect(edited).toBe(source.replace("| :--- |", "| :---: |"));
+    expect(collectMarkdownBlockMap(edited!)).toEqual(collectMarkdownBlockMap(source));
   });
 });

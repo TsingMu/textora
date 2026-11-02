@@ -1,6 +1,14 @@
+import {
+  replaceMarkdownSourceRange,
+  scanMarkdownTable,
+  type MarkdownSourceRange,
+  type MarkdownTable,
+} from "./markdownTable";
+
 export type MarkdownTaskState = "checked" | "unchecked" | null;
 
 export type MarkdownWysiwygBlock =
+  | { type: "table"; table: MarkdownTable }
   | {
       type: "heading";
       level: 1 | 2 | 3 | 4 | 5 | 6;
@@ -70,135 +78,210 @@ const KNOWN_EDITABLE_FENCE_LANGUAGES = new Set([
 export function parseMarkdownWysiwygBlocks(
   source: string,
 ): MarkdownWysiwygBlock[] {
-  const normalized = source.replace(/\r\n?/g, "\n");
-  const lines = normalized.split("\n");
+  return parseMarkdownWysiwygDocument(source).blocks;
+}
+
+/** The legacy block API and located API share this single traversal. */
+export function parseMarkdownWysiwygDocument(source: string): {
+  blocks: MarkdownWysiwygBlock[];
+  ranges: MarkdownSourceRange[];
+} {
+  const lines: string[] = [];
+  const starts: number[] = [];
+  const ends: number[] = [];
+  let lineStart = 0;
+  const lineEndings = /\r\n|\r|\n/g;
+  let match: RegExpExecArray | null;
+  while ((match = lineEndings.exec(source)) !== null) {
+    starts.push(lineStart);
+    ends.push(match.index);
+    lines.push(source.slice(lineStart, match.index));
+    lineStart = match.index + match[0].length;
+  }
+  starts.push(lineStart);
+  ends.push(source.length);
+  lines.push(source.slice(lineStart));
   const blocks: MarkdownWysiwygBlock[] = [];
+  const ranges: MarkdownSourceRange[] = [];
   let index = 0;
+  // Keep indented list continuations outside the top-level table subset.
+  let listContentIndent: number | null = null;
+
+  const tableAtLine = (at: number) =>
+    scanMarkdownTable(source, starts[at] ?? source.length);
+  const isBlockStart = (at: number): boolean => {
+    const line = lines[at] ?? "";
+    return (
+      /^ {0,3}```/.test(line) ||
+      HEADING_PATTERN.test(line) ||
+      /^ {0,3}([-*_])(?:\s*\1){2,}\s*$/.test(line) ||
+      /^ {0,3}>\s?/.test(line) ||
+      parseListLine(line) !== null ||
+      tableAtLine(at).kind !== "none" ||
+      isRawHtmlStart(line)
+    );
+  };
+  const rangeEnd = (nextIndex: number) => {
+    const finalSplitLine =
+      nextIndex === lines.length &&
+      lines[nextIndex - 1] === "" &&
+      starts[nextIndex - 1] === source.length;
+    return ends[finalSplitLine ? nextIndex - 2 : nextIndex - 1];
+  };
+  const push = (block: MarkdownWysiwygBlock, nextIndex: number) => {
+    ranges.push({ from: starts[index], to: rangeEnd(nextIndex) });
+    blocks.push(block);
+    index = nextIndex;
+  };
+  const raw = (nextIndex: number) =>
+    source.slice(starts[index], rangeEnd(nextIndex));
 
   while (index < lines.length) {
-    const line = lines[index] ?? "";
+    const line = lines[index];
     if (line.trim() === "") {
       index += 1;
       continue;
     }
-
+    if (
+      listContentIndent !== null &&
+      (line.match(/^ */)?.[0].length ?? 0) < listContentIndent
+    )
+      listContentIndent = null;
     const fence = line.match(/^ {0,3}```\s*([^\s`]*)?.*$/);
     if (fence) {
-      const start = index;
       const language = fence[1] ?? "";
       const codeLines: string[] = [];
-      index += 1;
-      while (index < lines.length && !/^ {0,3}```\s*$/.test(lines[index] ?? "")) {
-        codeLines.push(lines[index] ?? "");
-        index += 1;
+      let nextIndex = index + 1;
+      while (
+        nextIndex < lines.length &&
+        !/^ {0,3}```\s*$/.test(lines[nextIndex])
+      ) {
+        codeLines.push(lines[nextIndex]);
+        nextIndex += 1;
       }
-      if (index < lines.length) {
-        index += 1;
-      }
-
+      if (nextIndex < lines.length) nextIndex += 1;
       const token = language.trim().toLowerCase();
       if (token === "mermaid") {
-        blocks.push({
-          type: "source",
-          reason: "mermaid",
-          source: lines.slice(start, index).join("\n"),
-        });
+        push(
+          { type: "source", reason: "mermaid", source: raw(nextIndex) },
+          nextIndex,
+        );
       } else if (KNOWN_EDITABLE_FENCE_LANGUAGES.has(token)) {
-        blocks.push({ type: "code", language, code: codeLines.join("\n") });
+        push({ type: "code", language, code: codeLines.join("\n") }, nextIndex);
       } else {
-        blocks.push({
-          type: "source",
-          reason: "unknown-fence",
-          source: lines.slice(start, index).join("\n"),
-        });
+        push(
+          { type: "source", reason: "unknown-fence", source: raw(nextIndex) },
+          nextIndex,
+        );
       }
       continue;
     }
-
     const heading = line.match(HEADING_PATTERN);
     if (heading) {
-      blocks.push({
-        type: "heading",
-        level: heading[1].length as 1 | 2 | 3 | 4 | 5 | 6,
-        text: heading[2],
-      });
-      index += 1;
+      push(
+        {
+          type: "heading",
+          level: heading[1].length as 1 | 2 | 3 | 4 | 5 | 6,
+          text: heading[2],
+        },
+        index + 1,
+      );
       continue;
     }
-
     if (/^ {0,3}([-*_])(?:\s*\1){2,}\s*$/.test(line)) {
-      blocks.push({ type: "horizontal-rule" });
-      index += 1;
+      push({ type: "horizontal-rule" }, index + 1);
       continue;
     }
-
-    if (isTableStart(lines, index)) {
-      const table = collectUntilBlankOrBlock(lines, index);
-      blocks.push({ type: "source", reason: "table", source: table.source });
-      index = table.nextIndex;
+    const table = tableAtLine(index);
+    if (table.kind !== "none") {
+      let nextIndex = index + 1;
+      while (nextIndex < lines.length && starts[nextIndex] < table.nextOffset)
+        nextIndex += 1;
+      push(
+        table.kind === "table" && listContentIndent === null
+          ? { type: "table", table: table.table }
+          : {
+              type: "source",
+              reason: "table",
+              source: source.slice(table.from, table.to),
+            },
+        nextIndex,
+      );
       continue;
     }
-
     if (isRawHtmlStart(line)) {
-      const html = collectUntilBlankOrBlock(lines, index);
-      blocks.push({ type: "source", reason: "html", source: html.source });
-      index = html.nextIndex;
+      const html = collectUntilBlankOrBlock(lines, index, isBlockStart);
+      push(
+        { type: "source", reason: "html", source: raw(html.nextIndex) },
+        html.nextIndex,
+      );
       continue;
     }
-
     if (/^ {0,3}>\s?/.test(line)) {
       const quoteLines: string[] = [];
-      while (index < lines.length && /^ {0,3}>\s?/.test(lines[index] ?? "")) {
-        quoteLines.push((lines[index] ?? "").replace(/^ {0,3}>\s?/, ""));
-        index += 1;
+      let nextIndex = index;
+      while (nextIndex < lines.length && /^ {0,3}>\s?/.test(lines[nextIndex])) {
+        quoteLines.push(lines[nextIndex].replace(/^ {0,3}>\s?/, ""));
+        nextIndex += 1;
       }
-      blocks.push({ type: "blockquote", text: quoteLines.join("\n") });
+      push({ type: "blockquote", text: quoteLines.join("\n") }, nextIndex);
       continue;
     }
-
     const list = collectList(lines, index);
     if (list !== null) {
-      blocks.push({
-        type: "list",
-        ordered: list.ordered,
-        items: list.items,
-      });
-      index = list.nextIndex;
+      listContentIndent = lines[list.nextIndex - 1].match(/^ {0,3}(?:[-*+]|\d+\.)[ \t]+/)?.[0].length ?? null;
+      push(
+        { type: "list", ordered: list.ordered, items: list.items },
+        list.nextIndex,
+      );
       continue;
     }
-
     if (isIndentedCodeOrUnknown(line)) {
-      const unknown = collectUntilBlankOrBlock(lines, index);
-      blocks.push({ type: "source", reason: "unknown", source: unknown.source });
-      index = unknown.nextIndex;
+      const unknown = collectUntilBlankOrBlock(lines, index, isBlockStart);
+      push(
+        { type: "source", reason: "unknown", source: raw(unknown.nextIndex) },
+        unknown.nextIndex,
+      );
       continue;
     }
-
     const paragraphLines: string[] = [];
-    // Earlier branches did not consume this line. Always consume it as text,
-    // even if a future block-boundary rule disagrees with its parser.
+    let nextIndex = index;
+    // Always consume the first line, even while syntax is incomplete.
     do {
-      paragraphLines.push((lines[index] ?? "").trim());
-      index += 1;
+      paragraphLines.push(lines[nextIndex].trim());
+      nextIndex += 1;
     } while (
-      index < lines.length &&
-      (lines[index] ?? "").trim() !== "" &&
-      !isBlockStart(lines, index)
+      nextIndex < lines.length &&
+      lines[nextIndex].trim() !== "" &&
+      !isBlockStart(nextIndex)
     );
-    blocks.push({ type: "paragraph", text: paragraphLines.join(" ") });
+    push({ type: "paragraph", text: paragraphLines.join(" ") }, nextIndex);
   }
+  return { blocks, ranges };
+}
 
-  return blocks;
+/** Reject stale/out-of-bounds patches instead of guessing a new block position. */
+export function replaceWysiwygBlock(
+  source: string,
+  range: MarkdownSourceRange,
+  expectedRaw: string,
+  replacement: string,
+): string | null {
+  return replaceMarkdownSourceRange(source, range, expectedRaw, replacement);
 }
 
 export function serializeMarkdownWysiwygBlocks(
   blocks: readonly MarkdownWysiwygBlock[],
 ): string {
-  return blocks.map(serializeBlock).join("\n\n");
+  return blocks.map(serializeMarkdownWysiwygBlock).join("\n\n");
 }
 
-function serializeBlock(block: MarkdownWysiwygBlock): string {
+export function serializeMarkdownWysiwygBlock(
+  block: MarkdownWysiwygBlock,
+): string {
   switch (block.type) {
+    case "table":
+      return block.table.rawSource;
     case "heading":
       return `${"#".repeat(block.level)} ${block.text}`;
     case "paragraph":
@@ -255,13 +338,11 @@ function collectList(
   return { ordered: first.ordered, items, nextIndex: index };
 }
 
-function parseListLine(line: string):
-  | {
-      ordered: boolean;
-      text: string;
-      taskState: MarkdownTaskState;
-    }
-  | null {
+function parseListLine(line: string): {
+  ordered: boolean;
+  text: string;
+  taskState: MarkdownTaskState;
+} | null {
   const unordered = line.match(/^ {0,3}[-*+]\s+(?:(\[[ xX]\])\s+)?(.+)$/);
   if (unordered) {
     return {
@@ -288,18 +369,6 @@ function parseTaskState(value: string | undefined): MarkdownTaskState {
   return value.toLowerCase() === "[x]" ? "checked" : "unchecked";
 }
 
-function isTableStart(lines: readonly string[], index: number): boolean {
-  const header = lines[index] ?? "";
-  const separator = lines[index + 1] ?? "";
-  return header.includes("|") && isTableSeparator(separator);
-}
-
-function isTableSeparator(line: string): boolean {
-  const trimmed = line.trim().replace(/^\|/, "").replace(/\|$/, "");
-  const cells = trimmed.split("|").map((cell) => cell.trim());
-  return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
-}
-
 function isRawHtmlStart(line: string): boolean {
   return /^ {0,3}<\/?[A-Za-z][^>]*>/.test(line.trim());
 }
@@ -311,6 +380,7 @@ function isIndentedCodeOrUnknown(line: string): boolean {
 function collectUntilBlankOrBlock(
   lines: readonly string[],
   startIndex: number,
+  isBlockStart: (index: number) => boolean,
 ): { source: string; nextIndex: number } {
   const collected: string[] = [];
   let index = startIndex;
@@ -319,24 +389,11 @@ function collectUntilBlankOrBlock(
     if (line.trim() === "" && collected.length > 0) {
       break;
     }
-    if (collected.length > 0 && isBlockStart(lines, index)) {
+    if (collected.length > 0 && isBlockStart(index)) {
       break;
     }
     collected.push(line);
     index += 1;
   }
   return { source: collected.join("\n"), nextIndex: index };
-}
-
-function isBlockStart(lines: readonly string[], index: number): boolean {
-  const line = lines[index] ?? "";
-  return (
-    /^ {0,3}```/.test(line) ||
-    HEADING_PATTERN.test(line) ||
-    /^ {0,3}([-*_])(?:\s*\1){2,}\s*$/.test(line) ||
-    /^ {0,3}>\s?/.test(line) ||
-    parseListLine(line) !== null ||
-    isTableStart(lines, index) ||
-    isRawHtmlStart(line)
-  );
 }

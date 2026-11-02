@@ -7,17 +7,25 @@ import {
 } from "react";
 
 import {
-  parseMarkdownWysiwygBlocks,
-  serializeMarkdownWysiwygBlocks,
+  parseMarkdownWysiwygDocument,
+  replaceWysiwygBlock,
+  serializeMarkdownWysiwygBlock,
   type MarkdownTaskState,
   type MarkdownWysiwygBlock,
 } from "./markdownWysiwyg";
+import {
+  changeMarkdownTableAlignment,
+  changeMarkdownTableColumn,
+  changeMarkdownTableRow,
+  replaceMarkdownTableCell,
+} from "./markdownTable";
+import { MarkdownWysiwygTableEditor } from "./MarkdownWysiwygTableEditor";
 import { MarkdownWysiwygInlineEditor } from "./MarkdownWysiwygInlineEditor";
 
 type MarkdownWysiwygEditorProps = {
   content: string;
   disabled?: boolean;
-  onChange: (content: string) => void;
+  onChange: (content: string) => boolean | void;
 };
 
 export function MarkdownWysiwygEditor({
@@ -25,17 +33,37 @@ export function MarkdownWysiwygEditor({
   disabled = false,
   onChange,
 }: MarkdownWysiwygEditorProps) {
-  const blocks = parseMarkdownWysiwygBlocks(content);
+  const { blocks, ranges } = parseMarkdownWysiwygDocument(content);
+  const expectedContent = useRef(content);
+  const documentRevision = useRef(0);
+  if (content !== expectedContent.current) {
+    expectedContent.current = content;
+    documentRevision.current += 1;
+  }
+  const submit = (next: string): boolean => {
+    if (disabled || onChange(next) === false) return false;
+    expectedContent.current = next;
+    return true;
+  };
 
   function updateBlock(index: number, block: MarkdownWysiwygBlock) {
-    const nextBlocks = blocks.map((item, itemIndex) =>
-      itemIndex === index ? block : item,
+    if (disabled) return;
+    const range = ranges[index];
+    if (!range) return;
+    const next = replaceWysiwygBlock(
+      content,
+      range,
+      content.slice(range.from, range.to),
+      serializeMarkdownWysiwygBlock(block),
     );
-    onChange(serializeMarkdownWysiwygBlocks(nextBlocks));
+    if (next !== null && next !== content) submit(next);
   }
 
   return (
-    <div className="markdown-wysiwyg-editor" aria-label="Markdown WYSIWYG editor">
+    <div
+      className="markdown-wysiwyg-editor"
+      aria-label="Markdown WYSIWYG editor"
+    >
       {blocks.length === 0 ? (
         <AutoGrowTextarea
           className="markdown-wysiwyg-empty"
@@ -46,14 +74,64 @@ export function MarkdownWysiwygEditor({
           onChange={(value) => onChange(value)}
         />
       ) : (
-        blocks.map((block, index) => (
-          <MarkdownWysiwygBlockEditor
-            key={`${index}:${block.type}`}
-            block={block}
-            disabled={disabled}
-            onChange={(nextBlock) => updateBlock(index, nextBlock)}
-          />
-        ))
+        blocks.map((block, index) =>
+          block.type === "table" ? (
+            <MarkdownWysiwygTableEditor
+              key={`${index}:table`}
+              table={block.table}
+              disabled={disabled}
+              contextRevision={documentRevision.current}
+              documentSource={content}
+              onRowChange={(command) => {
+                if (disabled) return null;
+                const next = changeMarkdownTableRow(
+                  content,
+                  block.table,
+                  command,
+                );
+                return next !== null && submit(next) ? next : null;
+              }}
+              onColumnChange={(command) => {
+                if (disabled) return null;
+                const next = changeMarkdownTableColumn(
+                  content,
+                  block.table,
+                  command,
+                );
+                return next !== null && submit(next) ? next : null;
+              }}
+              onAlignmentChange={(column, alignment) => {
+                if (disabled) return null;
+                const next = changeMarkdownTableAlignment(
+                  content,
+                  block.table,
+                  column,
+                  alignment,
+                );
+                return next !== null && submit(next) ? next : null;
+              }}
+              onCellChange={(row, column, inlineSource) => {
+                if (disabled) return false;
+                const next = replaceMarkdownTableCell(
+                  content,
+                  block.table,
+                  row,
+                  column,
+                  inlineSource,
+                );
+                if (next === null) return false;
+                return next === content || submit(next);
+              }}
+            />
+          ) : (
+            <MarkdownWysiwygBlockEditor
+              key={`${index}:${block.type}`}
+              block={block}
+              disabled={disabled}
+              onChange={(nextBlock) => updateBlock(index, nextBlock)}
+            />
+          ),
+        )
       )}
     </div>
   );
@@ -64,7 +142,7 @@ function MarkdownWysiwygBlockEditor({
   disabled,
   onChange,
 }: {
-  block: MarkdownWysiwygBlock;
+  block: Exclude<MarkdownWysiwygBlock, { type: "table" }>;
   disabled: boolean;
   onChange: (block: MarkdownWysiwygBlock) => void;
 }) {

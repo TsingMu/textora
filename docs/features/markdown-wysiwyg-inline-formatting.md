@@ -82,6 +82,10 @@ Textora 的 Markdown WYSIWYG 已支持标题、段落、列表、引用、fenced
 - [x] 自动化覆盖五类格式的解析/序列化、编辑往返、失败退化、安全链接和模式/标签边界。
 - [x] `npm run check`、`npm run build`、`npm run tauri -- build` 与 `git diff --check` 通过；macOS release 真实验收覆盖主要显示、编辑、保存和安全边界。
 
+## 后续表格扩展
+
+2026-11-02：T02-03 将既有五类内联模型复用于受支持顶层表格的单元格文字编辑，使用表格专用原生输入适配器；原块默认行为不变。表格语法、源码保护和安全失败边界见 `markdown-wysiwyg-tables.md`，验证见 T02-03 RESULT；数据行、列操作和对齐均已交付并完成 release 组合验收；最终证据与模块确认见 `docs/tasks/T02-wysiwyg-tables/RESULT.md`。
+
 ## 依赖与约束
 
 - 依赖已完成的 `docs/features/markdown-wysiwyg-mode.md`、`docs/features/markdown-split-preview.md`、多标签会话、保存/另存为和未保存关闭保护。

@@ -31,5 +31,13 @@ encoding_rs = "0.8"
 sha2 = "0.10"
 # 跨平台比较已打开句柄与路径当前指向的文件，检测读取期间原子替换。
 same-file = "1"
+# UTF-8 suggested export filenames travel in a bounded ASCII IPC header.
+percent-encoding = "2"
 # 后端仅监听已通过系统对话框授权并进入可信文档状态的目录；文件事件只触发 Rust 侧复核。
 notify = "8"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Reuse the AppKit/WebKit runtime already bundled by Tauri for paginated PDF output.
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["NSString", "NSURL", "NSDictionary", "NSGeometry", "NSObject"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["NSPrintInfo", "NSPrintOperation", "NSView", "NSWindow"] }

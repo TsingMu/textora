@@ -3335,6 +3335,10 @@ version = "0.1.0"
 dependencies = [
  "encoding_rs",
  "notify",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "percent-encoding",
  "same-file",
  "serde",
  "serde_json",

@@ -560,3 +560,14 @@ export function describeSaveError(error: DocumentCommandError): string {
       return "The file could not be saved.";
   }
 }
+
+/** Only a native save panel can grant an export destination. */
+export async function exportMarkdownPdf(fileName: string): Promise<boolean> {
+  return invoke<boolean>("export_markdown_pdf", { fileName });
+}
+
+export async function exportMarkdownDocx(fileName: string, data: Uint8Array): Promise<boolean> {
+  return invoke<boolean>("export_markdown_docx", data, {
+    headers: { "textora-export-filename": encodeURIComponent(fileName) },
+  });
+}

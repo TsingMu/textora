@@ -1,4 +1,6 @@
 import { renderHighlightedCodeBlock } from "./markdownCodeHighlight";
+import { decodeMarkdownTableCell, scanMarkdownTable, type MarkdownTable } from "./markdownTable";
+import { inlineNodeVisibleText, parseInline } from "./markdownWysiwygInline";
 
 export type MarkdownPreviewResult =
   | {
@@ -93,7 +95,16 @@ function renderMarkdownToSafeHtml(
   source: string,
   options: Pick<MarkdownPreviewOptions, "mermaidBlocks"> = {},
 ): { html: string; blockMap: MarkdownBlock[] } {
-  const lines = source.replace(/\r\n?/g, "\n").split("\n");
+  const normalizedSource = source.replace(/\r\n?/g, "\n");
+  const lines = normalizedSource.split("\n");
+  const lineOffsets: number[] = [];
+  let offset = 0;
+  for (const line of lines) {
+    lineOffsets.push(offset);
+    offset += line.length + 1;
+  }
+  const supportedTableAt = (at: number) =>
+    scanMarkdownTable(normalizedSource, lineOffsets[at] ?? normalizedSource.length);
   const blocks: string[] = [];
   const blockMap: MarkdownBlock[] = [];
   // 在每个分支消费完源码行后调用：先记录块映射（序号 = 当前 blocks 长度，endLine = 当前 index），
@@ -165,6 +176,15 @@ function renderMarkdownToSafeHtml(
       continue;
     }
 
+    const sharedTable = supportedTableAt(index);
+    if (sharedTable.kind === "table") {
+      while (index < lines.length && lineOffsets[index] < sharedTable.nextOffset)
+        index += 1;
+      pushBlock("table", startLine, renderSupportedTable(sharedTable.table));
+      continue;
+    }
+
+    // Preserve the legacy renderer for candidates outside the shared subset.
     if (isTableStart(lines, index)) {
       const table = collectTable(lines, index);
       index = table.nextIndex;
@@ -202,7 +222,8 @@ function renderMarkdownToSafeHtml(
     } while (
       index < lines.length &&
       !isBlank(lines[index] ?? "") &&
-      !isBlockStart(lines, index)
+      !isBlockStart(lines, index) &&
+      supportedTableAt(index).kind !== "table"
     );
     pushBlock(
       "paragraph",
@@ -430,6 +451,59 @@ function renderTable(rows: string[][]): string {
     )
     .join("");
   return `<table>${head}<tbody>${bodyRows}</tbody></table>`;
+}
+
+/** Supported tables share WYSIWYG's existing five-format inline grammar. */
+function renderSupportedTable(table: MarkdownTable): string {
+  const renderRow = (cells: MarkdownTable["header"]["cells"], tag: "th" | "td") =>
+    `<tr>${cells.map((cell, column) => {
+      const alignment = table.alignments[column];
+      const style = alignment === "default" ? "" : ` style="text-align: ${alignment}"`;
+      return `<${tag}${style}>${renderSupportedTableInline(cell.source)}</${tag}>`;
+    }).join("")}</tr>`;
+  return `<table><thead>${renderRow(table.header.cells, "th")}</thead><tbody>${
+    table.rows.map((row) => renderRow(row.cells, "td")).join("")
+  }</tbody></table>`;
+}
+
+function renderSupportedTableInline(source: string): string {
+  const nodes = parseInline(decodeMarkdownTableCell(source));
+  return nodes.map((node, index) => {
+    const text = escapeHtml(inlineNodeVisibleText(node));
+    switch (node.type) {
+      case "bold": return `<strong>${text}</strong>`;
+      case "italic": return `<em>${text}</em>`;
+      case "strike": return `<del>${text}</del>`;
+      case "code": return `<code>${text}</code>`;
+      case "link": {
+        const previous = nodes[index - 1];
+        if (previous?.type === "text" && previous.text.endsWith("!"))
+          return renderImagePlaceholder(inlineNodeVisibleText(node), node.destination);
+        // Preview keeps its existing URL text; WYSIWYG shows only the label.
+        return `<span class="markdown-preview-link" data-url="${escapeAttribute(node.destination)}">${text} <span class="markdown-preview-link-url">(${escapeHtml(node.destination)})</span></span>`;
+      }
+      case "text": {
+        const next = nodes[index + 1];
+        const literal = next?.type === "link" && node.text.endsWith("!")
+          ? inlineNodeVisibleText({ ...node, text: node.text.slice(0, -1) })
+          : inlineNodeVisibleText(node);
+        // Images with empty/unsupported labels may remain literal inline nodes.
+        const imagePattern = /!\[([^\]]*)\]\(([^)]+)\)/g;
+        let result = "";
+        let from = 0;
+        for (const match of literal.matchAll(imagePattern)) {
+          result += escapeHtml(literal.slice(from, match.index));
+          result += renderImagePlaceholder(match[1], match[2]);
+          from = match.index! + match[0].length;
+        }
+        return result + escapeHtml(literal.slice(from));
+      }
+    }
+  }).join("");
+}
+
+function renderImagePlaceholder(alt: string, url: string): string {
+  return `<span class="markdown-preview-image-placeholder" data-url="${escapeAttribute(url)}">Image: ${escapeHtml(alt || "Untitled image")} (${escapeHtml(url)})</span>`;
 }
 
 function renderInline(source: string): string {

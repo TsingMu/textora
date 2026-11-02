@@ -565,6 +565,23 @@ pub struct DocumentStore {
 }
 
 impl DocumentStore {
+    pub(crate) fn ensure_export_target_available(&self, path: &Path) -> Result<(), String> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| "Document state is unavailable")?;
+        if inner.documents.values().any(|entry| {
+            entry
+                .active
+                .iter()
+                .chain(entry.pending_trusted.iter())
+                .any(|doc| same_path_identity(path, &doc.path))
+        }) {
+            return Err("Export cannot replace an open document. Choose another filename.".into());
+        }
+        Ok(())
+    }
+
     #[allow(dead_code)]
     fn store_open(&self, id: String, content: Vec<u8>, document: TrustedDocument) {
         self.store_open_inner(id, content, document, false);
@@ -2968,6 +2985,32 @@ mod tests {
             "secret-path.txt: permission denied",
         )));
         assert!(!err.message.contains("secret-path.txt"));
+    }
+
+    #[test]
+    fn export_refuses_active_and_pending_document_paths() {
+        let store = DocumentStore::default();
+        store.store_open(
+            "export-protected".into(),
+            b"content".to_vec(),
+            test_trusted("/tmp/protected.docx"),
+        );
+        assert!(
+            store
+                .ensure_export_target_available(Path::new("/tmp/protected.docx"))
+                .is_err()
+        );
+        store.take_content("export-protected");
+        assert!(
+            store
+                .ensure_export_target_available(Path::new("/tmp/protected.docx"))
+                .is_err()
+        );
+        assert!(
+            store
+                .ensure_export_target_available(Path::new("/tmp/another.docx"))
+                .is_ok()
+        );
     }
 
     #[test]

@@ -42,6 +42,7 @@ import {
   type FenceFormatFailure,
 } from "./fenceFormatting";
 import { markdownFenceLanguageCompletion } from "./markdownFenceLanguageCompletion";
+import { markdownOrderedListDeletion } from "./markdownOrderedList";
 
 type EditorProps = {
   content: string;
@@ -457,7 +458,11 @@ function editorExtensionsForLanguage(language: LanguageMode): Extension {
     extensions.push(languageExtension);
   }
   if (language === "markdown") {
-    extensions.push(markdownFenceLanguageCompletion, markdownFenceLanguageAcceptKeymap);
+    extensions.push(
+      markdownFenceLanguageCompletion,
+      markdownFenceLanguageAcceptKeymap,
+      markdownOrderedListDeletion,
+    );
   }
   return extensions;
 }
